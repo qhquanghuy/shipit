@@ -12,8 +12,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::pure::failure::Failure;
-use crate::pure::receipt::Oid;
-use crate::pure::setup::json_values;
+use crate::pure::receipt::{Oid, json_values};
 
 pub(crate) fn check_receipt_path(common_dir: &Path, tree: &Oid) -> PathBuf {
     common_dir
@@ -26,7 +25,7 @@ pub(crate) fn check_receipt_path(common_dir: &Path, tree: &Oid) -> PathBuf {
 // The values of a JSON file, or None when it is missing, a folder, unreadable or not JSON.
 // Creates nothing.
 pub(crate) fn read_json(path: &Path) -> Option<Vec<Value>> {
-    json_values(&fs::read(path).ok()?).ok()
+    json_values(&fs::read(path).ok()?)
 }
 
 // A stale temporary file from a crashed run is skipped, never reused.

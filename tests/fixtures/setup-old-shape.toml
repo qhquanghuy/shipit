@@ -1,0 +1,56 @@
+version = 1
+base = "main"
+cap = 60
+check = ["nix flake check --print-build-logs"]
+fix_rounds = 2
+effort_cap = "high"
+
+[environment]
+run = []
+
+[[tiers]]
+tier = 1
+model = "haiku"
+
+[[tiers]]
+tier = 2
+model = "sonnet"
+
+[[tiers]]
+tier = 3
+model = "opus"
+
+[[tiers]]
+tier = 4
+model = "fable"
+
+[tiers.stand_in]
+model = "opus"
+effort = "high"
+
+[roles.scout]
+tier = 1
+retries = 1
+
+[roles.scout.then]
+tier = 2
+
+[roles.maker]
+tier = 2
+effort = "high"
+
+[roles.tester]
+tier = 3
+effort = "medium"
+
+[roles.reader]
+tier = 1
+
+[packs]
+skill = "superpowers"
+domain = "coding"
+model = "claude"
+
+[messages_to_owner]
+max_lines = 30
+status_update_max_lines = 10

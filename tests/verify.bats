@@ -9,7 +9,7 @@ start_repo() {
   local repo
   repo=$(make_repo)
   cd "$repo"
-  write_setup "$(jq -c '.check = []' "$SHIPIT_SRC/tests/fixtures/setup-valid.json")"
+  write_setup "$(fixture_with 'gate.check=[]')"
   git checkout -q -b feature
   echo one >f1
   git add -A
@@ -129,7 +129,7 @@ receipt_file() {
   local receipt tree
   receipt=$(receipt_file)
   git checkout -q -b broken
-  write_setup '{"version": 2'
+  write_setup 'version = 2 ='
   tree=$(git rev-parse 'HEAD^{tree}')
   jq -c --arg key "$tree" '.key = $key' "$receipt" >"${receipt%/*}/$tree.json"
   run_verify
@@ -137,7 +137,7 @@ receipt_file() {
   [ "$output" = "valid receipt for $(short_tree)" ]
   run_verify feature
   [ "$status" -eq 0 ]
-  echo '{' >.config/shipit.json
+  echo 'cap =' >.config/shipit.toml
   run_verify HEAD
   [ "$status" -eq 0 ]
 }

@@ -3,8 +3,8 @@ use std::io::Write;
 
 use crate::edge::git::Git;
 use crate::pure::failure::Failure;
-use crate::pure::json::invalid;
-use crate::pure::setup::{HEAD, SETUP_PATH, Setup, json_values, parse_setup, setup_label};
+use crate::pure::rules::invalid;
+use crate::pure::setup::{HEAD, SETUP_PATH, Setup, parse_setup, setup_label, toml_table};
 
 pub(crate) const HIDDEN: bool = true;
 
@@ -15,9 +15,9 @@ pub(crate) fn load_setup(git: &Git, rev: &OsStr) -> Result<Setup, Failure> {
     let bytes = git
         .show_file(rev, SETUP_PATH)
         .ok_or_else(|| Failure::usage(format!("no setup file at {label} (see docs/setup.md)")))?;
-    let docs = json_values(&bytes)
-        .map_err(|why| Failure::usage(format!("{label} is not valid JSON: {why}")))?;
-    parse_setup(&docs).map_err(|problems| Failure::usage(invalid(&label, &problems)))
+    let table = toml_table(&bytes)
+        .map_err(|why| Failure::usage(format!("{label} is not valid TOML: {why}")))?;
+    parse_setup(&table).map_err(|problems| Failure::usage(invalid(&label, &problems)))
 }
 
 pub(crate) fn run(

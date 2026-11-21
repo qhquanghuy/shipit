@@ -4,7 +4,7 @@ use std::ffi::OsString;
 
 use crate::pure::base::BranchName;
 use crate::pure::receipt::Oid;
-use crate::pure::setup::{Cap, json_values, parse_setup};
+use crate::pure::setup::{Cap, parse_setup, toml_table};
 
 pub(crate) fn oid(c: char) -> Oid {
     Oid::parse(&c.to_string().repeat(40)).expect("40 hex digits")
@@ -19,11 +19,11 @@ pub(crate) fn os(args: &[&str]) -> Vec<OsString> {
 }
 
 pub(crate) fn cap(n: u64) -> Cap {
-    let text = include_str!("../../tests/fixtures/setup-valid.json")
-        .replace("\"cap\": 60", &format!("\"cap\": {n}"));
-    json_values(text.as_bytes())
+    let text = include_str!("../../tests/fixtures/setup-valid.toml")
+        .replace("max_files = 60", &format!("max_files = {n}"));
+    toml_table(text.as_bytes())
         .ok()
-        .and_then(|docs| parse_setup(&docs).ok())
-        .map(|setup| setup.cap)
+        .and_then(|table| parse_setup(&table).ok())
+        .map(|setup| setup.gate.max_files)
         .expect("the fixture parses")
 }

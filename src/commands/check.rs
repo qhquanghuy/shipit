@@ -11,9 +11,9 @@ use crate::pure::baseline::{
     ALL_FIELDS, Flow, FlowField, SetupVerdict, parse_baseline, setup_only, setup_verdict,
 };
 use crate::pure::failure::Failure;
-use crate::pure::json::invalid;
 use crate::pure::receipt::{BaseUsed, CheckReceipt, Oid};
-use crate::pure::setup::{CheckCommand, HEAD, SETUP_PATH, Setup, json_values, setup_label};
+use crate::pure::rules::invalid;
+use crate::pure::setup::{CheckCommand, HEAD, SETUP_PATH, Setup, setup_label, toml_table};
 use crate::pure::size::size_verdict;
 use crate::pure::text::comma_list;
 use crate::pure::work::{
@@ -109,9 +109,9 @@ fn read_flow(git: &Git, rev: &OsStr, label: &str) -> Result<Option<Flow>, Failur
     let bytes = git
         .show_file(rev, SETUP_PATH)
         .ok_or_else(|| Failure::usage(format!("no setup file at {label} (see docs/setup.md)")))?;
-    let docs =
-        json_values(&bytes).map_err(|_why| Failure::usage(format!("{label} is not valid JSON")))?;
-    parse_baseline(&docs)
+    let table =
+        toml_table(&bytes).map_err(|_why| Failure::usage(format!("{label} is not valid TOML")))?;
+    parse_baseline(&table)
         .map(Some)
         .map_err(|problems| Failure::usage(invalid(label, &problems)))
 }
@@ -269,12 +269,13 @@ fn run_commands(
     err: &mut dyn Write,
 ) -> Result<(), Failure> {
     let prefix: Vec<String> = setup
+        .gate
         .environment
-        .run
+        .prefix
         .iter()
         .map(|word| word.as_str().to_owned())
         .collect();
-    for command in setup.check.iter().map(CheckCommand::as_str) {
+    for command in setup.gate.check.iter().map(CheckCommand::as_str) {
         writeln!(out, "check: {command}").ok();
         out.flush().ok();
         let code = run_check(git.top(), &prefix, command).unwrap_or_else(|not_started| {
@@ -314,7 +315,7 @@ pub(crate) fn run(
     }
 
     let trusted = override_base.is_some();
-    let start = override_base.unwrap_or_else(|| setup.base.clone());
+    let start = override_base.unwrap_or_else(|| setup.gate.base.clone());
     let (base, base_ref, tip) = settle_base(&git, start, trusted, err)?;
     let base_commit = git
         .commit_of(OsStr::new(&base_ref.full()))
@@ -331,13 +332,13 @@ pub(crate) fn run(
         err,
     )?;
     let files = git.changed_files_count(&merge_base)?;
-    let (fits, message) = size_verdict(files, setup.cap);
+    let (fits, message) = size_verdict(files, setup.gate.max_files);
     writeln!(out, "{message}").ok();
     if !fits {
         return Err(Failure::no(format!(
             "too big: {files} files (cap {}) against {base_ref}; split the work into smaller \
              changes",
-            setup.cap.get()
+            setup.gate.max_files.get()
         )));
     }
 
@@ -348,6 +349,7 @@ pub(crate) fn run(
     let time = now_utc();
     let path = check_receipt_path(&git.common_dir()?, &tree);
     let commands = setup
+        .gate
         .check
         .iter()
         .map(|command| command.as_str().to_owned())
@@ -359,7 +361,7 @@ pub(crate) fn run(
             name: base_ref.full(),
             commit: base_commit,
         },
-        (files, setup.cap),
+        (files, setup.gate.max_files),
         commands,
         setup_fields,
         time,
