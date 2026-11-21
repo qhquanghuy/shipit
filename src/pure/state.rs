@@ -48,7 +48,7 @@ pub(crate) struct Counts {
 }
 
 impl Counts {
-    fn add(&mut self, class: Class) {
+    pub(crate) fn add(&mut self, class: Class) {
         match class {
             Class::MustFix => self.must_fix += 1,
             Class::MustAnswer => self.must_answer += 1,
@@ -99,6 +99,7 @@ pub(crate) struct Plan {
 // What is known about the branch of a slice: its tip, and the receipts for that version.
 #[derive(Debug)]
 pub(crate) struct Work {
+    pub(crate) commit: String,
     pub(crate) commits: u64,
     pub(crate) checked: bool,
     pub(crate) patch_id: Option<String>,
@@ -131,9 +132,29 @@ pub(crate) struct View {
     pub(crate) open: Counts,
     pub(crate) started: bool,
     pub(crate) without_start: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) merge_note: Option<String>,
     pub(crate) branch: Option<String>,
     pub(crate) test_drive: bool,
     pub(crate) meets: Vec<QualifiedDoneWhen>,
+}
+
+// Why an owner's merge was accepted without a patch id match, when that is how it shipped.
+pub(crate) fn merge_note(entries: &[Logged]) -> Option<String> {
+    entries.iter().find_map(|logged| match &logged.entry {
+        Entry::ShippedMerge {
+            matched: false,
+            note,
+            ..
+        } => Some(note.clone().unwrap_or_default()),
+        Entry::ShippedMerge { matched: true, .. }
+        | Entry::Receipt { .. }
+        | Entry::Note { .. }
+        | Entry::KnownIssue { .. }
+        | Entry::Answer { .. }
+        | Entry::ShippedProof { .. }
+        | Entry::Started { .. } => None,
+    })
 }
 
 pub(crate) fn is_shipped(entries: &[Logged]) -> bool {
@@ -351,6 +372,7 @@ pub(crate) fn view(facts: &Facts, policy: &Policy<'_>) -> View {
         open,
         started,
         without_start,
+        merge_note: merge_note(&facts.entries),
         branch: work.map(|_| facts.branch.clone()),
         test_drive,
         meets: facts.meets.clone(),
@@ -519,11 +541,14 @@ fn goal_lines(goal: &GoalView, lines: &mut Vec<String>) {
             view.name, view.state, view.next
         ));
     }
-    let done: Vec<&SliceName> = goal
+    let done: Vec<String> = goal
         .views
         .iter()
         .filter(|view| view.state == State::Shipped)
-        .map(|view| &view.name)
+        .map(|view| match &view.merge_note {
+            Some(note) => format!("{} (merge not matched: {note})", view.name),
+            None => view.name.to_string(),
+        })
         .collect();
     if !done.is_empty() {
         lines.push(format!("shipped ({name}): {}", comma_list(done)));
@@ -631,6 +656,7 @@ mod tests {
 
     fn facts(given: &Given) -> Facts {
         let work = given.made.then(|| Work {
+            commit: "commit".to_owned(),
             commits: 1,
             checked: given.checked,
             patch_id: Some("patch".to_owned()),
@@ -806,6 +832,7 @@ mod tests {
                         open: Counts::default(),
                         started: *started,
                         without_start: false,
+                        merge_note: None,
                         branch: None,
                         test_drive: false,
                         meets: Vec::new(),
@@ -851,6 +878,7 @@ mod tests {
                 open: Counts::default(),
                 started,
                 without_start: false,
+                merge_note: None,
                 branch: started.then(|| "slice/demo/beta".to_owned()),
                 test_drive: false,
                 meets: Vec::new(),

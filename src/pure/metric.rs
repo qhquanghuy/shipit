@@ -75,6 +75,7 @@ pub(crate) fn outlier(value: MetricValue, history: &[MetricValue]) -> Option<Fen
 // One measurement of a slice's work, as `receipts/metric/<tree>/<name>.json` says it.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct MetricRecord {
+    pub(crate) key: String,
     pub(crate) goal: GoalName,
     pub(crate) slice: SliceName,
     pub(crate) name: MetricName,
@@ -88,6 +89,7 @@ pub(crate) fn read_record(doc: &Value) -> Option<MetricRecord> {
         return None;
     }
     Some(MetricRecord {
+        key: doc.get("key")?.as_str()?.to_owned(),
         goal: GoalName::parse(doc.get("goal")?.as_str()?)?,
         slice: SliceName::parse(doc.get("slice")?.as_str()?)?,
         name: MetricName::parse(doc.get("name")?.as_str()?)?,
@@ -241,6 +243,7 @@ mod tests {
         let goal = |text: &str| GoalName::parse(text).expect("a goal name");
         let slice = |text: &str| SliceName::parse(text).expect("a slice name");
         let record = |g: &str, s: &str, n: u32, time: &str| MetricRecord {
+            key: "k".to_owned(),
             goal: goal(g),
             slice: slice(s),
             name: MetricName::parse("clone-ratio").expect("a name"),

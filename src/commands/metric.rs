@@ -1,6 +1,5 @@
 use std::ffi::{OsStr, OsString};
 use std::io::Write;
-use std::path::Path;
 
 use serde::Serialize;
 
@@ -8,18 +7,16 @@ use crate::commands::setup::load_setup_table;
 use crate::edge::check_env::branch_name;
 use crate::edge::clock::now_utc;
 use crate::edge::git::Git;
-use crate::edge::records::{kept_files, metric_record_path, metric_records, store_dir};
+use crate::edge::records::{kept_metrics, metric_record_path, metric_records, store_dir};
 use crate::edge::slice_git::refuse_unclean_work;
 use crate::edge::store::write_json_atomic;
 use crate::pure::branch::parse_slice_branch;
 use crate::pure::failure::Failure;
 use crate::pure::goal::GoalName;
-use crate::pure::metric::{
-    KeptMetrics, MetricName, MetricValue, history, outlier, parse_kept, read_record,
-};
+use crate::pure::metric::{MetricName, MetricValue, history, outlier, read_record};
 use crate::pure::review::tool;
 use crate::pure::roadmap::SliceName;
-use crate::pure::setup::{HEAD, toml_table};
+use crate::pure::setup::HEAD;
 
 pub(crate) const HIDDEN: bool = false;
 pub(crate) const NEEDS_SETUP: bool = true;
@@ -43,26 +40,6 @@ struct MetricFile<'a> {
     value: MetricValue,
     time: String,
     tool: String,
-}
-
-fn kept_of(store: &Path, err: &mut dyn Write) -> Vec<KeptMetrics> {
-    let mut kept = Vec::new();
-    for (goal, text) in kept_files(store) {
-        let parsed = text
-            .and_then(|text| toml_table(text.as_bytes()).ok())
-            .and_then(|table| parse_kept(goal.clone(), &table));
-        match parsed {
-            Some(found) => kept.push(found),
-            None => {
-                writeln!(
-                    err,
-                    "shipit: metrics/{goal}.toml is not a metrics file; skipped"
-                )
-                .ok();
-            }
-        }
-    }
-    kept
 }
 
 pub(crate) fn run(
@@ -96,12 +73,20 @@ pub(crate) fn run(
     let tree = git.tree_of(OsStr::new(HEAD))?;
     let on = branch_name(&git).as_deref().and_then(parse_slice_branch);
     let store = store_dir(&git.common_dir()?);
+    let (kept, skipped) = kept_metrics(&store);
+    for goal in skipped {
+        writeln!(
+            err,
+            "shipit: metrics/{goal}.toml is not a metrics file; skipped"
+        )
+        .ok();
+    }
     let others = history(
         &metric_records(&store)
             .iter()
             .filter_map(read_record)
             .collect::<Vec<_>>(),
-        &kept_of(&store, err),
+        &kept,
         &name,
         on.as_ref().map(|(goal, slice)| (goal, slice)),
     );

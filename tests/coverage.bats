@@ -4,20 +4,6 @@ bats_require_minimum_version 1.5.0
 load helpers
 load slice-helpers
 
-# suite_repo [program]: the repo whose only check is the coverage line over the committed script
-# fake-suite, which prints libtest and TAP lines (and a skipped one); the store has the goal demo.
-suite_repo() {
-  make_slice_repo "gate.check=[\"$SHIPIT_BIN coverage -- ${1:-bash fake-suite}\"]"
-  cat >fake-suite <<'SUITE'
-echo "test alpha::tests::one ... ok"
-echo "ok 1 receipt: first"
-echo "ok 2 receipt: skipped # skip not run"
-echo "test alpha::tests::slow ... ignored"
-SUITE
-  git add fake-suite
-  git commit -q -m "a suite"
-}
-
 # bare_repo <program>: a repo with no store whose only check is the coverage line over <program>.
 bare_repo() {
   local repo
@@ -26,13 +12,6 @@ bare_repo() {
   write_setup "$(fixture_with "gate.check=[\"$SHIPIT_BIN coverage -- $1\"]")"
 }
 
-# commit_map <goal> <slice> <toml>: commit the map of the slice.
-commit_map() {
-  mkdir -p ".shipit/coverage/$1"
-  printf '%s\n' "$3" >".shipit/coverage/$1/$2.toml"
-  git add .shipit
-  git commit -q -m "a map"
-}
 
 run_check() {
   run --separate-stderr "$SHIPIT_BIN" check "$@"

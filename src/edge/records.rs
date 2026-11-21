@@ -18,7 +18,7 @@ use crate::pure::goal::GoalName;
 use crate::pure::goal_pick::roadmap_version;
 use crate::pure::logbook::{Logged, read_entries};
 use crate::pure::messages::{FILE_PROBLEM, NO_BLOCK, NOT_TOML, say};
-use crate::pure::metric::MetricName;
+use crate::pure::metric::{KeptMetrics, MetricName, parse_kept};
 use crate::pure::receipt::{Oid, json_values};
 use crate::pure::review::ReceiptKind;
 use crate::pure::roadmap::{Roadmap, SliceName, parse_roadmap};
@@ -87,6 +87,22 @@ pub(crate) fn kept_files(store: &Path) -> Vec<(GoalName, Option<String>)> {
         .collect();
     kept.sort_by(|a, b| a.0.cmp(&b.0));
     kept
+}
+
+// The kept metrics of the completed goals, and the goals whose file is not a metrics file.
+pub(crate) fn kept_metrics(store: &Path) -> (Vec<KeptMetrics>, Vec<GoalName>) {
+    let mut kept = Vec::new();
+    let mut skipped = Vec::new();
+    for (goal, text) in kept_files(store) {
+        let parsed = text
+            .and_then(|text| toml_table(text.as_bytes()).ok())
+            .and_then(|table| parse_kept(goal.clone(), &table));
+        match parsed {
+            Some(found) => kept.push(found),
+            None => skipped.push(goal),
+        }
+    }
+    (kept, skipped)
 }
 
 pub(crate) fn metrics_path(store: &Path, goal: &GoalName) -> PathBuf {

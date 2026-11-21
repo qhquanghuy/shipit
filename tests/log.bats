@@ -162,6 +162,10 @@ a_review() {
   [ "$status" -eq 0 ]
   [ "$(jq -r 'select(.event == "shipped") | [.matched, .note] | join(" ")' "$(store)/goals/demo/logbook.jsonl")" = \
     "false line three moved" ]
+  st
+  [[ $output == *"shipped (demo): beta (merge not matched: line three moved)"* ]]
+  run --separate-stderr "$SHIPIT_BIN" status --summary beta
+  [ "$(sed -n 1p <<<"$output")" = "### ShipIt: beta is shipped (merge not matched: line three moved)" ]
 }
 
 @test "log: a proof step ships with its evidence" {

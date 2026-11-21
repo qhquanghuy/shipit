@@ -103,3 +103,25 @@ ship_entry() {
 the_line() {
   grep -F "${2:-demo}/$1:" <<<"$output"
 }
+
+# suite_repo [program]: the repo whose only check is the coverage line over the committed script
+# fake-suite, which prints libtest and TAP lines (and a skipped one); the store has the goal demo.
+suite_repo() {
+  make_slice_repo "gate.check=[\"$SHIPIT_BIN coverage -- ${1:-bash fake-suite}\"]"
+  cat >fake-suite <<'SUITE'
+echo "test alpha::tests::one ... ok"
+echo "ok 1 receipt: first"
+echo "ok 2 receipt: skipped # skip not run"
+echo "test alpha::tests::slow ... ignored"
+SUITE
+  git add fake-suite
+  git commit -q -m "a suite"
+}
+
+# commit_map <goal> <slice> <toml>: commit the map of the slice.
+commit_map() {
+  mkdir -p ".shipit/coverage/$1"
+  printf '%s\n' "$3" >".shipit/coverage/$1/$2.toml"
+  git add .shipit
+  git commit -q -m "a map"
+}
