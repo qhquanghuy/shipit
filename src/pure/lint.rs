@@ -143,28 +143,64 @@ fn after_build(text: &str, start: usize) -> bool {
         .is_some_and(|before| !before.chars().next_back().is_some_and(is_word))
 }
 
+// How a needle is looked for: as written, as written with a version number allowed after it, or
+// with at most one space between its letters (`work flow` is `workflow`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Exact,
+    Version,
+    Spaced,
+}
+
+fn spaced_len(text: &str, needle: &str) -> Option<usize> {
+    let mut chars = text.char_indices();
+    let mut end = 0;
+    for (index, want) in needle.chars().enumerate() {
+        let mut next = chars.next()?;
+        if index > 0 && next.1 == ' ' {
+            next = chars.next()?;
+        }
+        if next.1 != want {
+            return None;
+        }
+        end = next.0 + next.1.len_utf8();
+    }
+    Some(end)
+}
+
+fn find_from(work: &str, needle: &str, from: usize, mode: Mode) -> Option<(usize, usize)> {
+    let tail = work.get(from..)?;
+    match mode {
+        Mode::Exact | Mode::Version => tail
+            .find(needle)
+            .map(|at| (from + at, from + at + needle.len())),
+        Mode::Spaced => tail.char_indices().find_map(|(offset, _)| {
+            let len = spaced_len(tail.get(offset..)?, needle)?;
+            Some((from + offset, from + offset + len))
+        }),
+    }
+}
+
 // The matches of one needle, each blanked so that no later rule reports the same text again;
 // `keep` can still refuse a match, which is then left in place.
 fn take_matches(
     work: &mut String,
     needle: &str,
-    version: bool,
+    mode: Mode,
     keep: impl Fn(&str, usize) -> bool,
 ) -> Vec<(usize, String)> {
     let step = needle.chars().next().map_or(1, char::len_utf8);
     let mut found = Vec::new();
     let mut from = 0;
-    while let Some(at) = work.get(from..).and_then(|tail| tail.find(needle)) {
-        let start = from + at;
-        let end = start + needle.len();
-        if bounded(work, start, end, needle, version) && keep(work, start) {
+    while let Some((start, end)) = find_from(work, needle, from, mode) {
+        if bounded(work, start, end, needle, mode == Mode::Version) && keep(work, start) {
             found.push((start, needle.to_owned()));
             let blanked = (
                 work.get(..start).map(str::to_owned),
                 work.get(end..).map(str::to_owned),
             );
             if let (Some(head), Some(tail)) = blanked {
-                *work = format!("{head}{}{tail}", " ".repeat(needle.len()));
+                *work = format!("{head}{}{tail}", " ".repeat(end - start));
             }
             from = end;
         } else {
@@ -227,12 +263,12 @@ struct Report {
 fn hits_of(
     work: &mut String,
     needles: &[String],
-    version: bool,
+    mode: Mode,
     rule: Rule,
 ) -> Vec<(usize, Rule, String)> {
     let mut hits = Vec::new();
     for needle in needles {
-        for (at, found) in take_matches(work, needle, version, |_, _| true) {
+        for (at, found) in take_matches(work, needle, mode, |_, _| true) {
             hits.push((at, rule, found));
         }
     }
@@ -288,12 +324,22 @@ fn line_hits(
     let plain = without_code_spans(text);
     let mut hits = Vec::new();
     let mut harness_work = normalized(&plain);
-    let found = hits_of(&mut harness_work, &words.harness, false, Rule::HarnessName);
+    let found = hits_of(
+        &mut harness_work,
+        &words.harness,
+        Mode::Exact,
+        Rule::HarnessName,
+    );
     let crossing = next
         .map(|next| split_harness(text, next, &words.harness))
         .unwrap_or_default();
     let mut model_work = normalized(&text.replace('`', " "));
-    hits_of(&mut model_work, &words.harness, false, Rule::HarnessName);
+    hits_of(
+        &mut model_work,
+        &words.harness,
+        Mode::Exact,
+        Rule::HarnessName,
+    );
     for (_, _, name) in &crossing {
         blank_tail(&mut model_work, name);
     }
@@ -305,20 +351,20 @@ fn line_hits(
         hits.extend(hits_of(
             &mut model_work,
             &words.models,
-            true,
+            Mode::Version,
             Rule::ModelName,
         ));
     }
-    let mut work = plain.to_lowercase();
+    let mut work = normalized(&plain);
     hits.extend(hits_of(
         &mut work,
         &words.rejected,
-        false,
+        Mode::Spaced,
         Rule::RejectedTerm,
     ));
     for needle in ["plans", "plan"] {
         let bare = |text: &str, start: usize| !after_build(text, start);
-        for (at, found) in take_matches(&mut work, needle, false, bare) {
+        for (at, found) in take_matches(&mut work, needle, Mode::Exact, bare) {
             hits.push((at, Rule::BarePlan, found));
         }
     }
@@ -439,8 +485,8 @@ mod tests {
         #[test]
         fn word_boundaries(
             term in "[a-z]{3,8}",
-            left in "[a-z0-9_]{0,3}",
-            right in "[a-z0-9_]{0,3}",
+            left in "[a-z0-9]{0,3}",
+            right in "[a-z0-9]{0,3}",
         ) {
             prop_assume!(!left.is_empty() || !right.is_empty());
             let text = format!("see {left}{term}{right} here\n");
@@ -494,6 +540,25 @@ mod tests {
         assert_eq!(hits("a sub-task"), ["task"]);
         assert_eq!(hits("Tasks and RELEASES"), ["tasks", "releases"]);
         assert_eq!(hits("a subtask, tasked, a release2"), Vec::<String>::new());
+    }
+
+    // `_`, `-` and a space are one gap, as they are for model names: a term spelled with a gap, or
+    // joined across one, is the term; a longer word is not.
+    #[test]
+    fn a_rejected_term_is_found_in_any_spelling() {
+        let hits = |text: &str| {
+            found("a.md", text)
+                .into_iter()
+                .map(|(_, _, matched)| matched)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(hits("a Work-flow"), ["workflow"]);
+        assert_eq!(hits("a work flow, a pipe_line"), ["workflow", "pipeline"]);
+        assert_eq!(hits("a sub_task and a SUB-TASK"), ["task", "task"]);
+        assert_eq!(
+            hits("a subtask, a worker flow, a tasked"),
+            Vec::<String>::new()
+        );
     }
 
     #[test]

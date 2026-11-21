@@ -17,6 +17,7 @@ use crate::pure::text::comma_list;
 const FORM: &str = "## Form";
 const HEADER_KEYS: [&str; 3] = ["kind", "outcome", "input"];
 const NEXT: &str = "Next";
+const FINDING_LABELS: [&str; 4] = ["issue", "suggestion", "question", "nitpick"];
 const PLACEHOLDER_LABEL: &str = "[project · slice · phase]";
 const SLICES: &str = "## Slices";
 const COVERAGE: &str = "## Done-when coverage";
@@ -44,14 +45,12 @@ pub(crate) struct Spec {
     pub(crate) contradicts: &'static [Contradiction],
 }
 
-// An item that the outcome cannot have: it starts with `start` in `part`; with `needs_finding`
-// the item is only refused when the output has no finding at all.
+// An item that the outcome cannot have, whatever else the output holds: it starts with `start` in `part`.
 #[derive(Debug)]
 pub(crate) struct Contradiction {
     pub(crate) outcome: &'static str,
     pub(crate) part: &'static str,
     pub(crate) start: &'static str,
-    pub(crate) needs_finding: bool,
 }
 
 // A machine format inside the output, read by the formats and found under a heading of its own.
@@ -306,9 +305,10 @@ fn is_label(text: &str) -> bool {
         })
 }
 
-// The label and the length of an owner message, each as a problem or nothing.
-fn owner_problems(body: &[Line<'_>], max_lines: u64) -> (Option<String>, Option<String>) {
-    let label = body.iter().find(|line| !line.text.trim().is_empty());
+// The label and the length of an owner message, each as a problem or nothing. Every line of the
+// output counts, wherever it sits: above, inside or below the Form section.
+fn owner_problems(all: &[Line<'_>], max_lines: u64) -> (Option<String>, Option<String>) {
+    let label = body(all).iter().find(|line| !line.text.trim().is_empty());
     let label_problem = if label.is_some_and(|line| line.text.trim() == PLACEHOLDER_LABEL) {
         Some(format!(
             "label: {PLACEHOLDER_LABEL} is still the template's; name the project, the slice and the phase"
@@ -317,8 +317,8 @@ fn owner_problems(body: &[Line<'_>], max_lines: u64) -> (Option<String>, Option<
         (!label.is_some_and(|line| is_label(line.text)))
             .then(|| format!("label: the line after the Form section must be {PLACEHOLDER_LABEL}"))
     };
-    let final_empty = body.last().is_some_and(|line| line.text.is_empty());
-    let count = body.len() - usize::from(final_empty);
+    let final_empty = all.last().is_some_and(|line| line.text.is_empty());
+    let count = all.len() - usize::from(final_empty);
     let long = u64::try_from(count).is_ok_and(|count| count > max_lines);
     let length_problem =
         long.then(|| format!("too long: {count} lines (owner.max_lines is {max_lines})"));
@@ -507,12 +507,7 @@ fn once<'l, 'a>(found: &'l [Part<'a>], name: &str) -> Option<&'l Part<'a>> {
 }
 
 // An answer that says the opposite of the outcome is refused; the rules are in the spec.
-fn contradictions(
-    spec: &Spec,
-    outcome: &str,
-    found: &[Part<'_>],
-    counts: Option<[usize; 3]>,
-) -> Vec<String> {
+fn contradictions(spec: &Spec, outcome: &str, found: &[Part<'_>]) -> Vec<String> {
     let mut problems = Vec::new();
     for rule in spec
         .contradicts
@@ -522,9 +517,6 @@ fn contradictions(
         let Some(part) = once(found, rule.part) else {
             continue;
         };
-        if rule.needs_finding && counts != Some([0, 0, 0]) {
-            continue;
-        }
         let start = rule.start.trim_end();
         for (index, item) in items(part).iter().enumerate() {
             if !item.starts_with(rule.start) {
@@ -535,14 +527,56 @@ fn contradictions(
                 rule.part,
                 index + 1
             );
-            problems.push(if rule.needs_finding {
-                format!("{place}, but the outcome {outcome} has no finding")
-            } else {
-                format!("{place}, which does not fit the outcome {outcome}")
-            });
+            problems.push(format!("{place}, which does not fit the outcome {outcome}"));
         }
     }
     problems
+}
+
+// A Conventional Comments label, optional decorations and a colon, once the Markdown that a
+// reader skips over is gone: quotes, list markers, bold and indent, in any case.
+fn finding_shaped(line: &str) -> bool {
+    let mut text = line.trim_start();
+    loop {
+        let stripped = strip_marker(text);
+        if stripped == text {
+            break;
+        }
+        text = stripped;
+    }
+    let lower = text.replace("**", "").to_lowercase();
+    FINDING_LABELS.iter().any(|label| {
+        lower.strip_prefix(label).is_some_and(|rest| {
+            let rest = rest
+                .strip_prefix(" (")
+                .and_then(|inner| inner.split_once(')'))
+                .map_or(rest, |(_, tail)| tail);
+            rest.starts_with(':')
+        })
+    })
+}
+
+// One Markdown prefix: `>`, `-`, `+`, `*`, `1.` or `1)`, with the space after it.
+fn strip_marker(text: &str) -> &str {
+    let text = text.trim_start();
+    if let Some(rest) = text.strip_prefix('>') {
+        return rest;
+    }
+    for marker in ["- ", "+ ", "* "] {
+        if let Some(rest) = text.strip_prefix(marker) {
+            return rest;
+        }
+    }
+    let digits = text.chars().take_while(char::is_ascii_digit).count();
+    let after = text.get(digits..).unwrap_or_default();
+    if digits > 0
+        && let Some(rest) = after
+            .strip_prefix(". ")
+            .or_else(|| after.strip_prefix(") "))
+    {
+        return rest;
+    }
+    text
 }
 
 // The numbers of the lines that read as a finding once their indent and list marker are gone.
@@ -553,10 +587,7 @@ fn loose_findings(spec: &Spec, all: &[Line<'_>]) -> Vec<usize> {
     all.iter()
         .enumerate()
         .filter(|(_, line)| matches!(line.kind, Kind::Prose))
-        .filter(|(_, line)| {
-            let text = line.text.trim_start();
-            parse_finding(0, list_item(text).unwrap_or(text)).is_ok()
-        })
+        .filter(|(_, line)| finding_shaped(line.text))
         .map(|(index, _)| index + 1)
         .collect()
 }
@@ -601,7 +632,7 @@ pub(crate) fn validate(spec: &Spec, ctx: &Context<'_>, text: &str) -> Result<Ver
         })?;
     let all = lines(text).map_err(|why| vec![why])?;
     let (label, length) = if spec.owner_message {
-        owner_problems(body(&all), ctx.max_lines)
+        owner_problems(&all, ctx.max_lines)
     } else {
         (None, None)
     };
@@ -654,7 +685,7 @@ pub(crate) fn validate(spec: &Spec, ctx: &Context<'_>, text: &str) -> Result<Ver
             }
         }
     }
-    problems.extend(contradictions(spec, &head.outcome, &found, counts));
+    problems.extend(contradictions(spec, &head.outcome, &found));
     if let Some((name, _kind)) = spec.findings {
         problems.extend(hidden_findings(name, &loose, &found));
     }
@@ -1283,17 +1314,55 @@ mod tests {
         #[test]
         fn a_finding_outside_the_findings_list_is_refused(
             kind in prop::sample::select(vec!["second-opinion", "informed-review", "test-drive"]),
-            place in 0_usize..3,
+            place in 0_usize..9,
             seed in any::<u64>(),
         ) {
             let spec = spec_of(kind);
             let outcome = if kind == "test-drive" { "pass" } else { "approve" };
             let mut text = filled(spec, outcome, seed | 1);
-            text.push_str(["  - issue (blocking, security): a\n", "issue (blocking): a\n", "# Notes\n- issue (blocking): a\n"][place]);
+            text.push_str([
+                "  - issue (blocking, security): a\n",
+                "issue (blocking): a\n",
+                "# Notes\n- issue (blocking): a\n",
+                "+ issue (blocking): a\n",
+                "1) issue (blocking): a\n",
+                "> issue (blocking): a\n",
+                "**issue (blocking):** a\n",
+                "Issue (Blocking): a\n",
+                "  > - **Question:** a\n",
+            ][place]);
             let problems = problems_of(spec, &text);
             prop_assert!(
                 problems.iter().any(|problem| problem.contains("a finding that no item of the part \"Findings\" counts")),
                 "{:?}", problems
+            );
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            failure_persistence: None,
+            ..ProptestConfig::default()
+        })]
+
+        // Every line counts, wherever it sits: between the heading and the block, inside the
+        // `input` value, or after the label.
+        #[test]
+        fn every_line_counts_against_the_cap(extra in 1_usize..40, place in 0_usize..3) {
+            let spec = spec_of("decision-point");
+            let good = filled(spec, "waiting-for-the-owner", 0);
+            let max = u64::try_from(good.lines().count()).expect("small");
+            prop_assert!(validate(spec, &ctx(max), &good).is_ok());
+            let lines = "more words\n".repeat(extra);
+            let text = match place {
+                0 => good.replacen("## Form\n\n", &format!("## Form\n\n{lines}"), 1),
+                1 => good.replacen("input = \"x\"", &format!("input = \"\"\"\n{lines}\"\"\""), 1),
+                _ => format!("{good}{lines}"),
+            };
+            let total = text.lines().count();
+            prop_assert_eq!(
+                validate(spec, &ctx(max), &text),
+                Err(vec![format!("too long: {total} lines (owner.max_lines is {max})")])
             );
         }
     }
@@ -1383,7 +1452,7 @@ mod tests {
         assert_eq!(
             problems_of(spec, &text),
             [
-                "part \"Security\" item 1 starts with concern:, but the outcome approve has no finding"
+                "part \"Security\" item 1 starts with concern:, which does not fit the outcome approve"
             ]
         );
         let with_finding = {
@@ -1393,10 +1462,22 @@ mod tests {
                     *body = vec!["- concern: injection everywhere".to_owned()];
                 }
             }
-            parts.push(("Findings", vec!["- question: is it fixed?".to_owned()]));
+            parts.push((
+                "Findings",
+                vec![
+                    "- question: is it fixed?".to_owned(),
+                    "- nitpick: a comma".to_owned(),
+                ],
+            ));
             render(spec, "approve", 0, &parts)
         };
-        assert!(validate(spec, &ctx(1000), &with_finding).is_ok());
+        // A concern makes an approval wrong whatever findings come with it.
+        assert_eq!(
+            problems_of(spec, &with_finding),
+            [
+                "part \"Security\" item 1 starts with concern:, which does not fit the outcome approve"
+            ]
+        );
 
         let spec = spec_of("informed-review");
         let text = with_body(
@@ -1408,7 +1489,7 @@ mod tests {
         assert_eq!(
             problems_of(spec, &text),
             [
-                "part \"Teach-back\" item 1 starts with [wrong], but the outcome approve has no finding"
+                "part \"Teach-back\" item 1 starts with [wrong], which does not fit the outcome approve"
             ]
         );
     }
@@ -1521,11 +1602,7 @@ mod tests {
     fn exactly_max_lines_pass_and_one_more_fails_with_the_count() {
         let spec = spec_of("decision-point");
         let text = filled(spec, "waiting-for-the-owner", 0);
-        let count = text
-            .lines()
-            .skip_while(|line| *line != "```")
-            .skip(1)
-            .count();
+        let count = text.lines().count();
         let max = u64::try_from(count).expect("a small count");
         assert!(validate(spec, &ctx(max), &text).is_ok());
         assert_eq!(

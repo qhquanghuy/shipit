@@ -9,13 +9,11 @@ const CONCERN_SECURITY: Contradiction = Contradiction {
     outcome: "approve",
     part: "Security",
     start: "concern: ",
-    needs_finding: true,
 };
 const CONCERN_PERFORMANCE: Contradiction = Contradiction {
     outcome: "approve",
     part: "Performance",
     start: "concern: ",
-    needs_finding: true,
 };
 
 // Sorted by kind; the blank forms are data/templates/<kind>.md.
@@ -133,7 +131,6 @@ pub(crate) const KINDS: &[Spec] = &[
                 outcome: "approve",
                 part: "Teach-back",
                 start: "[wrong] ",
-                needs_finding: true,
             },
         ],
     },
@@ -265,7 +262,6 @@ pub(crate) const KINDS: &[Spec] = &[
             outcome: "pass",
             part: "Done-when",
             start: "[fail] ",
-            needs_finding: false,
         }],
     },
 ];

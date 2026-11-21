@@ -60,7 +60,7 @@ write_message() {
   write_message long.md
   run --separate-stderr "$SHIPIT_BIN" validate decision-point long.md
   [ "$status" -eq 1 ]
-  [ "${stderr##*$'\n'}" = '  too long: 8 lines (owner.max_lines is 5)' ]
+  [ "${stderr##*$'\n'}" = '  too long: 15 lines (owner.max_lines is 5)' ]
 }
 
 @test "validate: a missing file, an unknown kind and a missing argument exit 2" {
