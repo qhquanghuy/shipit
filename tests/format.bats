@@ -1,0 +1,84 @@
+#!/usr/bin/env bats
+
+bats_require_minimum_version 1.5.0
+load helpers
+
+ROADMAP="$SHIPIT_SRC/tests/fixtures/roadmap.md"
+GOAL="$SHIPIT_SRC/tests/fixtures/goal.md"
+
+# What `shipit format roadmap` prints for the fixtures.
+PRINTED='{"roadmap":{"elements":[{"kind":"slice","name":"alpha","after":[],"meets":["DW1"],"owns":["src/alpha.rs","docs/alpha/"],"test_drive":false,"branch":"slice/alpha"},{"kind":"slice","name":"beta","after":["alpha"],"meets":["DW2"],"owns":["src/beta.rs"],"test_drive":true,"branch":"slice/beta"},{"kind":"slice","name":"gamma","after":["alpha"],"meets":["DW3"],"owns":["src/gamma.rs"],"test_drive":false,"branch":"slice/gamma"},{"kind":"proof","name":"proof","after":["beta","gamma"],"meets":[],"how":"run by the owner"}]},"waves":[["alpha"],["beta","gamma"],["proof"]],"goal":["DW1","DW2","DW3"]}'
+
+setup() {
+  cd "$(make_repo)"
+}
+
+@test "format roadmap: prints the parsed roadmap and its waves" {
+  run --separate-stderr "$SHIPIT_BIN" format roadmap "$ROADMAP" --goal "$GOAL"
+  [ "$status" -eq 0 ]
+  [ -z "$stderr" ]
+  [ "$output" = "$PRINTED" ]
+}
+
+@test "format roadmap: without a goal the goal prints as null" {
+  run --separate-stderr "$SHIPIT_BIN" format roadmap "$ROADMAP"
+  [ "$status" -eq 0 ]
+  [[ $output == *'"waves":[["alpha"],["beta","gamma"],["proof"]],"goal":null}' ]]
+}
+
+@test "format roadmap: an invalid roadmap exits 2 with every problem" {
+  sed -e 's/^name = "beta"/name = "alpha"/' -e 's/^owns = \["src\/gamma.rs"\]/owns = []/' \
+    "$ROADMAP" >bad.md
+  run --separate-stderr "$SHIPIT_BIN" format roadmap bad.md
+  [ "$status" -eq 2 ]
+  [ -z "$output" ]
+  [ "$stderr" = 'shipit: bad.md is invalid:
+.slice[1].name: "alpha" is used twice
+.slice[1].after[0]: "alpha" cannot come after itself
+.slice[2].owns: must list at least one path' ]
+}
+
+@test "format roadmap: an item nobody meets exits 2 with \"DW3: no slice\"" {
+  sed 's/^meets = \["DW3"\]/meets = []/' "$ROADMAP" >unmet.md
+  run --separate-stderr "$SHIPIT_BIN" format roadmap unmet.md --goal "$GOAL"
+  [ "$status" -eq 2 ]
+  [ "$stderr" = 'shipit: unmet.md is invalid:
+DW3: no slice' ]
+}
+
+@test "format roadmap: a file without the block, without TOML or missing exits 2" {
+  printf '# Roadmap\n' >none.md
+  run --separate-stderr "$SHIPIT_BIN" format roadmap none.md
+  [ "$status" -eq 2 ]
+  [ "$stderr" = 'shipit: none.md has no toml block under "## Slices"' ]
+
+  printf '## Slices\n```toml\nslice = [\n```\n' >broken.md
+  run --separate-stderr "$SHIPIT_BIN" format roadmap broken.md
+  [ "$status" -eq 2 ]
+  [[ $stderr == "shipit: broken.md is not valid TOML: "* ]]
+
+  run --separate-stderr "$SHIPIT_BIN" format roadmap missing.md
+  [ "$status" -eq 2 ]
+  [ "$stderr" = 'shipit: no file at missing.md' ]
+}
+
+@test "format roadmap: a goal without items exits 2" {
+  printf '## Done-when\n' >empty-goal.md
+  run --separate-stderr "$SHIPIT_BIN" format roadmap "$ROADMAP" --goal empty-goal.md
+  [ "$status" -eq 2 ]
+  [ "$stderr" = 'shipit: goal: no numbered items under "## Done-when"' ]
+}
+
+@test "format: a missing setup stops it" {
+  git rm -q .config/shipit.toml
+  git commit -q -m "drop setup"
+  run --separate-stderr "$SHIPIT_BIN" format roadmap "$ROADMAP"
+  [ "$status" -eq 2 ]
+  [ "$stderr" = "shipit: no setup file at .config/shipit.toml (see docs/setup.md)" ]
+}
+
+@test "format: an unknown form exits 2 with the usage" {
+  run --separate-stderr "$SHIPIT_BIN" format
+  [ "$status" -eq 2 ]
+  [ "$stderr" = "shipit: usage: shipit format <roadmap|map|findings> …" ]
+}
