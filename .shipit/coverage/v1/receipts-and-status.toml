@@ -1,8 +1,11 @@
-DW3 = ["new commands: a missing setup stops each"]
+DW3 = ["new commands: a missing setup stops each", "a_flag_takes_the_next_word_and_only_once",
+       "a_value_with_a_control_character_is_refused", "a_goal_flag_takes_exactly_a_goal_name"]
 DW4 = ["the_state_is_the_longest_chain_that_holds", "status: a slice walks from planned to shipped",
        "status: deleting each receipt lowers the state", "status: writes nothing and creates no folder"]
 DW5 = ["rank_is_tier_then_effort", "any_effort_above_the_cap_is_refused",
        "a_pass_with_the_same_real_model_and_effort_needs_fresh_top_tier_and_cap",
+       "a_plan_reviewer_at_or_below_the_planners_rank_is_refused",
+       "receipt: a false --author gains nothing: the reviewer also outranks the setup's role",
        "receipt: a reviewer not above the planner is refused and nothing is written",
        "receipt: the tiers come from the base branch's setup"]
 DW16 = ["summary: lists every receipt, known issue, done-when item and metric"]

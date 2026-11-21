@@ -5,7 +5,7 @@ use crate::pure::finding::{Class, Finding, Outcome, ResultKind};
 use crate::pure::rank::{Basis, Rank, Worker, rank_verdict};
 use crate::pure::receipt::Oid;
 use crate::pure::roadmap::SliceName;
-use crate::pure::setup::{Effort, Setup};
+use crate::pure::setup::{Effort, Role, Setup};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ReceiptKind {
@@ -127,12 +127,25 @@ pub(crate) fn stored_findings(doc: &Value) -> Option<Vec<Stored>> {
 // What status reads from a receipt file.
 #[derive(Debug)]
 pub(crate) struct ReceiptView {
+    pub(crate) kind: ReceiptKind,
     pub(crate) key: String,
     pub(crate) result: Outcome,
     pub(crate) author: Worker,
     pub(crate) by: Worker,
     pub(crate) fresh: bool,
+    // The role the receipt says its `--author` is not: a claim that status shows.
+    pub(crate) not_the_role: Option<&'static str>,
     pub(crate) findings: Vec<Stored>,
+}
+
+// The setup's role that a reviewer of this kind must outrank, besides the author.
+pub(crate) fn role_of(policy: &Setup, kind: ReceiptKind) -> (&'static str, &Role) {
+    match kind {
+        ReceiptKind::PlanReview => ("planner", &policy.agents.roles.planner),
+        ReceiptKind::InformedReview | ReceiptKind::SecondOpinion | ReceiptKind::TestDrive => {
+            ("maker", &policy.agents.roles.maker)
+        }
+    }
 }
 
 fn worker_of(value: &Value) -> Option<Worker> {
@@ -148,12 +161,22 @@ pub(crate) fn read_receipt(docs: Option<&[Value]>) -> Option<ReceiptView> {
     let Some([doc]) = docs else {
         return None;
     };
+    let flag = |name: &str| doc.get(name).and_then(Value::as_bool) == Some(false);
+    let not_the_role = if flag("author_is_maker") {
+        Some("maker")
+    } else if flag("author_is_planner") {
+        Some("planner")
+    } else {
+        None
+    };
     Some(ReceiptView {
+        kind: ReceiptKind::parse(doc.get("kind")?.as_str()?)?,
         key: doc.get("key")?.as_str()?.to_owned(),
         result: Outcome::parse(doc.get("result")?.as_str()?)?,
         author: worker_of(doc.get("author")?)?,
         by: worker_of(doc.get("by")?)?,
         fresh: doc.get("rank")?.as_str()? == "fresh",
+        not_the_role,
         findings: stored_findings(doc)?,
     })
 }
@@ -177,7 +200,14 @@ pub(crate) fn open_findings<'a>(view: &'a ReceiptView, closed: &[String]) -> Vec
 pub(crate) fn counts(view: &ReceiptView, policy: &Setup, key: &str, closed: &[String]) -> bool {
     view.key == key
         && !view.is_rework()
-        && rank_verdict(policy, &view.author, &view.by, view.fresh).is_ok()
+        && rank_verdict(
+            policy,
+            &view.author,
+            &view.by,
+            view.fresh,
+            role_of(policy, view.kind),
+        )
+        .is_ok()
         && open_findings(view, closed)
             .iter()
             .all(|finding| finding.class == Class::NiceToFix)
@@ -289,15 +319,18 @@ mod tests {
                 .all(|finding| finding.class == Class::NiceToFix || closed_ids.contains(&finding.id));
             let outcome = results.get(result).copied().expect("a result");
             let view = ReceiptView {
+                kind: ReceiptKind::InformedReview,
                 key: "k".to_owned(),
                 result: outcome,
                 author: worker(author),
                 by: worker(by),
                 fresh: false,
+                not_the_role: None,
                 findings,
             };
             let policy = crate::pure::testing::setup_with(&[]);
-            let expected = by > author && outcome != Outcome::Rework && blocking_closed && same_key;
+            // The maker is sonnet (index 1) at high effort, so a reviewer must be above it too.
+            let expected = by > author && by > 1 && outcome != Outcome::Rework && blocking_closed && same_key;
             let key = if same_key { "k" } else { "other" };
             prop_assert_eq!(counts(&view, &policy, key, &closed_ids), expected);
         }

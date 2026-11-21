@@ -156,7 +156,7 @@ pub(crate) fn plan(
 pub(crate) fn metrics_toml(kept: &SliceMetrics, issues: &[String]) -> String {
     let mut text = String::new();
     for (slice, numbers) in kept {
-        writeln!(text, "[{slice}]").ok();
+        writeln!(text, "[slices.{slice}]").ok();
         for (name, value) in numbers {
             writeln!(text, "{name} = {value}").ok();
         }
@@ -384,8 +384,30 @@ mod tests {
                 &planned.kept,
                 &["https://x/1".to_owned(), "https://x/2".to_owned()]
             ),
-            "[alpha]\nclone-ratio = 4\n\n[beta]\ncognitive-complexity = 31\n\n[complete]\nissues = [\"https://x/1\", \"https://x/2\"]\n"
+            "[slices.alpha]\nclone-ratio = 4\n\n[slices.beta]\ncognitive-complexity = 31\n\n[complete]\nissues = [\"https://x/1\", \"https://x/2\"]\n"
         );
+    }
+
+    #[test]
+    fn a_slice_named_complete_keeps_its_metrics_beside_the_issues() {
+        let records = [record("complete", "clone-ratio", 3, "2026-11-21T10:00:00Z")];
+        let planned = plan(
+            &goal(),
+            &roadmap(&["complete"]),
+            &[shipped("complete")],
+            &Findings::new(),
+            &records,
+        )
+        .expect("complete");
+        let text = metrics_toml(&planned.kept, &["https://x/1".to_owned()]);
+        let table: Table = toml::from_str(&text).expect("valid TOML, no table twice");
+        assert_eq!(
+            recorded_issues(&table),
+            Some(vec!["https://x/1".to_owned()])
+        );
+        let back = crate::pure::metric::parse_kept(goal(), &table).expect("kept");
+        assert_eq!(back.slices, planned.kept);
+        assert_eq!(back.slices.len(), 1);
     }
 
     #[test]

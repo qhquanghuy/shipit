@@ -91,7 +91,7 @@ complete_goal() {
   [ ! -e "$(store)/goals/demo" ]
   [ -f "$(store)/goals/w2/roadmap.v1.md" ]
   [ "$(find "$(store)/receipts" -type f | sort | xargs md5sum | md5sum)" = "$receipts" ]
-  [ "$(cat "$(store)/metrics/demo.toml")" = $'[alpha]\nclone-ratio = 3\n\n[beta]\nclone-ratio = 5\n\n[complete]\nissues = ["https://example.invalid/issues/1", "https://example.invalid/issues/2"]' ]
+  [ "$(cat "$(store)/metrics/demo.toml")" = $'[slices.alpha]\nclone-ratio = 3\n\n[slices.beta]\nclone-ratio = 5\n\n[complete]\nissues = ["https://example.invalid/issues/1", "https://example.invalid/issues/2"]' ]
   [ "$(cat "$GH_LOG")" = $'issue create demo/alpha: second-opinion F1: a problem\nissue create demo/beta: informed-review F1: a problem' ]
   diff <({ grep -v '/goals/demo/' <<<"$before_files"; printf '%s\n' "$(store)/metrics/demo.toml"; } | sort) <(find "$(store)" -type f | sort)
   [ -n "$(git branch --list slice/demo/alpha)" ]
@@ -157,4 +157,18 @@ complete_goal() {
   [ ! -e "$GH_LOG" ]
   [ "$(cat "$(store)/metrics/demo.toml")" = "[complete]
 issues = []" ]
+}
+
+@test "complete: a slice named complete keeps its metrics beside the issues" {
+  a_finished_goal
+  sed -i 's/gamma/complete/g' "$(store)/goals/demo/roadmap.v1.md"
+  ship_entry complete
+  a_metric complete clone-ratio 7
+  complete_goal demo --confirm
+  [ "$status" -eq 0 ]
+  [ "$(grep -c '^\[complete\]' "$(store)/metrics/demo.toml")" -eq 1 ]
+  grep -q '^\[slices.complete\]' "$(store)/metrics/demo.toml"
+  run --separate-stderr "$SHIPIT_BIN" metric clone-ratio 1
+  [ "$status" -eq 0 ]
+  [ -z "$stderr" ]
 }

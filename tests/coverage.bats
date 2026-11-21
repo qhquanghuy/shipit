@@ -153,3 +153,20 @@ run_check() {
   [[ $stderr == *"cannot run /nonexistent/program"* ]]
   [[ $stderr == *"the test command failed (exit 127)"* ]]
 }
+
+@test "coverage: in CI, only this branch's own map counts, not another map added or an older one removed" {
+  bare_repo true
+  commit_map v1 old ''
+  git checkout -q -b work
+  git rm -q .shipit/coverage/v1/old.toml
+  commit_map zz y ''
+  git checkout -q --detach
+  SHIPIT_BRANCH=slice/v1/x run_check
+  [ "$status" -eq 1 ]
+  [[ $stderr == *"this change adds no done-when map: commit .shipit/coverage/v1/x.toml (see shipit help coverage)"* ]]
+  [ ! -e "$(store)/receipts/check" ]
+  commit_map v1 x ''
+  SHIPIT_BRANCH=slice/v1/x run_check
+  [ "$status" -eq 0 ]
+  [[ $output == *"coverage v1/x: no done-when item"* ]]
+}

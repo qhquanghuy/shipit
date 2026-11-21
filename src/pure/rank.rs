@@ -45,7 +45,7 @@ pub(crate) fn parse_worker(text: &str) -> Option<Worker> {
         None => None,
     };
     let (model, effort) = head.split_once(':')?;
-    let plain = !model.is_empty() && !model.contains(char::is_whitespace);
+    let plain = !model.is_empty() && !model.contains(|c: char| c.is_whitespace() || c.is_control());
     plain.then_some(Worker {
         model: model.to_owned(),
         effort: Effort::parse(effort)?,
@@ -147,6 +147,7 @@ pub(crate) fn rank_verdict(
     author: &Worker,
     by: &Worker,
     fresh: bool,
+    role: (&str, &Role),
 ) -> Result<(Rank, Rank, Basis), Failure> {
     let author_rank = rank_of(policy, author)?;
     let by_rank = rank_of(policy, by)?;
@@ -185,14 +186,36 @@ pub(crate) fn rank_verdict(
         (Ordering::Equal, Ordering::Equal) if fresh => Some(Basis::Fresh),
         (Ordering::Equal, Ordering::Equal | Ordering::Less) | (Ordering::Less, _) => None,
     };
-    match basis {
-        Some(basis) => Ok((author_rank, by_rank, basis)),
-        None => Err(Failure::no(format!(
+    let Some(basis) = basis else {
+        return Err(Failure::no(format!(
             "{by} does not rank above {author} (tier {}, effort {}): use a higher tier or effort",
             author_rank.tier,
             effort_name(author_rank.effort)
-        ))),
+        )));
+    };
+    // A false `--author` gains nothing: the reviewer also outranks the setup's own role.
+    if !outranks_role(&by_rank, role) {
+        return Err(Failure::no(format!(
+            "{by} does not rank above the setup's {} ({}): use a higher tier or effort",
+            role.0,
+            role_text(role.1)
+        )));
     }
+    Ok((author_rank, by_rank, basis))
+}
+
+fn role_text(role: &Role) -> String {
+    let tier = u64::from(&role.tier);
+    match role.effort {
+        Some(effort) => format!("tier {tier}, effort {}", effort_name(effort)),
+        None => format!("tier {tier}"),
+    }
+}
+
+// A role without an effort is any effort of its tier, so only a higher tier is above it.
+fn outranks_role(by: &Rank, (_, role): (&str, &Role)) -> bool {
+    let tier = u64::from(&role.tier);
+    by.tier > tier || (by.tier == tier && role.effort.is_some_and(|effort| by.effort > effort))
 }
 
 // The author is the setup's role when it has the role's tier, and its effort when the role sets one.
@@ -246,6 +269,27 @@ mod tests {
         failure.exit.code()
     }
 
+    // The verdict for a work review: the setup's maker is the role.
+    fn judged(
+        policy: &Setup,
+        author: &Worker,
+        by: &Worker,
+        fresh: bool,
+    ) -> Result<(Rank, Rank, Basis), Failure> {
+        rank_verdict(
+            policy,
+            author,
+            by,
+            fresh,
+            ("maker", &policy.agents.roles.maker),
+        )
+    }
+
+    // `by` is above the role `(tier, effort)`.
+    fn above(by: (u64, usize), role: (u64, usize)) -> bool {
+        by > role
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig {
             failure_persistence: None,
@@ -253,22 +297,65 @@ mod tests {
         })]
 
         #[test]
-        fn rank_is_tier_then_effort(author in some_worker(), by in some_worker()) {
-            let policy = setup_with(&[]);
+        fn rank_is_tier_then_effort(
+            author in some_worker(),
+            by in some_worker(),
+            role_tier in 1..=4_i64,
+            role_effort in 0..EFFORTS.len(),
+        ) {
+            let policy = setup_with(&[
+                ("agents.roles.maker.tier", Value::Integer(role_tier)),
+                ("agents.roles.maker.effort", Value::String(EFFORTS[role_effort].to_owned())),
+            ]);
             let (author_model, author_effort) = author.split_once(':').expect("a pair");
             let (by_model, by_effort) = by.split_once(':').expect("a pair");
             let author_key = (tier_of(author_model), effort_rank(author_effort));
             let by_key = (tier_of(by_model), effort_rank(by_effort));
-            let verdict = rank_verdict(&policy, &worker(&author), &worker(&by), false);
-            match by_key.cmp(&author_key) {
-                Ordering::Greater => {
-                    let expected = if by_key.0 > author_key.0 { Basis::Tier } else { Basis::Effort };
-                    prop_assert_eq!(verdict.map(|(_, _, basis)| basis), Ok(expected));
-                }
-                Ordering::Equal | Ordering::Less => {
-                    prop_assert_eq!(verdict.map_err(|failure| exit_of(&failure)), Err(1));
-                }
+            let role_key = (u64::try_from(role_tier).expect("a tier"), role_effort);
+            let verdict = judged(&policy, &worker(&author), &worker(&by), false);
+            if by_key > author_key && above(by_key, role_key) {
+                let expected = if by_key.0 > author_key.0 { Basis::Tier } else { Basis::Effort };
+                prop_assert_eq!(verdict.map(|(_, _, basis)| basis), Ok(expected));
+            } else {
+                prop_assert_eq!(verdict.map_err(|failure| exit_of(&failure)), Err(1));
             }
+        }
+
+        #[test]
+        fn a_plan_reviewer_at_or_below_the_planners_rank_is_refused(
+            by in some_worker(),
+            planner_tier in 1..=4_i64,
+            planner_effort in 0..EFFORTS.len(),
+            author in some_worker(),
+        ) {
+            let policy = setup_with(&[
+                ("agents.roles.planner.tier", Value::Integer(planner_tier)),
+                ("agents.roles.planner.effort", Value::String(EFFORTS[planner_effort].to_owned())),
+            ]);
+            let (by_model, by_effort) = by.split_once(':').expect("a pair");
+            let by_key = (tier_of(by_model), effort_rank(by_effort));
+            let planner_key = (u64::try_from(planner_tier).expect("a tier"), planner_effort);
+            let verdict = rank_verdict(
+                &policy,
+                &worker(&author),
+                &worker(&by),
+                false,
+                ("planner", &policy.agents.roles.planner),
+            );
+            // Whatever the author says, a reviewer that is not above the planner never passes.
+            if !above(by_key, planner_key) {
+                let failure = verdict.expect_err("not above the planner");
+                prop_assert_eq!(exit_of(&failure), 1);
+            }
+            // The lowest possible author gains nothing either.
+            let lowest = rank_verdict(
+                &policy,
+                &worker("haiku:low"),
+                &worker(&by),
+                false,
+                ("planner", &policy.agents.roles.planner),
+            );
+            prop_assert_eq!(lowest.is_ok(), above(by_key, planner_key) && by_key > (1, 0));
         }
 
         #[test]
@@ -281,7 +368,7 @@ mod tests {
             let policy = setup_with(&[]);
             let loud = format!("{}:{high}", MODELS[model]);
             let (author, by) = if first { (loud, other) } else { (other, loud) };
-            let verdict = rank_verdict(&policy, &worker(&author), &worker(&by), false);
+            let verdict = judged(&policy, &worker(&author), &worker(&by), false);
             let failure = verdict.expect_err("above the cap");
             prop_assert_eq!(exit_of(&failure), 1);
             prop_assert!(failure.message.contains("is above the setup's effort cap (high)"));
@@ -290,13 +377,19 @@ mod tests {
         #[test]
         fn a_pass_with_the_same_real_model_and_effort_needs_fresh_top_tier_and_cap(
             same in some_worker(),
+            author_tag in any::<bool>(),
+            by_tag in any::<bool>(),
         ) {
             let policy = setup_with(&[]);
-            let one = worker(&same);
-            let plain = rank_verdict(&policy, &one, &one, false).expect_err("same worker");
+            // Only the setup's stand-in, `opus:high`, may carry a tier tag.
+            let tagged = |tag: bool| if tag && same == "opus:high" { format!("{same}@4") } else { same.clone() };
+            let (author, by) = (worker(&tagged(author_tag)), worker(&tagged(by_tag)));
+            let plain = judged(&policy, &author, &by, false).expect_err("same real model and effort");
             prop_assert_eq!(exit_of(&plain), 1);
-            let fresh = rank_verdict(&policy, &one, &one, true);
-            if same == "fable:high" {
+            prop_assert!(plain.message.contains("is the same model and effort as the author"));
+            let fresh = judged(&policy, &author, &by, true);
+            let both_stand_in = same == "opus:high" && author_tag && by_tag;
+            if both_stand_in || same == "fable:high" {
                 prop_assert_eq!(fresh.map(|(_, _, basis)| basis), Ok(Basis::Fresh));
             } else {
                 prop_assert_eq!(fresh.map_err(|failure| exit_of(&failure)), Err(2));
@@ -309,7 +402,7 @@ mod tests {
             by in prop_oneof![some_worker(), Just("opus:high@4".to_owned())],
         ) {
             let policy = setup_with(&[]);
-            let verdict = rank_verdict(&policy, &worker(&author), &worker(&by), true);
+            let verdict = judged(&policy, &worker(&author), &worker(&by), true);
             let at_the_top = |text: &str| text == "fable:high" || text == "opus:high@4";
             if at_the_top(&author) && at_the_top(&by) {
                 prop_assert_eq!(verdict.map(|(_, _, basis)| basis), Ok(Basis::Fresh));
@@ -324,7 +417,7 @@ mod tests {
                 .prop_map(|(model, effort)| format!("{}:{}", MODELS[model], EFFORTS[effort])),
         ) {
             let policy = setup_with(&[]);
-            let (_, by, basis) = rank_verdict(&policy, &worker(&author), &worker("opus:high@4"), false)
+            let (_, by, basis) = judged(&policy, &worker(&author), &worker("opus:high@4"), false)
                 .expect("a tier 4 stand-in is above tier 1 and 2");
             prop_assert_eq!((by.tier, by.stand_in, basis), (4, true, Basis::Tier));
         }
@@ -343,7 +436,7 @@ mod tests {
             let parsed = parse_worker(&text).expect("parses");
             prop_assert_eq!(parsed.stands_in, tier);
             prop_assert_eq!(parsed.to_string(), text);
-            for bad in [format!("{model}{}", names[effort]), format!("{model}:fast"), format!("{model}:high@x"), format!(":{}", names[effort])] {
+            for bad in [format!("{model}{}", names[effort]), format!("{model}:fast"), format!("{model}:high@x"), format!(":{}", names[effort]), format!("{model}\u{1b}[31m:{}", names[effort])] {
                 prop_assert_eq!(parse_worker(&bad), None);
             }
         }
@@ -355,13 +448,13 @@ mod tests {
             .replace("model = \"fable\"", "model = \"opus\"");
         let table = toml_table(text.as_bytes()).expect("toml");
         let policy = parse_setup(&table).expect("a valid setup");
-        let failure = rank_verdict(&policy, &worker("opus:low"), &worker("sonnet:low"), false)
+        let failure = judged(&policy, &worker("opus:low"), &worker("sonnet:low"), false)
             .expect_err("two tiers");
         assert_eq!(
             failure,
             Failure::usage("model \"opus\" is in several tiers")
         );
-        let none = rank_verdict(
+        let none = judged(
             &setup_with(&[]),
             &worker("gpt:low"),
             &worker("opus:low"),
@@ -377,11 +470,11 @@ mod tests {
     fn only_the_setups_stand_in_may_use_a_tier_tag() {
         let policy = setup_with(&[]);
         for text in ["opus:medium@4", "opus:high@3", "sonnet:high@4"] {
-            let failure = rank_verdict(&policy, &worker("haiku:low"), &worker(text), false)
+            let failure = judged(&policy, &worker("haiku:low"), &worker(text), false)
                 .expect_err("not a stand-in");
             assert_eq!(exit_of(&failure), 2, "{text}");
         }
-        let failure = rank_verdict(
+        let failure = judged(
             &policy,
             &worker("haiku:low"),
             &worker("opus:medium@4"),
@@ -399,7 +492,7 @@ mod tests {
         let policy = setup_with(&[]);
         let author = worker("sonnet:high");
         let (rank, _, _) =
-            rank_verdict(&policy, &author, &worker("fable:low"), false).expect("fable ranks above");
+            judged(&policy, &author, &worker("fable:low"), false).expect("fable ranks above");
         assert_eq!(
             role_notice("planner", &policy.agents.roles.planner, &author, &rank),
             Some(
@@ -407,15 +500,15 @@ mod tests {
             )
         );
         let planner = worker("opus:high");
-        let (rank, _, _) = rank_verdict(&policy, &planner, &worker("fable:low"), false)
-            .expect("fable ranks above");
+        let (rank, _, _) =
+            judged(&policy, &planner, &worker("fable:low"), false).expect("fable ranks above");
         assert_eq!(
             role_notice("planner", &policy.agents.roles.planner, &planner, &rank),
             None
         );
         let loose = setup_with(&[("agents.roles.reader.tier", Value::Integer(2))]);
         let (rank, _, _) =
-            rank_verdict(&loose, &author, &worker("fable:low"), false).expect("fable ranks above");
+            judged(&loose, &author, &worker("fable:low"), false).expect("fable ranks above");
         assert_eq!(
             role_notice("reader", &loose.agents.roles.reader, &author, &rank),
             None,

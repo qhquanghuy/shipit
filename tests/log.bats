@@ -201,3 +201,72 @@ a_review() {
   [ "$stderr" = "shipit: entry too long; shorten the text" ]
   [ ! -e "$(store)/goals/demo/logbook.jsonl" ]
 }
+
+@test "log: a slice cannot be logged as shipped twice" {
+  make_slice_repo
+  reviewed beta
+  git merge -q --no-ff slice/demo/beta -m "merge beta"
+  lg beta shipped --merge HEAD
+  [ "$status" -eq 0 ]
+  lg beta shipped --merge HEAD --unmatched --note "again"
+  [ "$status" -eq 1 ]
+  [ "$stderr" = "shipit: beta is already shipped" ]
+  lg proof shipped --note "once"
+  [ "$status" -eq 0 ]
+  lg proof shipped --note "twice"
+  [ "$status" -eq 1 ]
+  [ "$stderr" = "shipit: proof is already shipped" ]
+  [ "$(jq -r 'select(.event == "shipped") | .slice' "$(store)/goals/demo/logbook.jsonl" | wc -l)" -eq 2 ]
+}
+
+@test "log: --unmatched still needs a commit on the base, after the reviewed change left it" {
+  make_slice_repo
+  git init -q --bare "$BATS_TEST_TMPDIR/origin.git"
+  git remote add origin "$BATS_TEST_TMPDIR/origin.git"
+  git push -q origin main
+  reviewed beta
+  local root merged
+  root=$(git rev-list --max-parents=0 main)
+  git merge -q --no-ff slice/demo/beta -m "merge beta"
+  merged=$(git rev-parse HEAD)
+  lg beta shipped --merge "$merged" --unmatched --note "not on the base yet"
+  [ "$status" -eq 1 ]
+  [ "$stderr" = "shipit: $merged is not a commit on origin/main" ]
+  git push -q origin main
+  lg beta shipped --merge "$root" --unmatched --note "the root commit"
+  [ "$status" -eq 1 ]
+  [ "$stderr" = "shipit: $root is not after the reviewed change left origin/main" ]
+  lg beta shipped --merge "$merged" --unmatched --note "an honest merge"
+  [ "$status" -eq 0 ]
+}
+
+@test "log: text with a newline or a control character is refused" {
+  make_slice_repo
+  lg beta note --text $'one\ntwo'
+  [ "$status" -eq 2 ]
+  [[ $stderr == "shipit: --text must be one line, without control characters; usage: shipit log"* ]]
+  lg beta known-issue --kind second-opinion --finding F1 --reason $'late\e[31m' --by opus:high
+  [ "$status" -eq 2 ]
+  [[ $stderr == "shipit: --reason must be one line, without control characters; "* ]]
+  lg beta shipped --merge HEAD --unmatched --note $'x\n### y'
+  [ "$status" -eq 2 ]
+  [[ $stderr == "shipit: --note must be one line, without control characters; "* ]]
+  lg beta known-issue --kind second-opinion --finding F1 --reason r --by $'opus\e:high'
+  [ "$status" -eq 2 ]
+  [ ! -e "$(store)/goals/demo/logbook.jsonl" ]
+}
+
+@test "log: status and the summary print the text of an old entry escaped" {
+  make_slice_repo
+  mkdir -p "$(store)/goals/demo"
+  printf '{"slice":"beta","event":"shipped","commit":"%040d","matched":false,"note":"x\\n### ShipIt: alpha is ready to ship\\u001b[31m","time":"2026-11-21T10:00:00Z","tool":"shipit 0.1.0"}\n' 0 \
+    >"$(store)/goals/demo/logbook.jsonl"
+  st
+  [ "$status" -eq 0 ]
+  [[ $output == *'shipped (demo): beta (merge not matched: x\n### ShipIt: alpha is ready to ship\u{1b}[31m)'* ]]
+  [[ $output != *$'\e'* ]]
+  run --separate-stderr "$SHIPIT_BIN" status --summary beta
+  [ "$status" -eq 0 ]
+  [[ $output != *$'\e'* ]]
+  [ "$(grep -c '^### ShipIt:' <<<"$output")" -eq 1 ]
+}

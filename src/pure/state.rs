@@ -9,7 +9,7 @@ use crate::pure::logbook::{Entry, Logged, closed};
 use crate::pure::review::{ReceiptView, counts, open_findings};
 use crate::pure::roadmap::SliceName;
 use crate::pure::setup::Setup;
-use crate::pure::text::comma_list;
+use crate::pure::text::{comma_list, plain};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum State {
@@ -134,6 +134,8 @@ pub(crate) struct View {
     pub(crate) without_start: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) merge_note: Option<String>,
+    // What the receipts of this version claim that the setup does not bear out.
+    pub(crate) claims: Vec<String>,
     pub(crate) branch: Option<String>,
     pub(crate) test_drive: bool,
     pub(crate) meets: Vec<QualifiedDoneWhen>,
@@ -206,6 +208,7 @@ struct Judged {
     open_blocking: Vec<String>,
     rework: bool,
     tally: Counts,
+    claims: Vec<String>,
 }
 
 fn judge(slot: &Slot<'_>, facts: &Facts, policy: &Setup) -> Judged {
@@ -214,6 +217,7 @@ fn judge(slot: &Slot<'_>, facts: &Facts, policy: &Setup) -> Judged {
         open_blocking: Vec::new(),
         rework: false,
         tally: Counts::default(),
+        claims: Vec::new(),
     };
     let Some(receipt) = slot.receipt else {
         return judged;
@@ -229,6 +233,14 @@ fn judge(slot: &Slot<'_>, facts: &Facts, policy: &Setup) -> Judged {
     }
     judged.rework = receipt.is_rework();
     judged.counts = counts(receipt, policy, slot.key, &closed_ids);
+    if let Some(role) = receipt.not_the_role {
+        judged
+            .claims
+            .push(format!("{} author is not the setup's {role}", slot.kind));
+    }
+    if receipt.fresh {
+        judged.claims.push(format!("{} used --fresh", slot.kind));
+    }
     judged
 }
 
@@ -321,6 +333,10 @@ pub(crate) fn view(facts: &Facts, policy: &Policy<'_>) -> View {
     let open = [&plan, &informed, &second, &drive]
         .iter()
         .fold(Counts::default(), |all, judged| all.sum(judged.tally));
+    let claims: Vec<String> = [&plan, &informed, &second, &drive]
+        .iter()
+        .flat_map(|judged| judged.claims.iter().cloned())
+        .collect();
     let work_ok = informed.counts && second.counts && (!test_drive || drive.counts);
     let state = chain(facts, shipped, plan.counts, work_ok);
     let started = !shipped && matches!(facts.kind, Kind::Slice { .. }) && work.is_some();
@@ -373,6 +389,7 @@ pub(crate) fn view(facts: &Facts, policy: &Policy<'_>) -> View {
         started,
         without_start,
         merge_note: merge_note(&facts.entries),
+        claims,
         branch: work.map(|_| facts.branch.clone()),
         test_drive,
         meets: facts.meets.clone(),
@@ -532,6 +549,9 @@ fn goal_lines(goal: &GoalView, lines: &mut Vec<String>) {
         if !view.open.is_empty() {
             write!(notes, " Open: {}.", view.open.listed()).ok();
         }
+        if !view.claims.is_empty() {
+            write!(notes, " Claims: {}.", plain(&view.claims.join("; "))).ok();
+        }
         if view.without_start {
             notes.push_str(" Started without shipit start.");
         }
@@ -546,7 +566,7 @@ fn goal_lines(goal: &GoalView, lines: &mut Vec<String>) {
         .iter()
         .filter(|view| view.state == State::Shipped)
         .map(|view| match &view.merge_note {
-            Some(note) => format!("{} (merge not matched: {note})", view.name),
+            Some(note) => format!("{} (merge not matched: {})", view.name, plain(note)),
             None => view.name.to_string(),
         })
         .collect();
@@ -597,7 +617,7 @@ mod tests {
     use super::*;
     use crate::pure::finding::Outcome;
     use crate::pure::rank::parse_worker;
-    use crate::pure::review::Stored;
+    use crate::pure::review::{ReceiptKind, Stored};
     use crate::pure::testing::setup_with;
 
     fn name(text: &str) -> SliceName {
@@ -617,14 +637,16 @@ mod tests {
         }
     }
 
-    // A receipt that counts for `key`: an opus review of sonnet work.
+    // A receipt that counts for `key`: a fable review of sonnet work (above every role).
     fn counting(key: &str) -> ReceiptView {
         ReceiptView {
+            kind: ReceiptKind::InformedReview,
             key: key.to_owned(),
             result: Outcome::Approve,
             author: parse_worker("sonnet:high").expect("a worker"),
-            by: parse_worker("opus:high").expect("a worker"),
+            by: parse_worker("fable:high").expect("a worker"),
             fresh: false,
+            not_the_role: None,
             findings: Vec::new(),
         }
     }
@@ -833,6 +855,7 @@ mod tests {
                         started: *started,
                         without_start: false,
                         merge_note: None,
+                        claims: Vec::new(),
                         branch: None,
                         test_drive: false,
                         meets: Vec::new(),
@@ -879,6 +902,7 @@ mod tests {
                 started,
                 without_start: false,
                 merge_note: None,
+                claims: Vec::new(),
                 branch: started.then(|| "slice/demo/beta".to_owned()),
                 test_drive: false,
                 meets: Vec::new(),
@@ -1076,6 +1100,46 @@ mod tests {
             judged(&blocked, &[]).next,
             "lead: fix-round limit (2) reached: decide, then record it with shipit log beta note --text <decision> --goal demo"
         );
+    }
+
+    #[test]
+    fn a_claimed_author_or_a_fresh_pass_shows_in_the_line() {
+        let mut claimed = facts(&Given {
+            plan_file: true,
+            plan_ok: true,
+            made: true,
+            checked: true,
+            informed: true,
+            second: true,
+            drive: false,
+            test_drive: false,
+            shipped: false,
+        });
+        if let Some(work) = claimed.work.as_mut() {
+            if let Some(review) = work.informed.as_mut() {
+                review.not_the_role = Some("maker");
+            }
+            if let Some(review) = work.second.as_mut() {
+                review.fresh = true;
+            }
+        }
+        let seen = judged(&claimed, &[]);
+        assert_eq!(
+            seen.claims,
+            [
+                "informed-review author is not the setup's maker",
+                "second-opinion used --fresh",
+            ]
+        );
+        let shown = GoalView {
+            goal: goal(),
+            reviewed: true,
+            views: vec![seen],
+        };
+        let lines = render(&[&shown], &[], (1, 3), None);
+        assert!(lines.iter().any(|line| line.ends_with(
+            "Claims: informed-review author is not the setup's maker; second-opinion used --fresh. Started without shipit start."
+        )), "{lines:?}");
     }
 
     #[test]

@@ -286,3 +286,37 @@ PLAN=(--author opus:high --by fable:high --result approve)
   [ "$status" -eq 2 ]
   [ "$stderr" = "shipit: 'nonsense' is not a commit" ]
 }
+
+@test "receipt: a false --author gains nothing: the reviewer also outranks the setup's role" {
+  make_slice_repo
+  write_build_plan beta "the plan"
+  rec plan-review beta --author haiku:low --by sonnet:low --result approve
+  [ "$status" -eq 1 ]
+  [ "$stderr" = "shipit: sonnet:low does not rank above the setup's planner (tier 3, effort high): use a higher tier or effort" ]
+  rec plan-review beta --author haiku:low --by opus:high --result approve
+  [ "$status" -eq 1 ]
+  [[ $stderr == *"does not rank above the setup's planner (tier 3, effort high)"* ]]
+  make_work slice/demo/beta 1
+  check_here
+  rec second-opinion beta --author haiku:low --by sonnet:high --result approve
+  [ "$status" -eq 1 ]
+  [ "$stderr" = "shipit: sonnet:high does not rank above the setup's maker (tier 2, effort high): use a higher tier or effort" ]
+  [ ! -e "$(store)/receipts/review" ]
+  [ ! -e "$(store)/receipts/plan-review" ]
+}
+
+@test "receipt: --commit must be on this slice's branch" {
+  make_slice_repo
+  make_work slice/demo/beta 1
+  check_here
+  local other
+  git checkout -q main
+  make_work slice/demo/gamma 1
+  check_here
+  other=$(git rev-parse HEAD)
+  git checkout -q slice/demo/beta
+  rec second-opinion beta --author sonnet:high --by opus:high --result approve --commit "$other"
+  [ "$status" -eq 1 ]
+  [ "$stderr" = "shipit: $other is not on slice/demo/beta" ]
+  [ ! -e "$(store)/receipts/review" ]
+}

@@ -200,12 +200,20 @@ fn work_target(
         }
     }
     let branch = slice_branch(goal, &slice);
+    let branch_head = branch_tip(git, &branch)
+        .ok_or_else(|| Failure::usage(format!("branch {branch} not found")))?;
+    // A review of another slice's commit must not stand for this slice's work.
     let commit = match &request.commit {
-        Some(rev) => git
-            .commit_of(OsStr::new(rev))
-            .ok_or_else(|| Failure::usage(format!("'{rev}' is not a commit")))?,
-        None => branch_tip(git, &branch)
-            .ok_or_else(|| Failure::usage(format!("branch {branch} not found")))?,
+        Some(rev) => {
+            let commit = git
+                .commit_of(OsStr::new(rev))
+                .ok_or_else(|| Failure::usage(format!("'{rev}' is not a commit")))?;
+            if !git.is_ancestor(&commit, &branch_head) {
+                return Err(Failure::no(format!("{rev} is not on {branch}")));
+            }
+            commit
+        }
+        None => branch_head,
     };
     let tip = tip_of(git, common, commit)?;
     let checked = tip.checked.ok_or_else(|| {
@@ -265,8 +273,13 @@ pub(crate) fn run(
             &policy.agents.roles.maker,
         ),
     };
-    let (author_rank, by_rank, basis) =
-        rank_verdict(&policy, &request.author, &request.by, request.fresh)?;
+    let (author_rank, by_rank, basis) = rank_verdict(
+        &policy,
+        &request.author,
+        &request.by,
+        request.fresh,
+        (role, role_of),
+    )?;
     let notice = role_notice(role, role_of, &request.author, &author_rank);
     if let Some(notice) = &notice {
         writeln!(err, "shipit: {notice}").ok();

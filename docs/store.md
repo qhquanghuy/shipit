@@ -102,14 +102,14 @@ build plans and logbook, is deleted after it is written. Receipts and records ar
 stay.
 
 ```toml
-[alpha]
+[slices.alpha]
 clone-ratio = 3
 
 [complete]
 issues = ["https://example.invalid/issues/1"]
 ```
 
-Each `[<slice>]` table holds numbers only, the newest record of each metric of that slice. `[complete]`
+Each `[slices.<slice>]` table holds numbers only, the newest record of each metric of that slice. `[complete]`
 holds the addresses of the GitHub issues made for the goal's open known issues, in order; it is written
 before anything is deleted, so a rerun after a failure creates only the missing ones. A goal name is
 never used again: `shipit start` refuses a goal whose `metrics/<goal>.toml` exists.

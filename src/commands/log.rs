@@ -15,7 +15,7 @@ use crate::pure::failure::Failure;
 use crate::pure::flags::{goal_flag, once, unknown_argument, worker_flag};
 use crate::pure::goal::GoalName;
 use crate::pure::goal_pick::{element_named, which_goal};
-use crate::pure::logbook::{Entry, Logged, closed, line};
+use crate::pure::logbook::{Entry, Logged, closed, is_shipped_by, line};
 use crate::pure::receipt::Oid;
 use crate::pure::review::{ReceiptKind, stored_findings, tool};
 use crate::pure::roadmap::{Element, SliceName};
@@ -390,12 +390,39 @@ fn close_checks(
     }
 }
 
+fn refuse_second_shipping(entries: &[Logged], slice: &SliceName) -> Result<(), Failure> {
+    if is_shipped_by(entries, slice) {
+        return Err(Failure::no(format!("{slice} is already shipped")));
+    }
+    Ok(())
+}
+
+// With no patch id match the owner's word stands, but the commit must still come after the point
+// where the reviewed change left the base: the root commit is nobody's merge of it.
+fn refuse_a_commit_before_the_change(
+    git: &Git,
+    base_ref: &BaseRef,
+    commit: &Oid,
+    (typed, reviewed): (&str, &str),
+) -> Result<(), Failure> {
+    let fork = Oid::parse(reviewed)
+        .zip(git.commit_of(OsStr::new(&base_ref.full())))
+        .and_then(|(reviewed, tip)| merge_base(git, &reviewed, &tip));
+    match fork {
+        Some(fork) if git.is_ancestor(commit, &fork) => Err(Failure::no(format!(
+            "{typed} is not after the reviewed change left {base_ref}"
+        ))),
+        Some(_) | None => Ok(()),
+    }
+}
+
 fn shipped_merge(
     git: &Git,
     base_ref: &BaseRef,
     (slice, entries): (&SliceName, &[Logged]),
     (typed, unmatched, note): (&str, bool, Option<String>),
 ) -> Result<Entry, Failure> {
+    refuse_second_shipping(entries, slice)?;
     let (key, reviewed) = newest_review(entries, slice).ok_or_else(|| {
         Failure::no(format!(
             "{slice} has no review receipt: nothing was reviewed to ship"
@@ -409,7 +436,9 @@ fn shipped_merge(
             "{typed} is already named by {other}'s shipped entry"
         )));
     }
-    if !unmatched && !is_the_reviewed_change(git, &commit, (key, reviewed))? {
+    if unmatched {
+        refuse_a_commit_before_the_change(git, base_ref, &commit, (typed, reviewed))?;
+    } else if !is_the_reviewed_change(git, &commit, (key, reviewed))? {
         return Err(Failure::no(format!(
             "{typed} is not the merge of {slice}'s reviewed change into {base_ref}"
         )));
@@ -473,7 +502,10 @@ fn entry_for(
                 "\"{slice}\" is a proof step: it has no receipts"
             )));
         }
-        (Event::ShippedProof { note }, Element::Proof(_)) => Entry::ShippedProof { note },
+        (Event::ShippedProof { note }, Element::Proof(_)) => {
+            refuse_second_shipping(entries, slice)?;
+            Entry::ShippedProof { note }
+        }
         (Event::ShippedProof { .. }, Element::Slice(_)) => {
             return Err(Failure::usage(format!(
                 "\"{slice}\" is a slice: it ships with --merge <commit>"

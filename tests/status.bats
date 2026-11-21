@@ -255,3 +255,16 @@ READY="owner: ship it, then shipit log alpha shipped --merge <merge commit> --go
   st --json
   [ "$(jq -c '.goals[0].slices[] | select(.name == "beta") | .meets' <<<"$output")" = '["demo:DW2"]' ]
 }
+
+@test "status: a claimed author or a fresh pass shows in the line" {
+  make_slice_repo
+  plan_ready alpha
+  make_work slice/demo/alpha 1
+  check_here
+  "$SHIPIT_BIN" receipt informed-review alpha --author opus:high --by fable:high --result approve
+  "$SHIPIT_BIN" receipt second-opinion alpha --author fable:high --by fable:high --result approve --fresh
+  st
+  [[ $(the_line alpha) == *"Claims: informed-review author is not the setup's maker; second-opinion author is not the setup's maker; second-opinion used --fresh."* ]]
+  st --json
+  [ "$(jq -c '.goals[0].slices[] | select(.name == "alpha") | .claims' <<<"$output")" = '["informed-review author is not the setup'"'"'s maker","second-opinion author is not the setup'"'"'s maker","second-opinion used --fresh"]' ]
+}

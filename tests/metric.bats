@@ -55,7 +55,7 @@ other_slices() {
   mkdir -p "$(store)/metrics"
   local i
   for i in $(seq 1 10); do
-    printf '[s%s]\nclone-ratio = %s\n' "$i" "$i"
+    printf '[slices.s%s]\nclone-ratio = %s\n' "$i" "$i"
   done >"$(store)/metrics/old.toml"
   printf '[complete]\nissues = []\n' >>"$(store)/metrics/old.toml"
   metric clone-ratio 16

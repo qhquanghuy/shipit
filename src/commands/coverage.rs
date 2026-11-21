@@ -75,7 +75,6 @@ fn local_check(
     git: &Git,
     branch: &str,
     maps: &[(GoalName, SliceName, CoverageMap)],
-    added: &[(GoalName, SliceName)],
 ) -> Result<(), Failure> {
     let Some((goal, slice)) = parse_slice_branch(branch) else {
         return Ok(());
@@ -104,13 +103,7 @@ fn local_check(
             let block = toml_block(&text, COVERAGE_HEADING).ok().flatten()?;
             parse_map(&toml_table(block.as_bytes()).ok()?).ok()
         });
-    let problems = local_problems(
-        (&goal, &slice),
-        own.unwrap_or(&empty),
-        &found.meets,
-        plan_block.as_ref(),
-        added,
-    );
+    let problems = local_problems(own.unwrap_or(&empty), &found.meets, plan_block.as_ref());
     if problems.is_empty() {
         Ok(())
     } else {
@@ -158,19 +151,19 @@ pub(crate) fn run(
     }
 
     let changes = changed_with_status(&git, &env.merge_base, OsStr::new(HEAD))?;
-    let added = match map_rule(&changes) {
-        MapRule::NotNeeded => Vec::new(),
-        MapRule::Added(added) => added,
+    let own = parse_slice_branch(shown);
+    match map_rule(&changes, own.as_ref().map(|(goal, slice)| (goal, slice))) {
+        MapRule::NotNeeded | MapRule::Added => {}
         MapRule::Missing => {
-            let path = parse_slice_branch(shown).map_or_else(
+            let path = own.as_ref().map_or_else(
                 || ".shipit/coverage/<goal>/<slice>.toml".to_owned(),
-                |(goal, slice)| map_path(&goal, &slice),
+                |(goal, slice)| map_path(goal, slice),
             );
             return Err(Failure::no(format!(
                 "this change adds no done-when map: commit {path} (see shipit help coverage)"
             )));
         }
-    };
+    }
     let maps = committed_maps(&git)?;
     let now: BTreeSet<String> = maps
         .iter()
@@ -188,7 +181,7 @@ pub(crate) fn run(
             problems.join("\n")
         ))
     })?;
-    local_check(&git, shown, &maps, &added)?;
+    local_check(&git, shown, &maps)?;
 
     let tree = git.tree_of(OsStr::new(HEAD))?;
     let store = store_dir(&git.common_dir()?);

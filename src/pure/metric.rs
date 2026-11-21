@@ -120,18 +120,24 @@ fn number(value: &toml::Value) -> Option<MetricValue> {
     MetricValue::parse(&text)
 }
 
-// The `[complete]` table holds the issues made on the way out, which are text and not numbers.
+// The numbers are under `[slices.<name>]`, so that no slice name can meet `[complete]`, which
+// holds the issues made on the way out (text, not numbers). Any other key is not a metrics file.
 pub(crate) fn parse_kept(goal: GoalName, table: &Table) -> Option<KeptMetrics> {
     let mut slices = SliceMetrics::new();
     for (key, value) in table {
-        if key == "complete" {
-            continue;
+        match key.as_str() {
+            "complete" => {}
+            "slices" => {
+                for (slice, kept) in value.as_table()? {
+                    let mut numbers = BTreeMap::new();
+                    for (name, found) in kept.as_table()? {
+                        numbers.insert(MetricName::parse(name)?, number(found)?);
+                    }
+                    slices.insert(SliceName::parse(slice)?, numbers);
+                }
+            }
+            _ => return None,
         }
-        let mut numbers = BTreeMap::new();
-        for (name, kept) in value.as_table()? {
-            numbers.insert(MetricName::parse(name)?, number(kept)?);
-        }
-        slices.insert(SliceName::parse(key)?, numbers);
     }
     Some(KeptMetrics { goal, slices })
 }
@@ -274,12 +280,12 @@ mod tests {
     #[test]
     fn a_kept_file_reads_its_slice_tables_and_skips_the_issues() {
         let table: Table = toml::from_str(
-            "[alpha]\nclone-ratio = 2.5\ncognitive-complexity = 31\n[complete]\nissues = [\"u\"]\n",
+            "[slices.alpha]\nclone-ratio = 2.5\ncognitive-complexity = 31\n[complete]\nissues = [\"u\"]\n",
         )
         .expect("toml");
         let kept = parse_kept(GoalName::parse("v1").expect("a goal"), &table).expect("kept");
         assert_eq!(kept.slices.len(), 1);
-        let bad: Table = toml::from_str("[alpha]\nnote = \"text\"\n").expect("toml");
+        let bad: Table = toml::from_str("[slices.alpha]\nnote = \"text\"\n").expect("toml");
         assert_eq!(
             parse_kept(GoalName::parse("v1").expect("a goal"), &bad),
             None

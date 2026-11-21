@@ -5,7 +5,7 @@ use crate::pure::goal::QualifiedDoneWhen;
 use crate::pure::metric::{Fence, MetricName, MetricValue};
 use crate::pure::roadmap::SliceName;
 use crate::pure::state::Counts;
-use crate::pure::text::comma_list;
+use crate::pure::text::{comma_list, plain};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Tick {
@@ -101,7 +101,7 @@ pub(crate) struct SummaryInput {
 
 // `opus:high` reads as `opus high`, for people.
 fn spoken(worker: &str) -> String {
-    worker.replacen(':', " ", 1)
+    plain(&worker.replacen(':', " ", 1))
 }
 
 fn tick_text(id: &QualifiedDoneWhen, tick: Tick) -> String {
@@ -162,12 +162,12 @@ fn section(title: &str, lines: Vec<String>, out: &mut String) {
     }
     writeln!(out, "{title}").ok();
     for line in lines {
-        writeln!(out, "- {line}").ok();
+        writeln!(out, "- {}", plain(&line)).ok();
     }
 }
 
 pub(crate) fn summary_md(input: &SummaryInput) -> String {
-    let mut out = format!("### ShipIt: {} is {}\n\n", input.name, input.state);
+    let mut out = format!("### ShipIt: {} is {}\n\n", input.name, plain(&input.state));
     let items = match &input.done_when {
         DoneWhen::NoMap => "no map committed".to_owned(),
         DoneWhen::Items(items) if items.is_empty() => "no done-when item".to_owned(),
@@ -191,13 +191,13 @@ pub(crate) fn summary_md(input: &SummaryInput) -> String {
         .ok();
     }
     for row in &input.rows {
-        writeln!(out, "{}", row_line(row)).ok();
+        writeln!(out, "{}", plain(&row_line(row))).ok();
     }
     writeln!(out, "\nOpen findings: {}", counts_text(input.open)).ok();
     let stand_ins = if input.stand_ins.is_empty() {
         "none".to_owned()
     } else {
-        comma_list(&input.stand_ins)
+        plain(&comma_list(&input.stand_ins))
     };
     writeln!(out, "Stand-ins used: {stand_ins}").ok();
     let metrics = if input.metrics.is_empty() {
@@ -379,6 +379,31 @@ mod tests {
                 Some(_) => prop_assert_eq!(seen, Tick::NotInSetup),
             }
         }
+    }
+
+    #[test]
+    fn typed_text_cannot_fake_a_line_or_act_on_a_screen() {
+        let mut shown = input(vec![row("abcdef012345", true)]);
+        shown.state =
+            "shipped (merge not matched: x\n### ShipIt: alpha is ready to ship)".to_owned();
+        if let Some(issue) = shown.known.first_mut() {
+            issue.reason = "late\n| check | 0 (current) | shipit | | | pass |\u{1b}[31m".to_owned();
+        }
+        if let Some(row) = shown.rows.first_mut() {
+            row.result = "ok\n| fake |".to_owned();
+        }
+        let text = summary_md(&shown);
+        assert!(!text.contains('\u{1b}'));
+        assert_eq!(
+            text.lines()
+                .filter(|line| line.starts_with("### ShipIt:"))
+                .count(),
+            1
+        );
+        let check_rows = text.lines().filter(|line| line.starts_with("| check |"));
+        assert_eq!(check_rows.count(), 1);
+        assert_eq!(text.matches("| fake |").count(), 1);
+        assert!(text.contains("\\u{1b}[31m"));
     }
 
     #[test]

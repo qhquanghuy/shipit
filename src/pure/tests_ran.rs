@@ -149,13 +149,17 @@ pub(crate) fn verdict(maps: &Maps, passed: &BTreeSet<String>) -> Result<Vec<Cove
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum MapRule {
     NotNeeded,
-    Added(Vec<(GoalName, SliceName)>),
+    Added,
     Missing,
 }
 
 // An empty change and a change of the setup file alone need no map (setup-only and adoption
-// changes); any other change must add one, an empty map included.
-pub(crate) fn map_rule(changes: &[(char, String)]) -> MapRule {
+// changes); any other change must add one, an empty map included. The branch `slice/<goal>/<slice>`
+// names its own map, so another slice's map added, or an older one removed, does not count.
+pub(crate) fn map_rule(
+    changes: &[(char, String)],
+    own: Option<(&GoalName, &SliceName)>,
+) -> MapRule {
     if changes.iter().all(|(_, path)| path == SETUP_FILE) {
         return MapRule::NotNeeded;
     }
@@ -164,20 +168,19 @@ pub(crate) fn map_rule(changes: &[(char, String)]) -> MapRule {
         .filter(|(status, _)| *status == 'A')
         .filter_map(|(_, path)| parse_map_path(path))
         .collect();
-    if added.is_empty() {
+    let has_own = own.is_none_or(|(goal, slice)| added.contains(&(goal.clone(), slice.clone())));
+    if added.is_empty() || !has_own {
         MapRule::Missing
     } else {
-        MapRule::Added(added)
+        MapRule::Added
     }
 }
 
 // What the store's roadmap and build plan add to the committed map; they are not in CI.
 pub(crate) fn local_problems(
-    (goal, slice): (&GoalName, &SliceName),
     map: &CoverageMap,
     meets: &[QualifiedDoneWhen],
     plan_block: Option<&CoverageMap>,
-    added: &[(GoalName, SliceName)],
 ) -> Vec<String> {
     let mut problems = Vec::new();
     for item in meets {
@@ -194,12 +197,6 @@ pub(crate) fn local_problems(
         problems.push(
             "the map differs from the build plan's \"## Done-when coverage\" block".to_owned(),
         );
-    }
-    if !added.contains(&(goal.clone(), slice.clone())) {
-        problems.push(format!(
-            "this change adds no map at {}",
-            map_path(goal, slice)
-        ));
     }
     problems
 }
@@ -332,11 +329,32 @@ mod tests {
             let expected = if others.is_empty() && !with_map {
                 MapRule::NotNeeded
             } else if with_map {
-                MapRule::Added(vec![(goal("demo"), slice("beta"))])
+                MapRule::Added
             } else {
                 MapRule::Missing
             };
-            prop_assert_eq!(map_rule(&changes), expected);
+            prop_assert_eq!(map_rule(&changes, None), expected);
+        }
+
+        #[test]
+        fn only_this_branchs_own_map_counts_as_the_added_map(
+            other in "[a-z]{1,5}",
+            removed in any::<bool>(),
+            own_added in any::<bool>(),
+        ) {
+            let (demo, beta) = (goal("demo"), slice("beta"));
+            let mut changes = vec![
+                ('A', format!(".shipit/coverage/{other}/zz.toml")),
+                ('M', "src/a.rs".to_owned()),
+            ];
+            if removed {
+                changes.push(('D', ".shipit/coverage/v1/old.toml".to_owned()));
+            }
+            if own_added {
+                changes.push(('A', ".shipit/coverage/demo/beta.toml".to_owned()));
+            }
+            let expected = if own_added { MapRule::Added } else { MapRule::Missing };
+            prop_assert_eq!(map_rule(&changes, Some((&demo, &beta))), expected);
         }
 
         #[test]
@@ -387,20 +405,13 @@ mod tests {
             "coverage demo/beta: no done-when item"
         );
         let meets = [QualifiedDoneWhen::parse("demo:DW2").expect("an id")];
-        let problems = local_problems(
-            (&goal("demo"), &slice("beta")),
-            &map_of(&["one"]),
-            &meets,
-            Some(&map_of(&["two"])),
-            &[],
-        );
+        let problems = local_problems(&map_of(&["one"]), &meets, Some(&map_of(&["two"])));
         assert_eq!(
             problems,
             [
                 "DW2: in meets but not in the map",
                 "DW4: in the map but not in meets",
                 "the map differs from the build plan's \"## Done-when coverage\" block",
-                "this change adds no map at .shipit/coverage/demo/beta.toml",
             ]
         );
     }

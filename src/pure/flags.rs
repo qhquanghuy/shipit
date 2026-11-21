@@ -4,15 +4,24 @@ use crate::pure::failure::Failure;
 use crate::pure::goal::GoalName;
 use crate::pure::rank::{Worker, parse_worker};
 
-// The word after a flag is taken whatever it starts with, but it must be text and not empty.
+// The word after a flag is taken whatever it starts with, but it must be text, not empty, and one
+// line without control characters (the check findings use), so that it cannot fake a line of
+// status or a terminal escape later.
 pub(crate) fn take_value<'a>(
     flag: &str,
     next: Option<&'a OsString>,
     usage: &str,
 ) -> Result<&'a str, Failure> {
-    next.and_then(|value| value.to_str())
+    let value = next
+        .and_then(|value| value.to_str())
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| Failure::usage(format!("{flag} needs a value; {usage}")))
+        .ok_or_else(|| Failure::usage(format!("{flag} needs a value; {usage}")))?;
+    if value.chars().any(char::is_control) {
+        return Err(Failure::usage(format!(
+            "{flag} must be one line, without control characters; {usage}"
+        )));
+    }
+    Ok(value)
 }
 
 pub(crate) fn once(
@@ -73,7 +82,7 @@ mod tests {
         })]
 
         #[test]
-        fn a_flag_takes_the_next_word_and_only_once(word in ".{1,10}", other in ".{1,10}") {
+        fn a_flag_takes_the_next_word_and_only_once(word in "\\PC{1,10}", other in "\\PC{1,10}") {
             let mut slot = None;
             let first = OsString::from(&word);
             prop_assert_eq!(once(&mut slot, "--by", Some(&first), USAGE), Ok(()));
@@ -88,6 +97,25 @@ mod tests {
                 Err(Failure::usage(format!("--by needs a value; {USAGE}")))
             );
             prop_assert!(take_value("--by", Some(&OsString::new()), USAGE).is_err());
+        }
+
+        #[test]
+        fn a_value_with_a_control_character_is_refused(
+            before in "[a-z ]{0,5}",
+            control in "[\\x00-\\x1f\\x7f]",
+            after in "[a-z ]{0,5}",
+        ) {
+            let value = OsString::from(format!("{before}{control}{after}"));
+            let failure = take_value("--note", Some(&value), USAGE).expect_err("a control character");
+            prop_assert_eq!(
+                failure,
+                Failure::usage(format!(
+                    "--note must be one line, without control characters; {USAGE}"
+                ))
+            );
+            let mut slot = None;
+            prop_assert!(once(&mut slot, "--note", Some(&value), USAGE).is_err());
+            prop_assert_eq!(slot, None);
         }
 
         #[test]
