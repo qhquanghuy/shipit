@@ -6,15 +6,16 @@ use serde::Serialize;
 
 use crate::edge::files::read_text;
 use crate::pure::block::toml_block;
+use crate::pure::branch::{is_slice_branch, parse_slice_branch, slice_branch};
 use crate::pure::coverage_map::parse_map;
 use crate::pure::failure::Failure;
 use crate::pure::finding::{Finding, Outcome, ResultKind, outcome_problems, parse_finding};
-use crate::pure::goal::{QualifiedDoneWhen, goal_items};
+use crate::pure::goal::{GoalName, QualifiedDoneWhen, goal_items};
 use crate::pure::messages::{
-    self, FILE_PROBLEM, FINDINGS_USAGE, MAP_USAGE, NO_BLOCK, NOT_A_RESULT, NOT_TOML, ROADMAP_USAGE,
-    say,
+    self, BRANCH_USAGE, FILE_PROBLEM, FINDINGS_USAGE, MAP_USAGE, NO_BLOCK, NOT_A_RESULT, NOT_TOML,
+    ROADMAP_USAGE, say,
 };
-use crate::pure::roadmap::{Roadmap, SliceName, meets_problems, parse_roadmap, waves};
+use crate::pure::roadmap::{Element, Roadmap, SliceName, meets_problems, parse_roadmap, waves};
 use crate::pure::rules::invalid;
 use crate::pure::setup::toml_table;
 
@@ -36,6 +37,7 @@ const COVERAGE: &str = "## Done-when coverage";
 struct Printed<'a> {
     roadmap: &'a Roadmap,
     waves: Vec<Vec<&'a SliceName>>,
+    branches: Vec<String>,
     goal: Option<Vec<QualifiedDoneWhen>>,
 }
 
@@ -103,12 +105,45 @@ fn roadmap_command(args: &[OsString], out: &mut dyn Write) -> Result<(), Failure
             )
         }
     };
+    let branches = roadmap
+        .elements
+        .iter()
+        .filter_map(|element| match element {
+            Element::Slice(slice) => Some(slice_branch(&roadmap.goal, &slice.name)),
+            Element::Proof(_) => None,
+        })
+        .collect();
     print(
         out,
         &Printed {
             roadmap: &roadmap,
             waves: waves(&roadmap),
+            branches,
             goal,
+        },
+    )
+}
+
+#[derive(Serialize)]
+struct PrintedBranch {
+    is_slice_branch: bool,
+    goal: Option<GoalName>,
+    slice: Option<SliceName>,
+}
+
+fn branch_command(args: &[OsString], out: &mut dyn Write) -> Result<(), Failure> {
+    let [branch] = args else {
+        return Err(Failure::usage(BRANCH_USAGE));
+    };
+    let branch = branch.to_string_lossy();
+    let parsed = parse_slice_branch(&branch);
+    let (goal, slice) = parsed.map_or((None, None), |(goal, slice)| (Some(goal), Some(slice)));
+    print(
+        out,
+        &PrintedBranch {
+            is_slice_branch: is_slice_branch(&branch),
+            goal,
+            slice,
         },
     )
 }
@@ -176,6 +211,7 @@ pub(crate) fn run(
         Some((form, rest)) if form == OsStr::new("roadmap") => roadmap_command(rest, out),
         Some((form, rest)) if form == OsStr::new("map") => map_command(rest, out),
         Some((form, rest)) if form == OsStr::new("findings") => findings_command(rest, out),
+        Some((form, rest)) if form == OsStr::new("branch") => branch_command(rest, out),
         Some((form, [])) if form == OsStr::new("messages") => {
             for message in messages::ALL {
                 writeln!(out, "{message}").ok();

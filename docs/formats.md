@@ -135,17 +135,29 @@ The first kind comes first, in path order; the second, in number order, names ea
 
 ## `shipit format roadmap`
 
-Prints `{"roadmap": …, "waves": [[…], …], "goal": ["demo:DW1", …] | null}`; done-when ids are printed qualified, and
-paths are printed as normalized. Every failure is exit 2:
+Prints `{"roadmap": …, "waves": [[…], …], "branches": ["slice/demo/alpha", …], "goal": ["demo:DW1", …] | null}`; done-when
+ids are printed qualified, paths as normalized, and `branches` holds the derived branch of each slice. Every failure is exit 2:
 
 | Message | When |
 |---|---|
-| `usage: shipit format <roadmap\|map\|findings\|messages> …` | no form, or an unknown one |
+| `usage: shipit format <roadmap\|map\|findings\|messages\|branch> …` | no form, or an unknown one |
 | `usage: shipit format roadmap <file> [<goal file>]` | other arguments |
 | `<file> has no toml block under "<heading>"` | no block under `## Slices` (or `## Done-when coverage` for `map`) |
 | `<file>: <why>` | the file cannot be read with certainty: any message of the fenced block table |
 | `<file> is not valid TOML: <why>` | the block does not parse |
 | `<file> is invalid:` | followed by one problem per line, any problem above, including the goal checks (shared) |
+
+## Slice branch
+
+A slice's branch is `slice/<goal>/<slice>`, built from the goal's name and the slice's name. Any branch that starts with
+`slice/` is a slice branch, so a malformed one such as `slice/x` is judged by these rules and never taken for some other
+branch; it only parses back into a goal and a slice when it has exactly the two names.
+
+`shipit format branch <branch>` prints `{"is_slice_branch": …, "goal": … | null, "slice": … | null}`.
+
+| Message | When |
+|---|---|
+| `usage: shipit format branch <branch>` | other arguments |
 
 ## Done-when map
 

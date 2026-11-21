@@ -8,7 +8,7 @@ GOAL="$SHIPIT_SRC/tests/fixtures/goal.md"
 COVERAGE="$SHIPIT_SRC/tests/fixtures/coverage.toml"
 
 # What `shipit format roadmap` prints for the fixtures; `docs/alpha/` is printed as `docs/alpha`.
-PRINTED='{"roadmap":{"goal":"demo","elements":[{"kind":"slice","name":"alpha","after":[],"meets":["demo:DW1"],"owns":["src/alpha.rs","docs/alpha"],"test_drive":false},{"kind":"slice","name":"beta","after":["alpha"],"meets":["demo:DW2"],"owns":["src/beta.rs"],"test_drive":true},{"kind":"slice","name":"gamma","after":["alpha"],"meets":["demo:DW3"],"owns":["src/gamma.rs"],"test_drive":false},{"kind":"proof","name":"proof","after":["beta","gamma"],"meets":[],"how":"run by the owner"}]},"waves":[["alpha"],["beta","gamma"],["proof"]],"goal":["demo:DW1","demo:DW2","demo:DW3"]}'
+PRINTED='{"roadmap":{"goal":"demo","elements":[{"kind":"slice","name":"alpha","after":[],"meets":["demo:DW1"],"owns":["src/alpha.rs","docs/alpha"],"test_drive":false},{"kind":"slice","name":"beta","after":["alpha"],"meets":["demo:DW2"],"owns":["src/beta.rs"],"test_drive":true},{"kind":"slice","name":"gamma","after":["alpha"],"meets":["demo:DW3"],"owns":["src/gamma.rs"],"test_drive":false},{"kind":"proof","name":"proof","after":["beta","gamma"],"meets":[],"how":"run by the owner"}]},"waves":[["alpha"],["beta","gamma"],["proof"]],"branches":["slice/demo/alpha","slice/demo/beta","slice/demo/gamma"],"goal":["demo:DW1","demo:DW2","demo:DW3"]}'
 
 # The formats need no repository and no setup: run in an empty folder.
 setup() {
@@ -25,7 +25,7 @@ setup() {
 @test "format roadmap: without a goal file the goal prints as null" {
   run --separate-stderr "$SHIPIT_BIN" format roadmap "$ROADMAP"
   [ "$status" -eq 0 ]
-  [[ $output == *'"waves":[["alpha"],["beta","gamma"],["proof"]],"goal":null}' ]]
+  [[ $output == *'"waves":[["alpha"],["beta","gamma"],["proof"]],"branches":["slice/demo/alpha","slice/demo/beta","slice/demo/gamma"],"goal":null}' ]]
 }
 
 @test "format roadmap: an invalid roadmap exits 2 with every problem" {
@@ -107,7 +107,7 @@ DW3: no slice' ]
 @test "format: an unknown form exits 2 with the usage" {
   run --separate-stderr "$SHIPIT_BIN" format
   [ "$status" -eq 2 ]
-  [ "$stderr" = "shipit: usage: shipit format <roadmap|map|findings|messages> …" ]
+  [ "$stderr" = "shipit: usage: shipit format <roadmap|map|findings|messages|branch> …" ]
 }
 
 @test "format map: prints the items of a file and of a build-plan block" {
@@ -212,4 +212,17 @@ documented_messages() {
   sed 's/`a nitpick is never blocking`/`a nitpick is not blocking`/' "$SHIPIT_SRC/docs/formats.md" >doc.md
   [ "$(documented_messages doc.md | grep -c 'a nitpick is not blocking')" -eq 1 ]
   ! "$SHIPIT_BIN" format messages | grep -qxF 'a nitpick is not blocking'
+}
+
+@test "format branch: says whether a branch is a slice branch and names its goal and slice" {
+  run --separate-stderr "$SHIPIT_BIN" format branch slice/demo/alpha
+  [ "$status" -eq 0 ]
+  [ "$output" = '{"is_slice_branch":true,"goal":"demo","slice":"alpha"}' ]
+  run --separate-stderr "$SHIPIT_BIN" format branch slice/alpha
+  [ "$output" = '{"is_slice_branch":true,"goal":null,"slice":null}' ]
+  run --separate-stderr "$SHIPIT_BIN" format branch main
+  [ "$output" = '{"is_slice_branch":false,"goal":null,"slice":null}' ]
+  run --separate-stderr "$SHIPIT_BIN" format branch
+  [ "$status" -eq 2 ]
+  [ "$stderr" = "shipit: usage: shipit format branch <branch>" ]
 }

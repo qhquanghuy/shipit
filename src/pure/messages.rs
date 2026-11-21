@@ -68,9 +68,10 @@ messages! {
     ALLOWS_NO_MUST_FIX = "<result> allows no must-fix finding";
     NOT_A_RESULT = "\"<word>\" is not a result: approve, approve-after-fixes, rework, pass or findings";
 
-    USAGE = "usage: shipit format <roadmap|map|findings|messages> …";
+    USAGE = "usage: shipit format <roadmap|map|findings|messages|branch> …";
     ROADMAP_USAGE = "usage: shipit format roadmap <file> [<goal file>]";
     MAP_USAGE = "usage: shipit format map <file>";
+    BRANCH_USAGE = "usage: shipit format branch <branch>";
     FINDINGS_USAGE = "usage: shipit format findings <review|test-drive> <result> [<finding>…]";
 }
 
