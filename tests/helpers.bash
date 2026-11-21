@@ -4,6 +4,14 @@
 SHIPIT_SRC=$(cd "$BATS_TEST_DIRNAME/.." && pwd)
 export SHIPIT_SRC
 
+# The binary under test: cargo build, or set SHIPIT_BIN.
+SHIPIT_BIN="${SHIPIT_BIN:-$SHIPIT_SRC/target/debug/shipit}"
+export SHIPIT_BIN
+if [[ ! -x $SHIPIT_BIN ]]; then
+  printf 'shipit binary not found at %s: run cargo build, or set SHIPIT_BIN\n' "$SHIPIT_BIN" >&2
+  return 1
+fi
+
 # A folder standing in for HOME, so no developer git config leaks into tests.
 test_home() {
   local home="${BATS_TEST_TMPDIR:?run under bats}/home"
@@ -73,7 +81,7 @@ write_setup() {
   git -C "$top" commit -q --allow-empty -m "chore: change setup file"
 }
 
-# run_shipit <args>: run this working copy's bin/shipit under bats `run`.
+# run_shipit <args>: run the binary at SHIPIT_BIN under bats `run`.
 run_shipit() {
-  run "$SHIPIT_SRC/bin/shipit" "$@"
+  run "$SHIPIT_BIN" "$@"
 }

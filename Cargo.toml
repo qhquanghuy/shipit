@@ -1,0 +1,99 @@
+[package]
+name = "shipit"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Checks and receipts for agent work"
+publish = false
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+serde = { version = "1", features = ["derive"] }
+# preserve_order: unknown keys are reported in file order, as jq did.
+serde_json = { version = "1", features = ["preserve_order"] }
+
+[dev-dependencies]
+proptest = { version = "1", default-features = false, features = ["std"] }
+
+[lints.rust]
+warnings = "deny"
+unsafe_code = "forbid"
+missing_debug_implementations = "deny"
+rust_2018_idioms = { level = "deny", priority = -1 }
+unreachable_pub = "deny"
+unused_qualifications = "deny"
+unused_lifetimes = "deny"
+unused_import_braces = "deny"
+unit_bindings = "deny"
+trivial_numeric_casts = "deny"
+redundant_lifetimes = "deny"
+unused_macro_rules = "deny"
+let_underscore_drop = "deny"
+
+[lints.rustdoc]
+all = { level = "deny", priority = -1 }
+missing_crate_level_docs = "allow"
+
+[lints.clippy]
+pedantic = { level = "deny", priority = -1 }
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+
+# No panics: fallible code returns errors.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+dbg_macro = "deny"
+indexing_slicing = "deny"
+string_slice = "deny"
+get_unwrap = "deny"
+unwrap_in_result = "deny"
+panic_in_result_fn = "deny"
+
+# Only main and render touch stdout/stderr; only main exits.
+print_stdout = "deny"
+print_stderr = "deny"
+use_debug = "deny"
+exit = "deny"
+
+# Suppressions are #[expect(.., reason)] so stale ones fail the build.
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"
+
+# Exhaustive matches and patterns: a new variant or field forces a decision.
+wildcard_enum_match_arm = "deny"
+rest_pat_in_fully_bound_structs = "deny"
+
+# Deterministic output.
+iter_over_hash_type = "deny"
+
+# Clean style.
+mem_forget = "deny"
+clone_on_ref_ptr = "deny"
+str_to_string = "deny"
+string_add = "deny"
+if_then_some_else_none = "deny"
+redundant_type_annotations = "deny"
+needless_raw_strings = "deny"
+map_err_ignore = "deny"
+let_underscore_must_use = "deny"
+return_and_then = "deny"
+use_self = "deny"
+unused_trait_names = "deny"
+mod_module_files = "deny"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
+overflow-checks = true
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false

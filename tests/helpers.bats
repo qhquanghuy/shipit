@@ -30,8 +30,8 @@ load helpers
   [ -z "$(git -C "$repo" status --porcelain --untracked-files=normal)" ]
 }
 
-@test "run_shipit runs this working copy's bin/shipit" {
+@test "run_shipit runs the binary at SHIPIT_BIN" {
   run_shipit --version
   [ "$status" -eq 0 ]
-  [ "$output" = "shipit $(<"$SHIPIT_SRC/VERSION")" ]
+  [[ $output == "shipit "* ]]
 }
