@@ -30,14 +30,14 @@ line inside a fence is text, not structure. A byte order mark at the start and c
 
 The block is the one fence in the section whose info string is exactly `toml` (so not `TOML`, not `toml x`). A fence
 inside another fence is never a block, and a block in another section is never borrowed. If the heading is missing or
-the section has no block, there is no block. These are errors, never guesses:
+the section has no block, there is no block. These are errors, never guesses, in every file the formats read (roadmap, goal, plan):
 
 | Message | When |
 |---|---|
 | `a fence opened at line <line> is never closed` | a fence anywhere in the file has no closing line |
 | `"<heading>" appears twice` | the heading is there twice outside a fence |
 | `more than one toml block under "<heading>"` | the section has two `toml` fences |
-| `"<heading>" holds an HTML comment, which hides text from the reader` | a line of the section outside a fence has `<!--` |
+| `an HTML comment opens at line <line>, which hides text from the reader` | a line outside a fence, anywhere in the file, holds `<!--` |
 
 TOML errors give line numbers that count from the first line of the block, not of the file.
 
@@ -72,9 +72,9 @@ same goal. Views that span goals write the qualified form, and `shipit format ro
 qualified. That a goal name is unique among goals that have not shipped is not checked here: receipts-and-status owns it,
 because only it sees more than one goal.
 
-**Paths.** An `owns` path is written as git lists it: relative, no `.` or `..` segment, no empty segment, no `*`, `?` or
-`[`, no control character. A trailing `/` is dropped, so `docs/` and `docs` are one path. A path holds itself and every
-path below it (`docs` holds `docs/x.md`; `src/a` does not hold `src/ab.rs`).
+**Paths.** An `owns` path is written as git lists it: relative, no `.` or `..` segment, no empty segment, no segment that starts or ends with a space, no `\`, `*`, `?` or
+`[`, and only printable ASCII characters (so no control character and no non-ASCII one). A trailing `/` is dropped, so `docs/` and `docs` are one path. A path holds itself and every
+path below it (`docs` holds `docs/x.md`; `src/a` does not hold `src/ab.rs`). Case and Unicode spellings are not compared: `SRC/a` is another path (a known issue).
 
 A done-when item that no automated test can prove is met by a proof step, never by a slice.
 

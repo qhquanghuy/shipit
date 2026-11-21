@@ -1043,6 +1043,50 @@ branch = \"slice/g/pf\"
         );
     }
 
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            failure_persistence: None,
+            ..ProptestConfig::default()
+        })]
+
+        // Long chains are where a recursive or quadratic check fails first.
+        #[test]
+        fn a_chain_or_a_ring_in_any_order_is_read_whole(
+            order in (2_usize..150).prop_flat_map(|n| Just((0..n).collect::<Vec<_>>()).prop_shuffle()),
+        ) {
+            let n = order.len();
+            let chain: String = order
+                .iter()
+                .map(|&i| {
+                    let before = format!("s{}", i.saturating_sub(1));
+                    let after: &[&str] = if i == 0 { &[] } else { &[&before] };
+                    slice_text(&spec(&format!("s{i}"), after, &[&format!("f/s{i}.rs")]))
+                })
+                .collect();
+            let roadmap = parse(&chain).expect("a chain is acyclic");
+            let grouped: Vec<Vec<String>> = waves(&roadmap)
+                .iter()
+                .map(|group| group.iter().map(ToString::to_string).collect())
+                .collect();
+            let wanted: Vec<Vec<String>> = (0..n).map(|i| vec![format!("s{i}")]).collect();
+            prop_assert_eq!(grouped, wanted);
+
+            let ring: String = order
+                .iter()
+                .map(|&i| {
+                    let next = format!("s{}", (i + 1) % n);
+                    slice_text(&spec(&format!("s{i}"), &[&next], &[&format!("f/s{i}.rs")]))
+                })
+                .collect();
+            let first = order.first().copied().unwrap_or(0);
+            let named: Vec<String> = (0..=n).map(|k| format!("s{}", (first + k) % n)).collect();
+            prop_assert_eq!(
+                lines(&parse(&ring).expect_err("a ring is a cycle")),
+                vec![format!(".slice: after makes a cycle: {}", named.join(", "))]
+            );
+        }
+    }
+
     #[test]
     fn a_repeat_does_not_hide_a_self_reference() {
         let text = slice_text(&spec("a", &["b", "b", "a"], &["x"]));

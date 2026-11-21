@@ -1,17 +1,11 @@
 use crate::pure::markdown::{Kind, lines, section};
-use crate::pure::messages::{BLOCK_TWICE, HTML_COMMENT, say};
+use crate::pure::messages::{BLOCK_TWICE, say};
 
 // Only what a reviewer sees under the heading counts: a toml block inside another fence, or in
 // a later section, is never read, and a second candidate is an error rather than a choice.
 pub(crate) fn toml_block<'a>(text: &'a str, heading: &str) -> Result<Option<&'a str>, String> {
     let all = lines(text)?;
     let under = section(&all, heading)?;
-    let hidden = under
-        .iter()
-        .any(|line| matches!(line.kind, Kind::Prose) && line.text.contains("<!--"));
-    if hidden {
-        return Err(say(HTML_COMMENT, &[("heading", &heading)]));
-    }
     let mut candidates = under
         .iter()
         .enumerate()
@@ -139,7 +133,21 @@ mod tests {
         );
         assert_eq!(
             toml_block("## Slices\n<!--\n```toml\nx = 1\n```\n-->\n", HEADING),
-            Err("\"## Slices\" holds an HTML comment, which hides text from the reader".to_owned())
+            Err("an HTML comment opens at line 2, which hides text from the reader".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_comment_above_the_heading_cannot_hide_the_real_section() {
+        let hidden = "# Roadmap\n<!--\n## Slices\n```toml\ngoal = \"evil\"\n```\n-->\n## Slices \n```toml\ngoal = \"real\"\n```\n";
+        assert_eq!(
+            toml_block(hidden, HEADING),
+            Err("an HTML comment opens at line 2, which hides text from the reader".to_owned())
+        );
+        let inside_a_fence = "## Slices\n```toml\nnote = \"<!--\"\n```\n";
+        assert_eq!(
+            toml_block(inside_a_fence, HEADING),
+            Ok(Some("note = \"<!--\"\n"))
         );
     }
 

@@ -11,10 +11,12 @@ pub(crate) struct RepoPath(String);
 impl RepoPath {
     pub(crate) fn parse(text: &str) -> Option<Self> {
         let path = text.strip_suffix('/').unwrap_or(text);
-        let normal = path
-            .split('/')
-            .all(|segment| !segment.is_empty() && segment != "." && segment != "..");
-        let plain = !path.contains(|c: char| c.is_control() || matches!(c, '*' | '?' | '['));
+        let normal = path.split('/').all(|segment| {
+            !segment.is_empty() && segment != "." && segment != ".." && segment.trim() == segment
+        });
+        let plain = path
+            .chars()
+            .all(|c| (c.is_ascii_graphic() || c == ' ') && !matches!(c, '*' | '?' | '[' | '\\'));
         (normal && plain).then(|| Self(path.to_owned()))
     }
 
@@ -67,9 +69,16 @@ mod tests {
         fn every_spelling_of_something_else_is_refused(
             text in path(),
             other in path(),
-            bad in prop::sample::select(vec!['*', '?', '[', '\0', '\n', '\t', '\u{7f}']),
+            bad in prop::sample::select(vec![
+                '*', '?', '[', '\\', '\0', '\n', '\t', '\u{7f}', 'é', '\u{2028}', '\u{a0}',
+            ]),
         ) {
             for refused in [
+                format!("{text} "),
+                format!(" {text}"),
+                format!("{text} /{other}"),
+                format!("{text}/ {other}"),
+                format!("{text}\\{other}"),
                 format!("/{text}"),
                 format!("./{text}"),
                 format!("{text}/./{other}"),

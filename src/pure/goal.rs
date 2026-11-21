@@ -286,6 +286,18 @@ mod tests {
     }
 
     #[test]
+    fn a_comment_above_the_heading_cannot_hide_an_item() {
+        let text = "<!--\n## Done-when\n1. a\n2. b\n-->\n## Done-when \n1. a\n2. b\n3. c\n";
+        assert_eq!(
+            goal_items(text),
+            Err(
+                "goal: an HTML comment opens at line 1, which hides text from the reader"
+                    .to_owned()
+            )
+        );
+    }
+
+    #[test]
     fn a_repeated_number_is_refused() {
         let text = format!("{HEADING}\n\n1. a\n2. b\n1. c\n2. d\n");
         assert_eq!(

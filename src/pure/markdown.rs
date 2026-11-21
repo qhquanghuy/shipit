@@ -1,4 +1,4 @@
-use crate::pure::messages::{FENCE_UNCLOSED, HEADING_TWICE, say};
+use crate::pure::messages::{FENCE_UNCLOSED, HEADING_TWICE, HTML_COMMENT, say};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Kind<'a> {
@@ -63,6 +63,9 @@ pub(crate) fn lines(text: &str) -> Result<Vec<Line<'_>>, String> {
         } else if let Some((fence, info)) = opening(body) {
             open = Some((fence, index + 1));
             Kind::Open { info }
+        } else if body.contains("<!--") {
+            // Anywhere in the file, so no heading or block can be hidden from the rendered page.
+            return Err(say(HTML_COMMENT, &[("line", &(index + 1))]));
         } else {
             Kind::Prose
         };
@@ -200,6 +203,34 @@ mod tests {
         );
         let once = lines("```\n## A\n```\n## A\nx\n").expect("closed");
         assert_eq!(section(&once, "## A").map(<[Line<'_>]>::len), Ok(1));
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            failure_persistence: None,
+            ..ProptestConfig::default()
+        })]
+
+        // A comment hides the rendered text, so one outside a fence is refused wherever it is.
+        #[test]
+        fn a_comment_outside_a_fence_is_refused_with_its_line_and_inside_one_it_is_text(
+            before in proptest::collection::vec("[a-z ]{0,8}", 0..5),
+            indent in 0_usize..8,
+            junk in "[a-z ]{0,5}",
+        ) {
+            let comment = format!("{}{junk}<!-- {junk}", " ".repeat(indent));
+            let mut text: String = before.iter().flat_map(|line| [line.as_str(), "\n"]).collect();
+            text.extend([comment.as_str(), "\n"]);
+            prop_assert_eq!(
+                lines(&text).map(|found| found.len()),
+                Err(format!(
+                    "an HTML comment opens at line {}, which hides text from the reader",
+                    before.len() + 1
+                ))
+            );
+            let fenced = format!("```\n{comment}\n```\n");
+            prop_assert!(lines(&fenced).is_ok());
+        }
     }
 
     #[test]
