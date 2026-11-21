@@ -39,3 +39,8 @@ Rust CLI: checks and receipts for agent work. Terms: `docs/vocab.md`. Behaviour:
 - Dead code is an error: add a type, variant, field or function only in the change that first uses it.
 - Pedantic: avoid lossy `as` casts; `.map(|x| format!(..)).collect::<String>()` is denied.
 - Any warning fails the build; finish the edit before checking.
+
+## Tests
+
+- Prefer property tests (`proptest`) over example tests; write an example only for a case a property cannot state (an exact message, one known regression).
+- No overlapping cases: each behaviour is proven once, at the lowest level that can prove it. Pure logic: proptest in `src/pure/`. Bats: only what needs the real binary (exit codes, contract messages, git state).
