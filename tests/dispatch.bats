@@ -23,3 +23,15 @@ load helpers
     [[ $output == *"shipit help"* ]]
   done
 }
+
+@test "help and no arguments list check and verify, not the hidden setup" {
+  run_shipit help
+  [ "$status" -eq 0 ]
+  local helped=$output
+  run_shipit
+  [ "$status" -eq 0 ]
+  [ "$output" = "$helped" ]
+  grep -qx '  check' <<<"$output"
+  grep -qx '  verify' <<<"$output"
+  ! grep -qx '  setup' <<<"$output"
+}

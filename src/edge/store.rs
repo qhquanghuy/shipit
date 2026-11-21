@@ -9,9 +9,11 @@ use std::io::{ErrorKind, Write as _};
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
+use serde_json::Value;
 
 use crate::pure::failure::Failure;
 use crate::pure::receipt::Oid;
+use crate::pure::setup::json_values;
 
 pub(crate) fn check_receipt_path(common_dir: &Path, tree: &Oid) -> PathBuf {
     common_dir
@@ -19,6 +21,12 @@ pub(crate) fn check_receipt_path(common_dir: &Path, tree: &Oid) -> PathBuf {
         .join("receipts")
         .join("check")
         .join(format!("{tree}.json"))
+}
+
+// The values of a JSON file, or None when it is missing, a folder, unreadable or not JSON.
+// Creates nothing.
+pub(crate) fn read_json(path: &Path) -> Option<Vec<Value>> {
+    json_values(&fs::read(path).ok()?).ok()
 }
 
 // A stale temporary file from a crashed run is skipped, never reused.
@@ -82,6 +90,31 @@ mod tests {
                 "a".repeat(40)
             ))
         );
+    }
+
+    #[test]
+    fn read_json_gives_the_values_or_none() {
+        let dir = scratch("read");
+        let file = |name: &str, text: &str| {
+            let path = dir.join(name);
+            fs::write(&path, text).expect("writes");
+            path
+        };
+        assert_eq!(
+            read_json(&file("one.json", "{\"k\": 1}")),
+            Some(vec![json!({"k": 1})])
+        );
+        assert_eq!(
+            read_json(&file("two.json", "1 2")),
+            Some(vec![json!(1), json!(2)])
+        );
+        assert_eq!(read_json(&file("empty.json", "")), Some(vec![]));
+        assert_eq!(read_json(&file("bad.json", "{")), None);
+        assert_eq!(read_json(&dir.join("missing.json")), None);
+        assert_eq!(read_json(&dir), None);
+        let left = fs::read_dir(&dir).expect("lists").count();
+        assert_eq!(left, 4);
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

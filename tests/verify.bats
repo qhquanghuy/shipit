@@ -18,11 +18,11 @@ start_repo() {
 
 # run_verify <args>: stdout in $output, stderr in $stderr.
 run_verify() {
-  run --separate-stderr "$SHIPIT_SRC/bin/shipit" verify "$@"
+  run --separate-stderr "$SHIPIT_BIN" verify "$@"
 }
 
 do_check() {
-  "$SHIPIT_SRC/bin/shipit" check >/dev/null
+  "$SHIPIT_BIN" check >/dev/null
 }
 
 short_tree() {
@@ -238,7 +238,7 @@ receipt_file() {
   run_verify
   [ "$status" -eq 1 ]
   local verify_msg="$stderr"
-  run --separate-stderr "$SHIPIT_SRC/bin/shipit" check
+  run --separate-stderr "$SHIPIT_BIN" check
   [ "$status" -eq 3 ]
   [ "$stderr" = "$verify_msg" ]
   [[ $verify_msg == *"(f1)"* ]]
