@@ -44,7 +44,15 @@ pub(crate) fn run(
     };
     match validate(spec, &ctx, &text) {
         Ok(verdict) => {
-            writeln!(out, "valid {name}: {}", verdict.outcome).ok();
+            write!(out, "valid {name}: {}", verdict.outcome).ok();
+            if let Some([must_fix, nice_to_fix, must_answer]) = verdict.counts {
+                write!(
+                    out,
+                    " ({must_fix} must fix, {nice_to_fix} nice to fix, {must_answer} must answer)"
+                )
+                .ok();
+            }
+            writeln!(out).ok();
             Ok(())
         }
         Err(problems) => {

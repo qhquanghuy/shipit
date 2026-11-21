@@ -27,6 +27,19 @@ write_message() {
   [ "$output" = "valid decision-point: waiting-for-the-owner" ]
 }
 
+@test "validate: a review prints its result and the findings by class" {
+  repo=$(make_repo)
+  cd "$repo"
+  {
+    printf '## Form\n\n```toml\nkind = "second-opinion"\noutcome = "approve-after-fixes"\ninput = "the change"\n```\n\n'
+    printf '## Summary\nA small change.\n\n## Security\n- none found: no input is read\n\n## Performance\n- not relevant: no loops\n\n'
+    printf '## Findings\n- issue (blocking): a name is wrong\n- nitpick: a comma\n- question: why a loop?\n'
+  } >review.md
+  run --separate-stderr "$SHIPIT_BIN" validate second-opinion review.md
+  [ "$status" -eq 0 ]
+  [ "$output" = 'valid second-opinion: approve-after-fixes (1 must fix, 1 nice to fix, 1 must answer)' ]
+}
+
 @test "validate: an invalid output exits 1 and lists each problem" {
   repo=$(make_repo)
   cd "$repo"
@@ -59,7 +72,7 @@ write_message() {
   write_message out.md
   run --separate-stderr "$SHIPIT_BIN" validate review out.md
   [ "$status" -eq 2 ]
-  [ "$stderr" = 'shipit: unknown kind "review"; kinds: decision-point' ]
+  [ "$stderr" = 'shipit: unknown kind "review"; kinds: decision-point, explanation, informed-review, known-issue, model-advice, scout-report, second-opinion, test-drive' ]
   run --separate-stderr "$SHIPIT_BIN" validate decision-point
   [ "$status" -eq 2 ]
   [ "$stderr" = 'shipit: usage: shipit validate <kind> <file>' ]

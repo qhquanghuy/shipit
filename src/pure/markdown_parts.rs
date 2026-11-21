@@ -14,6 +14,18 @@ pub(crate) fn bold_marker(text: &str) -> Option<(&str, &str)> {
     text.strip_prefix("**")?.split_once(":**")
 }
 
+// A list item starts at the left margin with `- `, `* ` or a number and `. `.
+pub(crate) fn list_item(text: &str) -> Option<&str> {
+    if let Some(item) = text.strip_prefix("- ").or_else(|| text.strip_prefix("* ")) {
+        return Some(item.trim());
+    }
+    let digits = text.chars().take_while(char::is_ascii_digit).count();
+    if digits == 0 {
+        return None;
+    }
+    text.get(digits..)?.strip_prefix(". ").map(str::trim)
+}
+
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;
@@ -48,6 +60,31 @@ mod tests {
             prop_assert_eq!(bold_marker(&no_colon), None);
             let indented = format!(" **{name}:**{rest}");
             prop_assert_eq!(bold_marker(&indented), None);
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            failure_persistence: None,
+            ..ProptestConfig::default()
+        })]
+
+        #[test]
+        fn an_item_has_a_marker_at_the_margin_and_a_space(
+            marker in prop::sample::select(vec!["- ", "* ", "1. ", "12. ", "007. "]),
+            text in "[a-z][a-z ]{0,8}",
+            indent in 0_usize..3,
+        ) {
+            let line = format!("{}{marker}{text}", " ".repeat(indent));
+            let wanted = (indent == 0).then_some(text.trim());
+            prop_assert_eq!(list_item(&line), wanted);
+        }
+    }
+
+    #[test]
+    fn a_marker_without_its_space_or_a_number_without_a_dot_is_text() {
+        for line in ["-x", "*x", "1.x", "1) x", "x. y", "-", ""] {
+            assert_eq!(list_item(line), None, "{line}");
         }
     }
 

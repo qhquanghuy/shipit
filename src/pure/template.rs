@@ -1,8 +1,11 @@
 use toml::Value;
 
 use crate::pure::block::toml_block;
+use crate::pure::finding::{
+    Class, Outcome as FindingOutcome, ResultKind, outcome_problems, parse_finding,
+};
 use crate::pure::markdown::{Kind, Line, lines};
-use crate::pure::markdown_parts::{bold_marker, heading};
+use crate::pure::markdown_parts::{bold_marker, heading, list_item};
 use crate::pure::messages::{FILE_PROBLEM, NO_BLOCK, NOT_TOML, say};
 use crate::pure::setup::toml_table;
 use crate::pure::text::comma_list;
@@ -22,6 +25,18 @@ pub(crate) struct Spec {
     pub(crate) kind: &'static str,
     pub(crate) outcomes: &'static [Outcome],
     pub(crate) owner_message: bool,
+    pub(crate) checks: &'static [(&'static str, Check)],
+    // The part whose items are findings, and the kind of result they go with.
+    pub(crate) findings: Option<(&'static str, ResultKind)>,
+    // Parts where one item `none` says there is nothing to say.
+    pub(crate) none_allowed: &'static [&'static str],
+}
+
+#[derive(Debug)]
+pub(crate) enum Check {
+    Answer(&'static [&'static str]),
+    Contains(&'static [&'static str]),
+    FileLines,
 }
 
 impl Spec {
@@ -46,6 +61,8 @@ pub(crate) struct Context<'a> {
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Verdict {
     pub(crate) outcome: String,
+    // Must fix, nice to fix and must answer, for a kind that has findings.
+    pub(crate) counts: Option<[usize; 3]>,
 }
 
 pub(crate) struct Header {
@@ -215,6 +232,122 @@ fn part_problems(names: &[&'static str], required: &[&str], found: &[Part<'_>]) 
     problems
 }
 
+// A list item is read only outside fences, from the left margin.
+fn items<'a>(part: &Part<'a>) -> Vec<&'a str> {
+    part.lines
+        .iter()
+        .filter(|line| matches!(line.kind, Kind::Prose))
+        .filter_map(|line| list_item(line.text))
+        .collect()
+}
+
+// `path:line: text` or `path:first-last: text`, the path without spaces and first not after last.
+fn is_file_lines(item: &str) -> bool {
+    let Some((place, text)) = item.split_once(": ") else {
+        return false;
+    };
+    let Some((path, lines)) = place.rsplit_once(':') else {
+        return false;
+    };
+    let range = match lines.split_once('-') {
+        Some((first, last)) => first.parse::<u64>().ok().zip(last.parse::<u64>().ok()),
+        None => lines.parse::<u64>().ok().map(|line| (line, line)),
+    };
+    !path.is_empty()
+        && !path.contains(char::is_whitespace)
+        && range.is_some_and(|(first, last)| first <= last)
+        && !text.trim().is_empty()
+}
+
+impl Check {
+    // None when the item passes; else what it must do, to follow the item's number.
+    fn refuse(&self, item: &str) -> Option<String> {
+        match self {
+            Self::Answer(starts) => {
+                let answered = starts.iter().any(|start| {
+                    item.strip_prefix(start)
+                        .is_some_and(|why| !why.trim().is_empty())
+                });
+                (!answered).then(|| {
+                    format!(
+                        "must start with one of: {}, then say why",
+                        comma_list(starts.iter().map(|start| start.trim_end()))
+                    )
+                })
+            }
+            Self::Contains(phrases) => (!phrases.iter().any(|phrase| item.contains(phrase)))
+                .then(|| format!("must contain one of: {}", comma_list(phrases.iter()))),
+            Self::FileLines => (!is_file_lines(item))
+                .then(|| "must start with <file>:<line> or <file>:<first>-<last>".to_owned()),
+        }
+    }
+}
+
+fn check_problems(name: &str, check: &Check, items: &[&str], none_is_ok: bool) -> Vec<String> {
+    if items.is_empty() {
+        return vec![format!("part \"{name}\" has no list items")];
+    }
+    if none_is_ok && items == ["none"] {
+        return Vec::new();
+    }
+    items
+        .iter()
+        .enumerate()
+        .filter_map(|(index, item)| {
+            check
+                .refuse(item)
+                .map(|why| format!("part \"{name}\" item {} {why}", index + 1))
+        })
+        .collect()
+}
+
+// Formats judges each finding and then the result; a finding that cannot be read stops the judgement.
+fn judge(
+    name: &str,
+    kind: ResultKind,
+    outcome: &str,
+    items: &[&str],
+) -> Result<[usize; 3], Vec<String>> {
+    let mut found = Vec::new();
+    let mut refused = Vec::new();
+    for (index, item) in items.iter().enumerate() {
+        match parse_finding(index, item) {
+            Ok(finding) => found.push(finding),
+            Err(why) => refused.push(format!("part \"{name}\" item {}: {why}", index + 1)),
+        }
+    }
+    if !refused.is_empty() {
+        return Err(refused);
+    }
+    let result = FindingOutcome::parse(outcome).ok_or_else(|| {
+        vec![format!(
+            "header: outcome \"{outcome}\" is not a review or test-drive result"
+        )]
+    })?;
+    let problems = outcome_problems(kind, result, &found);
+    if !problems.is_empty() {
+        return Err(problems);
+    }
+    let count = |class: Class| {
+        found
+            .iter()
+            .filter(|finding| finding.class == class)
+            .count()
+    };
+    Ok([
+        count(Class::MustFix),
+        count(Class::NiceToFix),
+        count(Class::MustAnswer),
+    ])
+}
+
+// A part is checked only when it appears once: a missing or doubled part is already a problem.
+fn once<'l, 'a>(found: &'l [Part<'a>], name: &str) -> Option<&'l Part<'a>> {
+    let mut mine = found.iter().filter(|part| part.name == name);
+    let first = mine.next()?;
+    mine.next().is_none().then_some(first)
+}
+
 pub(crate) fn validate(spec: &Spec, ctx: &Context<'_>, text: &str) -> Result<Verdict, Vec<String>> {
     let head = header(ctx.file, text)?;
     if head.kind != spec.kind {
@@ -243,6 +376,24 @@ pub(crate) fn validate(spec: &Spec, ctx: &Context<'_>, text: &str) -> Result<Ver
     let found = parts(spec, all);
     let mut problems: Vec<String> = label.into_iter().collect();
     problems.extend(part_problems(&spec.part_names(), outcome.parts, &found));
+    for (name, check) in spec.checks {
+        if let Some(part) = once(&found, name) {
+            let none_is_ok = spec.none_allowed.contains(name);
+            problems.extend(check_problems(name, check, &items(part), none_is_ok));
+        }
+    }
+    let mut counts = None;
+    if let Some((name, kind)) = spec.findings {
+        let listed = once(&found, name).map(items).unwrap_or_default();
+        if once(&found, name).is_some() && listed.is_empty() {
+            problems.push(format!("part \"{name}\" has no list items"));
+        } else {
+            match judge(name, kind, &head.outcome, &listed) {
+                Ok(done) => counts = Some(done),
+                Err(more) => problems.extend(more),
+            }
+        }
+    }
     let next_is_last = found
         .iter()
         .rposition(|part| part.name == NEXT)
@@ -254,6 +405,7 @@ pub(crate) fn validate(spec: &Spec, ctx: &Context<'_>, text: &str) -> Result<Ver
     if problems.is_empty() {
         Ok(Verdict {
             outcome: head.outcome,
+            counts,
         })
     } else {
         Err(problems)
@@ -262,78 +414,94 @@ pub(crate) fn validate(spec: &Spec, ctx: &Context<'_>, text: &str) -> Result<Ver
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Write as _;
+
     use proptest::prelude::*;
 
     use super::*;
     use crate::pure::kinds::KINDS;
 
-    struct Draft<'a> {
-        spec: &'a Spec,
-        outcome: &'a str,
-        shown: &'a str,
-        seed: u64,
-        skip: Option<&'a str>,
-        twice: Option<&'a str>,
+    type Bodies = Vec<(&'static str, Vec<String>)>;
+
+    fn is_must_fix_result(outcome: &str) -> bool {
+        !matches!(outcome, "approve" | "pass")
     }
 
-    fn section(name: &str, bold: bool, nested: bool) -> String {
-        let mut text = if bold {
-            format!("**{name}:** some words\n")
-        } else {
-            format!("## {name}\n\nsome words\n")
-        };
-        if nested {
-            text.push_str(if bold {
-                "**Note:** an unknown marker\n"
+    fn chosen<'a>(list: &[&'a str], seed: u64) -> &'a str {
+        let which = usize::try_from(seed % 7).expect("small") % list.len();
+        list.get(which).copied().unwrap_or_default()
+    }
+
+    // One valid item for a part: the check of the part says what it must look like.
+    fn sample(spec: &Spec, outcome: &str, part: &str, seed: u64) -> Vec<String> {
+        if let Some((name, _kind)) = spec.findings
+            && name == part
+        {
+            return vec![if is_must_fix_result(outcome) {
+                "issue (blocking, security): words".to_owned()
             } else {
-                "### Sub\n\n**Note:** an unknown marker\n"
-            });
+                "nitpick: words".to_owned()
+            }];
         }
-        if !bold {
-            text.push('\n');
-        }
-        text
+        let check = spec.checks.iter().find(|(name, _)| *name == part);
+        vec![match check.map(|(_, check)| check) {
+            Some(Check::Answer(starts)) => format!("{}because of {seed}", chosen(starts, seed)),
+            Some(Check::Contains(phrases)) => format!("a {}word", chosen(phrases, seed)),
+            Some(Check::FileLines) if seed.is_multiple_of(2) => "src/a.rs:3-5: words".to_owned(),
+            Some(Check::FileLines) => "src/a.rs:4: words".to_owned(),
+            None => format!("words {seed}"),
+        }]
+    }
+
+    fn bodies(spec: &Spec, outcome: &str, seed: u64) -> Bodies {
+        let parts = spec
+            .outcomes
+            .iter()
+            .find(|listed| listed.name == outcome)
+            .map(|listed| listed.parts)
+            .unwrap_or_default();
+        parts
+            .iter()
+            .map(|part| (*part, sample(spec, outcome, part, seed)))
+            .collect()
     }
 
     // The seed picks the style of the part markers and whether nested content is added.
-    fn draft(d: &Draft<'_>) -> String {
+    fn render(spec: &Spec, shown: &str, seed: u64, parts: &Bodies) -> String {
+        let bold = seed & 1 == 0;
+        let nested = seed & 2 == 0;
         let mut text = format!(
-            "## Form\n\n```toml\nkind = \"{}\"\noutcome = \"{}\"\ninput = \"x\"\n```\n\n",
-            d.spec.kind, d.shown
+            "## Form\n\n```toml\nkind = \"{}\"\noutcome = \"{shown}\"\ninput = \"x\"\n```\n\n",
+            spec.kind
         );
-        if d.spec.owner_message {
+        if spec.owner_message {
             text.push_str("[shipit · slice · phase]\n\n");
         }
-        let bold = d.seed & 1 == 0;
-        let nested = d.seed & 2 == 0;
-        let parts = d
-            .spec
-            .outcomes
-            .iter()
-            .find(|outcome| outcome.name == d.outcome)
-            .map(|outcome| outcome.parts)
-            .unwrap_or_default();
-        for name in parts {
-            if d.skip == Some(name) {
-                continue;
+        for (name, items) in parts {
+            if bold {
+                writeln!(text, "**{name}:** some words").ok();
+            } else {
+                write!(text, "## {name}\n\nsome words\n").ok();
             }
-            let times = if d.twice == Some(name) { 2 } else { 1 };
-            for _ in 0..times {
-                text.push_str(&section(name, bold, nested));
+            for item in items {
+                writeln!(text, "- {item}").ok();
+            }
+            if nested {
+                text.push_str(if bold {
+                    "**Note:** an unknown marker\n"
+                } else {
+                    "### Sub\n\n**Note:** an unknown marker\n"
+                });
+            }
+            if !bold {
+                text.push('\n');
             }
         }
         text
     }
 
     fn filled(spec: &Spec, outcome: &str, seed: u64) -> String {
-        draft(&Draft {
-            spec,
-            outcome,
-            shown: outcome,
-            seed,
-            skip: None,
-            twice: None,
-        })
+        render(spec, outcome, seed, &bodies(spec, outcome, seed))
     }
 
     fn ctx(max_lines: u64) -> Context<'static> {
@@ -349,11 +517,39 @@ mod tests {
         (spec, &spec.outcomes[outcome % spec.outcomes.len()])
     }
 
-    fn decision_point() -> &'static Spec {
+    fn spec_of(kind: &str) -> &'static Spec {
         KINDS
             .iter()
-            .find(|spec| spec.kind == "decision-point")
-            .expect("the decision point is a kind")
+            .find(|spec| spec.kind == kind)
+            .expect("a kind that exists")
+    }
+
+    fn problems_of(spec: &Spec, text: &str) -> Vec<String> {
+        validate(spec, &ctx(1000), text).expect_err("refused")
+    }
+
+    fn with_body(spec: &Spec, outcome: &str, part: &str, items: &[&str]) -> String {
+        let mut parts = bodies(spec, outcome, 0);
+        let items = items.iter().map(|item| (*item).to_owned()).collect();
+        if let Some((_, body)) = parts.iter_mut().find(|(name, _)| *name == part) {
+            *body = items;
+        } else {
+            let name = spec
+                .part_names()
+                .into_iter()
+                .find(|name| *name == part)
+                .expect("a part of the spec");
+            parts.push((name, items));
+        }
+        render(spec, outcome, 0, &parts)
+    }
+
+    // A finding as the formats read it, or as it would be refused.
+    fn finding_text() -> impl Strategy<Value = String> {
+        prop_oneof![
+            "(issue|suggestion|question|nitpick)( \\((blocking|non-blocking|security)(, security)?\\))?: [a-z ]{0,6}",
+            "[a-z][a-z ]{0,8}",
+        ]
     }
 
     proptest! {
@@ -366,11 +562,8 @@ mod tests {
         fn generated_outputs_pass(kind in 0_usize..32, outcome in 0_usize..32, seed in any::<u64>()) {
             let (spec, outcome) = pick(kind, outcome);
             let text = filled(spec, outcome.name, seed);
-            prop_assert_eq!(
-                validate(spec, &ctx(1000), &text),
-                Ok(Verdict { outcome: outcome.name.to_owned() }),
-                "{}", text
-            );
+            let verdict = validate(spec, &ctx(1000), &text);
+            prop_assert_eq!(verdict.map(|done| done.outcome), Ok(outcome.name.to_owned()), "{}", text);
         }
 
         #[test]
@@ -382,15 +575,10 @@ mod tests {
         ) {
             let (spec, outcome) = pick(kind, outcome);
             let name = outcome.parts[which % outcome.parts.len()];
-            let text = draft(&Draft {
-                spec,
-                outcome: outcome.name,
-                shown: outcome.name,
-                seed,
-                skip: Some(name),
-                twice: None,
-            });
-            let problems = validate(spec, &ctx(1000), &text).expect_err("a part is missing");
+            let mut parts = bodies(spec, outcome.name, seed);
+            parts.retain(|(part, _)| *part != name);
+            let text = render(spec, outcome.name, seed, &parts);
+            let problems = problems_of(spec, &text);
             prop_assert!(problems.contains(&format!("part \"{name}\" is missing")), "{:?}", problems);
         }
 
@@ -403,14 +591,7 @@ mod tests {
         ) {
             let (spec, outcome) = pick(kind, outcome);
             prop_assume!(spec.outcomes.iter().all(|listed| listed.name != shown));
-            let text = draft(&Draft {
-                spec,
-                outcome: outcome.name,
-                shown: &shown,
-                seed,
-                skip: None,
-                twice: None,
-            });
+            let text = render(spec, &shown, seed, &bodies(spec, outcome.name, seed));
             let listed = comma_list(spec.outcomes.iter().map(|listed| listed.name));
             prop_assert_eq!(
                 validate(spec, &ctx(1000), &text),
@@ -427,15 +608,12 @@ mod tests {
         ) {
             let (spec, outcome) = pick(kind, outcome);
             let name = outcome.parts[which % outcome.parts.len()];
-            let text = draft(&Draft {
-                spec,
-                outcome: outcome.name,
-                shown: outcome.name,
-                seed,
-                skip: None,
-                twice: Some(name),
-            });
-            let problems = validate(spec, &ctx(1000), &text).expect_err("a part is doubled");
+            let mut parts = bodies(spec, outcome.name, seed);
+            let at = parts.iter().position(|(part, _)| *part == name).expect("a part of the outcome");
+            let again = parts[at].clone();
+            parts.insert(at, again);
+            let text = render(spec, outcome.name, seed, &parts);
+            let problems = problems_of(spec, &text);
             prop_assert!(problems.contains(&format!("part \"{name}\" appears 2 times")), "{:?}", problems);
         }
 
@@ -449,8 +627,7 @@ mod tests {
         ) {
             let (spec, outcome) = pick(kind, outcome);
             let text = filled(spec, outcome.name, seed & !2);
-            let all = lines(&text).expect("closed fences");
-            let found = parts(spec, all);
+            let found = parts(spec, lines(&text).expect("closed fences"));
             let names: Vec<&str> = found.iter().map(|part| part.name).collect();
             prop_assert_eq!(names, outcome.parts.to_vec());
             let noted = found.iter().all(|part| {
@@ -486,25 +663,186 @@ mod tests {
                     Just("## Form\n".to_owned()),
                     Just("```toml\n".to_owned()),
                     Just("```\n".to_owned()),
-                    Just("kind = \"decision-point\"\n".to_owned()),
-                    Just("outcome = \"waiting-for-the-owner\"\n".to_owned()),
+                    Just("kind = \"second-opinion\"\n".to_owned()),
+                    Just("outcome = \"rework\"\n".to_owned()),
                     Just("input = \"x\"\n".to_owned()),
+                    Just("## Findings\n- issue (blocking): x\n".to_owned()),
                     "[ -~\n]{0,12}",
                 ],
                 0..20,
             ),
         ) {
             let text: String = pieces.concat();
-            match validate(decision_point(), &ctx(30), &text) {
+            match validate(spec_of("second-opinion"), &ctx(30), &text) {
                 Ok(_) => {}
                 Err(problems) => prop_assert!(!problems.is_empty()),
             }
         }
+
+        // What `validate` says about the findings is what the formats say, in the same words.
+        #[test]
+        fn findings_problems_are_formats_problems(
+            result in prop::sample::select(vec!["approve", "approve-after-fixes", "rework"]),
+            texts in proptest::collection::vec(finding_text(), 1..5),
+        ) {
+            let spec = spec_of("second-opinion");
+            let items: Vec<&str> = texts.iter().map(|text| text.trim()).collect();
+            let text = with_body(spec, result, "Findings", &items);
+            let mut refused = Vec::new();
+            let mut found = Vec::new();
+            for (index, item) in items.iter().enumerate() {
+                match parse_finding(index, item) {
+                    Ok(finding) => found.push(finding),
+                    Err(why) => refused.push(format!("part \"Findings\" item {}: {why}", index + 1)),
+                }
+            }
+            let outcome = FindingOutcome::parse(result).expect("a review result");
+            let expected = if refused.is_empty() {
+                outcome_problems(ResultKind::Review, outcome, &found)
+            } else {
+                refused
+            };
+            // The result may name a part the outcome does not list, so Findings is always there.
+            let got = validate(spec, &ctx(1000), &text);
+            match got {
+                Ok(done) => {
+                    prop_assert!(expected.is_empty(), "{:?}", expected);
+                    let count = |class: Class| found.iter().filter(|f| f.class == class).count();
+                    prop_assert_eq!(
+                        done.counts,
+                        Some([count(Class::MustFix), count(Class::NiceToFix), count(Class::MustAnswer)])
+                    );
+                }
+                Err(problems) => prop_assert_eq!(problems, expected),
+            }
+        }
+
+        #[test]
+        fn answers_need_a_why(
+            part in prop::sample::select(vec!["Security", "Performance"]),
+            start in prop::sample::select(vec!["none found: ", "concern: ", "not relevant: "]),
+            why in "[a-z][a-z ]{0,8}",
+        ) {
+            let spec = spec_of("second-opinion");
+            let bare = with_body(spec, "approve", part, &[start.trim_end()]);
+            prop_assert_eq!(
+                problems_of(spec, &bare),
+                vec![format!(
+                    "part \"{part}\" item 1 must start with one of: none found:, concern:, not relevant:, then say why"
+                )]
+            );
+            let answered = with_body(spec, "approve", part, &[&format!("{start}{why}")]);
+            prop_assert!(validate(spec, &ctx(1000), &answered).is_ok());
+        }
+
+        #[test]
+        fn file_lines_rule(
+            path in "[a-z/.]{1,6}",
+            space in any::<bool>(),
+            first in 0_u64..20,
+            last in 0_u64..20,
+            range in any::<bool>(),
+        ) {
+            let path = if space { format!("{path} x") } else { path };
+            let place = if range { format!("{path}:{first}-{last}") } else { format!("{path}:{first}") };
+            let spec = spec_of("explanation");
+            let text = with_body(spec, "understood", "Parts", &[&format!("{place}: words")]);
+            let accepted = !space && (!range || first <= last);
+            prop_assert_eq!(validate(spec, &ctx(1000), &text).is_ok(), accepted, "{}", place);
+        }
+
+        #[test]
+        fn none_only_where_the_spec_allows_it(
+            kind in 0_usize..32,
+            which in 0_usize..32,
+            seed in any::<u64>(),
+        ) {
+            let spec = &KINDS[kind % KINDS.len()];
+            prop_assume!(!spec.checks.is_empty());
+            let (name, _check) = &spec.checks[which % spec.checks.len()];
+            let outcome = spec.outcomes.iter().find(|listed| listed.parts.contains(name)).expect("an outcome");
+            let mut parts = bodies(spec, outcome.name, seed);
+            for (part, body) in &mut parts {
+                if *part == *name {
+                    *body = vec!["none".to_owned()];
+                }
+            }
+            let text = render(spec, outcome.name, seed, &parts);
+            prop_assert!(validate(spec, &ctx(1000), &text).is_err());
+        }
+    }
+
+    const FACTS_MAY_BE_NONE: Spec = Spec {
+        kind: "x",
+        outcomes: &[Outcome {
+            name: "found",
+            parts: &["Facts"],
+        }],
+        owner_message: false,
+        checks: &[("Facts", Check::Contains(&["(source: "]))],
+        findings: None,
+        none_allowed: &["Facts"],
+    };
+
+    #[test]
+    fn a_lone_none_passes_in_a_listed_part_only() {
+        let alone = with_body(&FACTS_MAY_BE_NONE, "found", "Facts", &["none"]);
+        assert!(validate(&FACTS_MAY_BE_NONE, &ctx(1000), &alone).is_ok());
+        let with_more = with_body(
+            &FACTS_MAY_BE_NONE,
+            "found",
+            "Facts",
+            &["none", "(source: x)"],
+        );
+        assert!(validate(&FACTS_MAY_BE_NONE, &ctx(1000), &with_more).is_err());
+        let scout = spec_of("scout-report");
+        let text = with_body(scout, "found", "Facts", &["none"]);
+        assert_eq!(
+            problems_of(scout, &text),
+            ["part \"Facts\" item 1 must contain one of: (source: "]
+        );
+    }
+
+    #[test]
+    fn a_checked_part_without_items_is_named() {
+        let spec = spec_of("second-opinion");
+        let text = with_body(spec, "approve", "Security", &[]);
+        assert_eq!(
+            problems_of(spec, &text),
+            ["part \"Security\" has no list items"]
+        );
+        let text = with_body(spec, "approve-after-fixes", "Findings", &[]);
+        assert_eq!(
+            problems_of(spec, &text),
+            ["part \"Findings\" has no list items"]
+        );
+    }
+
+    #[test]
+    fn findings_are_optional_with_approve_but_never_a_must_fix() {
+        let spec = spec_of("second-opinion");
+        let mut parts = bodies(spec, "approve", 0);
+        parts.push((
+            "Findings",
+            vec!["nitpick: a word".to_owned(), "question: why".to_owned()],
+        ));
+        let text = render(spec, "approve", 0, &parts);
+        let done = validate(spec, &ctx(1000), &text).expect("valid");
+        assert_eq!(done.counts, Some([0, 1, 1]));
+
+        let mut worse = bodies(spec, "approve", 0);
+        worse.push(("Findings", vec!["issue (blocking): bad".to_owned()]));
+        let text = render(spec, "approve", 0, &worse);
+        assert_eq!(
+            problems_of(spec, &text),
+            ["approve allows no must-fix finding"]
+        );
     }
 
     #[test]
     fn header_problems_are_the_formats_messages_and_the_headers_own() {
-        let check = |text: &str| validate(decision_point(), &ctx(30), text).expect_err("refused");
+        let spec = spec_of("decision-point");
+        let check = |text: &str| problems_of(spec, text);
         assert_eq!(
             check("no block\n"),
             ["out.md has no toml block under \"## Form\""]
@@ -530,7 +868,7 @@ mod tests {
 
     #[test]
     fn an_owner_message_needs_its_label_and_ends_with_next() {
-        let spec = decision_point();
+        let spec = spec_of("decision-point");
         let good = filled(spec, "waiting-for-the-owner", 0);
         assert!(validate(spec, &ctx(30), &good).is_ok());
 
@@ -555,7 +893,7 @@ mod tests {
 
     #[test]
     fn exactly_max_lines_pass_and_one_more_fails_with_the_count() {
-        let spec = decision_point();
+        let spec = spec_of("decision-point");
         let text = filled(spec, "waiting-for-the-owner", 0);
         let count = text
             .lines()
