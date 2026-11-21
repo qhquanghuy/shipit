@@ -156,8 +156,8 @@
                       (fs.maybeMissing ./bin)
                       (fs.maybeMissing ./scripts)
                       (fs.maybeMissing ./harness)
-                      ./docs/commands.md
-                      (fs.maybeMissing ./docs/claude-code.md)
+                      ./docs
+                      ./README.md
                     ];
                   };
                 }

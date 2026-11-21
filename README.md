@@ -10,7 +10,7 @@ flow, the roles and the rules; packs decide how each phase is carried out.
 goal → roadmap → build plan → make → check → informed review + second opinion + test drive → recheck → ship
 ```
 
-Status: early. Two commands exist, `shipit check` and `shipit verify`. The command list is in [docs/commands.md](docs/commands.md).
+Status: early. `shipit help` lists the commands, and `shipit help <command>` gives a command's usage and exit codes.
 
 ## Run it
 
@@ -47,7 +47,7 @@ which wins; CI passes the pull request's base branch there, because the setup is
 name, as `git check-ref-format --branch` accepts it: never a revision such as `HEAD~1`, and never a tag. ShipIt asks git for
 the full refs `refs/heads/<base>` and `refs/remotes/origin/<base>` only, so a tag with the same name cannot stand in for the
 branch. The ref used for `<base>`: `origin/<base>` when it exists, else the local branch; if neither exists, exit 2. A
-setup change is approved by merging it, so it is on `origin` before it judges anything. The receipt records the full ref
+setup change is approved by merging it, so it is on `origin` before it judges anything. When `origin/<base>` is used while the local `<base>` is at another commit, `check` says so on stderr: `shipit: comparing with origin/<base>; the local <base> is at another commit (fetch or push if that is not wanted)`. The receipt records the full ref
 (`base_ref`) and the commit it was at (`base_commit`).
 
 The slice's own `gate.base` never judges the slice: if the branch it names has a setup whose `gate.base` is another branch,
@@ -78,7 +78,7 @@ stale base is never mistaken for the slice's own change; a slice whose fields al
 slice's diff against the base touches only `.config/shipit.toml`, `check` runs the slice's new checks with its new `gate.max_files` and
 environment, prints `shipit: this slice changes the checks (<fields>); setup change: the owner approves it by merging` on
 stderr, and writes the receipt with `"setup_change": true` and `"setup_fields"` (the changed fields). `shipit verify` then
-prints `valid receipt for <tree> (setup change)`. The owner's merge is the approval, and CI rechecks.
+prints `valid receipt for <tree> (setup change)`, with `; --base <ref>` before the closing parenthesis when `--base` named the base. The owner's merge is the approval, and CI rechecks.
 
 Any other file in the diff together with a setup change is refused (a check added, removed or reordered, a new cap, any
 change to `gate.environment`, another `gate.base`): the owner merges setup changes on the base first, or sends them as a slice of
@@ -91,7 +91,7 @@ and no file system monitor (`core.fsmonitor=false`); the counts and lists of cha
 (a `.gitmodules` entry with `ignore = all` hides nothing). What git itself does not see is outside the check: ignored files,
 `.git/info/exclude`, clean filters and `core.autocrlf` (git compares the converted content, not the bytes on disk).
 
-The exit codes of each command are in [docs/commands.md](docs/commands.md#exit-codes).
+`shipit help <command>` lists the exit codes of a command.
 
 ## Develop
 

@@ -549,6 +549,13 @@ fn parse_gate(value: &Value) -> Parsed<Gate> {
     })
 }
 
+fn at_least_one<T>(value: &Value, path: &str, make: fn(u64) -> T) -> Parsed<T> {
+    whole(value)
+        .filter(|n| *n >= 1)
+        .map(make)
+        .ok_or_else(|| vec![Problem::new(path, "must be an integer of at least 1")])
+}
+
 // The table and each cap are optional: a setup written before the table existed means the
 // defaults, so the schema grows without a break.
 fn parse_parallel(value: &Value) -> Parsed<Parallel> {
@@ -556,18 +563,11 @@ fn parse_parallel(value: &Value) -> Parsed<Parallel> {
     let object = object_at(value, path)?;
     let mut problems = Problems::default();
     problems.add(shape(path, object, &[], &PARALLEL_OPTIONAL));
-    let message = "must be an integer of at least 1";
     let slices = problems.take(optional(object, "slices", |value| {
-        whole(value)
-            .filter(|n| *n >= 1)
-            .map(SliceCap)
-            .ok_or_else(|| vec![Problem::new(format!("{path}.slices"), message)])
+        at_least_one(value, &format!("{path}.slices"), SliceCap)
     }));
     let agents = problems.take(optional(object, "agents", |value| {
-        whole(value)
-            .filter(|n| *n >= 1)
-            .map(AgentCap)
-            .ok_or_else(|| vec![Problem::new(format!("{path}.agents"), message)])
+        at_least_one(value, &format!("{path}.agents"), AgentCap)
     }));
     problems.finish(|| {
         Some(Parallel {

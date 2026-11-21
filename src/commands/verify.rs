@@ -9,8 +9,15 @@ use crate::pure::setup::HEAD;
 use crate::pure::work::{UNCOMMITTED, hidden_paths, hidden_refusal};
 
 pub(crate) const HIDDEN: bool = false;
-
-const USAGE: &str = "usage: shipit verify [commit]";
+pub(crate) const NEEDS_SETUP: bool = false;
+pub(crate) const USAGE: &str = "usage: shipit verify [commit]";
+pub(crate) const SUMMARY: &str = "Says whether a valid check receipt exists for the current version, or for the given commit; it only reads files and asks git.";
+pub(crate) const EXITS: [&str; 4] = [
+    "valid receipt",
+    "no valid receipt, or (no argument only) uncommitted changes or a tracked file hidden from git",
+    "usage error (bad arguments, not a commit)",
+    "",
+];
 
 // None means HEAD, and then the work must be clean too. Two or more arguments are counted before
 // the emptiness of one.

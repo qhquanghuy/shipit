@@ -56,6 +56,20 @@ fn rev_path(rev: &OsStr, path: &str) -> OsString {
     spec(rev, &[":", path])
 }
 
+// Git obeys these before it looks at the folder (it sets them itself for hooks run in a linked
+// worktree), so a `Git` for one folder would read another repository's objects. Every git call
+// discovers the repository from its folder instead.
+const REPOSITORY_VARIABLES: [&str; 3] = ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"];
+
+fn git_in(dir: &Path) -> Command {
+    let mut command = Command::new("git");
+    for variable in REPOSITORY_VARIABLES {
+        command.env_remove(variable);
+    }
+    command.current_dir(dir);
+    command
+}
+
 impl Git {
     pub(crate) fn find() -> Result<Self, Failure> {
         Self::at(Path::new("."))
@@ -64,9 +78,8 @@ impl Git {
     pub(crate) fn at(dir: &Path) -> Result<Self, Failure> {
         let not_a_repository =
             || Failure::usage("not inside a git repository; run shipit from inside the project");
-        let output = Command::new("git")
+        let output = git_in(dir)
             .args(["rev-parse", "--show-toplevel"])
-            .current_dir(dir)
             .stdin(Stdio::null())
             .stderr(Stdio::null())
             .output()
@@ -95,28 +108,28 @@ impl Git {
         args: &[&OsStr],
         input: Option<&[u8]>,
     ) -> Result<Vec<u8>, GitFailed> {
-        let mut child = Command::new("git")
+        let mut command = git_in(&self.top);
+        command
             .args(args)
-            .current_dir(&self.top)
             .stdin(if input.is_some() {
                 Stdio::piped()
             } else {
                 Stdio::null()
             })
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|_why| GitFailed)?;
+            .stderr(Stdio::null());
+        let mut child = command.spawn().map_err(|_why| GitFailed)?;
         let pipe = child.stdin.take();
-        let output = std::thread::scope(|scope| {
-            scope.spawn(move || {
-                if let (Some(mut pipe), Some(bytes)) = (pipe, input) {
+        let output = match (pipe, input) {
+            (Some(mut pipe), Some(bytes)) => std::thread::scope(|scope| {
+                scope.spawn(move || {
                     // A git that stops reading early is judged by its exit status.
                     pipe.write_all(bytes).ok();
-                }
-            });
-            child.wait_with_output()
-        })
+                });
+                child.wait_with_output()
+            }),
+            (None, _) | (Some(_), None) => child.wait_with_output(),
+        }
         .map_err(|_why| GitFailed)?;
         if output.status.success() {
             Ok(output.stdout)
@@ -308,23 +321,45 @@ mod tests {
     }
 
     #[test]
-    fn a_megabyte_of_input_is_fed_whole() {
+    fn a_megabyte_of_input_is_fed_whole_while_the_output_is_read() {
         let dir = scratch("git-fed");
-        let bytes: Vec<u8> = (0..1_048_576_u32)
-            .map(|i| u8::try_from(i % 251).unwrap_or(0))
+        init(&dir);
+        let ids: Vec<String> = (0..25_600_u32).map(|n| format!("{n:040x}")).collect();
+        let input: Vec<u8> = ids
+            .iter()
+            .flat_map(|id| format!("{id}\n").into_bytes())
             .collect();
-        let file = dir.join("data");
-        fs::write(&file, &bytes).expect("a file");
+        assert!(input.len() >= 1_048_576);
+        let mut expected = String::new();
+        for id in &ids {
+            expected.push_str(id);
+            expected.push_str(" missing\n");
+        }
         let git = Git { top: dir.clone() };
-        let hash = |args: &[&OsStr], input| git.output_fed(args, input).expect("git hashes");
-        let by_path = hash(&[OsStr::new("hash-object"), file.as_os_str()], None);
-        let fed = hash(
-            &[OsStr::new("hash-object"), OsStr::new("--stdin")],
-            Some(&bytes),
-        );
-        assert_eq!(fed, by_path);
-        assert_eq!(fed.len(), 41);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let args = [OsStr::new("cat-file"), OsStr::new("--batch-check")];
+            sender.send(git.output_fed(&args, Some(&input))).ok();
+        });
+        let output = receiver
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("git answered in time")
+            .expect("git succeeded");
+        assert_eq!(String::from_utf8_lossy(&output), expected);
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn every_git_call_ignores_the_repository_variables_of_the_environment() {
+        let command = git_in(Path::new("."));
+        for variable in ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"] {
+            assert!(
+                command
+                    .get_envs()
+                    .any(|(name, value)| name == variable && value.is_none()),
+                "{variable}"
+            );
+        }
     }
 
     #[test]

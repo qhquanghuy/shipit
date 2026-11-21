@@ -92,14 +92,14 @@ An effort above the cap is reported as `must not be above agents.effort_cap`.
 | `gate` | Exactly `base`, `max_files`, `check`, `environment`: what `shipit check` reads. |
 | `gate.base` | A branch name, as `git check-ref-format --branch` accepts it: the base branch. Not a revision (`HEAD~1`), not a tag. |
 | `gate.max_files` | An integer, 1 or more: the size cap for one change, in changed files. |
-| `gate.check` | An array of non-empty strings: the check commands. It may be empty (a new project's first day). |
+| `gate.check` | An array of non-empty strings: the check commands. It may be empty (a new project's first day). Each command runs with `SHIPIT_MERGE_BASE` (the commit where the slice left the base) and `SHIPIT_CHECK` (the command's own text, as written here) in its environment. |
 | `gate.environment` | Exactly `prefix`: an array of non-empty strings, the command prefix that enters the project's tool environment (for example `["nix", "develop", "--command"]`, `["mise", "exec", "--"]`, `["devbox", "run", "--"]`); an empty array means none. Each check runs as `<prefix…> bash -c "<command>"`. |
 | `agents` | Exactly `max_fix_rounds`, `effort_cap`, `tiers`, `roles`, and optionally `parallel`. |
 | `agents.max_fix_rounds` | An integer, 0 or more. |
 | `agents.effort_cap` | On the effort scale: `low`, `medium`, `high`, `xhigh`, `max`, in that order. |
 | `agents.tiers` | A non-empty array of tables. The `tier` values are exactly 1 to n, in order. `model` is a non-empty string. `stand_in` is optional, a table in any TOML form (the example writes it inline); if present it has both `model` (a non-empty string) and `effort` (on the scale, not above `agents.effort_cap`). |
 | `agents.roles` | Exactly `scout`, `planner`, `maker`, `tester`, `reader`. Each has `tier`, the number of an existing tier. `effort` is optional: on the scale, not above `agents.effort_cap`. `scout` also requires `retries` (an integer, 0 or more) and `escalate_to` (a table with only `tier`: an existing tier above `agents.roles.scout.tier`). |
-| `agents.parallel` | Optional; when it is missing the defaults below hold. A table with only `slices` and `agents`, both optional. |
+| `agents.parallel` | Optional; when it is missing the defaults below hold. A table with only `slices` and `agents`, both optional. An empty `[agents.parallel]` and a missing one mean the same caps, but `check` counts adding or removing the table as a change of `agents.parallel`. |
 | `agents.parallel.slices` | An integer, 1 or more; default 3: the cap on slices running in parallel. |
 | `agents.parallel.agents` | An integer, 1 or more; default 4: the cap on agents running in parallel. |
 | `packs` | Exactly `skill`, `domain`, `model`; each a non-empty string. |
@@ -110,7 +110,7 @@ An effort above the cap is reported as `must not be above agents.effort_cap`.
 `shipit check` reads `gate.base`, `gate.max_files`, `gate.check` and `gate.environment` to judge and run the checks, and compares the whole setup with the base branch's, field by field. `shipit verify` reads no setup at all: a receipt is
 valid for a tree and nothing else. `agents` (`max_fix_rounds`, `effort_cap`, `tiers`, `roles`, `planner` included, `parallel`), `packs` and `owner` are
 validated now but read by later parts of ShipIt (the roles that make and review work, the packs they use, the
-limits on messages to the owner). `agents.parallel.slices` is read by `shipit start` and `shipit status`, and `agents.parallel.agents` by the plugin (its agent cap), both from the base branch's setup.
+limits on messages to the owner). `agents.parallel.slices` is read by the commands that start slices and report on them, and `agents.parallel.agents` by the plugin (its agent cap), both from the base branch's setup.
 
 ## Loading
 
@@ -124,7 +124,7 @@ not differ from it (else: merge or rebase; a slice whose fields equal the tip's 
 exception: when the slice's diff against the base touches only `.config/shipit.toml`, a change is allowed. `check` then
 runs the slice's new checks with its new cap (`gate.max_files`) and environment, prints `shipit: this slice changes the checks (<fields>);
 setup change: the owner approves it by merging` on stderr, and marks the receipt (`"setup_change": true`,
-`"setup_fields"`); `shipit verify` prints `valid receipt for <tree> (setup change)`. The owner's merge is the approval.
+`"setup_fields"`); `shipit verify` prints `valid receipt for <tree> (setup change)`, with `; --base <ref>` before the closing parenthesis when `--base` named the base. The owner's merge is the approval.
 With any other file in the diff, any difference is refused, because a branch must not choose its own checks along with
 its own code; the owner merges setup changes on the base first. A base without a setup file prints a notice and nothing is compared, but the slice's diff must then be the setup file alone; with any other file in it the check is refused as for any setup change. `shipit check --base <name>` names the
 base instead of the setup's `gate.base` (a branch name too).

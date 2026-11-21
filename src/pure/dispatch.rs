@@ -1,10 +1,11 @@
 use std::ffi::OsString;
+use std::fmt::Write as _;
 
 use crate::pure::failure::Failure;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Invocation<'a> {
-    Help,
+    Help { command: Option<&'a str> },
     Version,
     Run { name: &'a str, args: &'a [OsString] },
 }
@@ -26,13 +27,13 @@ pub(crate) fn dispatch<'a>(
     names: &[&str],
 ) -> Result<Invocation<'a>, Failure> {
     let Some((first, rest)) = args.split_first() else {
-        return Ok(Invocation::Help);
+        return Ok(Invocation::Help { command: None });
     };
     let Some(name) = first.to_str() else {
         return Err(not_a_command_name(&first.to_string_lossy()));
     };
     match name {
-        "help" | "-h" | "--help" => return Ok(Invocation::Help),
+        "help" | "-h" | "--help" => return help_of(rest),
         "--version" | "-V" => return Ok(Invocation::Version),
         _ => {}
     }
@@ -46,23 +47,76 @@ pub(crate) fn dispatch<'a>(
     }
 }
 
+fn help_of(rest: &[OsString]) -> Result<Invocation<'_>, Failure> {
+    match rest {
+        [] => Ok(Invocation::Help { command: None }),
+        [command] => command
+            .to_str()
+            .map(|command| Invocation::Help {
+                command: Some(command),
+            })
+            .ok_or_else(|| not_a_command_name(&command.to_string_lossy())),
+        [_, _, ..] => Err(Failure::usage(
+            "too many arguments; usage: shipit help [command]",
+        )),
+    }
+}
+
 fn not_a_command_name(name: &str) -> Failure {
     Failure::usage(format!(
         "'{name}' is not a command name; run 'shipit help' to list the commands"
     ))
 }
 
-pub(crate) fn usage(visible: &[&str]) -> String {
+// What a command says about itself: the compiler requires every command file to declare it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Described<'a> {
+    pub(crate) usage: &'a str,
+    pub(crate) summary: &'a str,
+    pub(crate) exits: [&'a str; 4],
+    pub(crate) needs_setup: bool,
+}
+
+const USAGE_PREFIX: &str = "usage: shipit ";
+
+fn synopsis<'a>(command: &Described<'a>) -> &'a str {
+    command
+        .usage
+        .strip_prefix(USAGE_PREFIX)
+        .unwrap_or(command.usage)
+}
+
+pub(crate) fn usage(visible: &[Described<'_>]) -> String {
     let mut text = String::from("usage: shipit <command> [args]\n\ncommands:\n");
     if visible.is_empty() {
         text.push_str("  (none yet)\n");
     }
-    for name in visible {
-        text.push_str("  ");
-        text.push_str(name);
-        text.push('\n');
+    let width = visible
+        .iter()
+        .map(|command| synopsis(command).len())
+        .max()
+        .unwrap_or(0);
+    for command in visible {
+        writeln!(text, "  {:<width$}  {}", synopsis(command), command.summary).ok();
     }
-    text.push_str("\nshipit --version prints the version.\n");
+    text.push_str("\nshipit help <command> shows what a command needs and its exit codes.\n");
+    text.push_str("shipit --version prints the version.\n");
+    text
+}
+
+pub(crate) fn command_help(command: &Described<'_>) -> String {
+    let mut text = format!("{}\n{}\n\n", command.usage, command.summary);
+    text.push_str(if command.needs_setup {
+        "needs a setup file: yes\n"
+    } else {
+        "needs a setup file: no\n"
+    });
+    text.push_str("exit codes:\n");
+    for (code, meaning) in command.exits.iter().enumerate() {
+        if !meaning.is_empty() {
+            writeln!(text, "  {code}  {meaning}").ok();
+        }
+    }
     text
 }
 
@@ -81,10 +135,25 @@ mod tests {
 
     #[test]
     fn no_argument_and_the_help_forms_give_help() {
-        assert_eq!(dispatch(&[], &["check"]), Ok(Invocation::Help));
+        let none = Invocation::Help { command: None };
+        assert_eq!(dispatch(&[], &["check"]), Ok(none));
         for form in ["help", "-h", "--help"] {
-            let args = os(&[form, "ignored"]);
-            assert_eq!(dispatch(&args, &["check"]), Ok(Invocation::Help), "{form}");
+            let args = os(&[form]);
+            let none = Invocation::Help { command: None };
+            assert_eq!(dispatch(&args, &["check"]), Ok(none), "{form}");
+            let args = os(&[form, "check"]);
+            let one = Invocation::Help {
+                command: Some("check"),
+            };
+            assert_eq!(dispatch(&args, &["check"]), Ok(one), "{form} check");
+            let args = os(&[form, "a", "b"]);
+            assert_eq!(
+                dispatch(&args, &["check"]),
+                Err(Failure::usage(
+                    "too many arguments; usage: shipit help [command]"
+                )),
+                "{form} a b"
+            );
         }
     }
 
@@ -116,11 +185,24 @@ mod tests {
         assert_eq!(dispatch(&args, &[]), Err(not_a_name("a\u{fffd}")));
     }
 
+    fn described<'a>(usage: &'a str, summary: &'a str) -> Described<'a> {
+        Described {
+            usage,
+            summary,
+            exits: ["done", "", "bad", ""],
+            needs_setup: true,
+        }
+    }
+
     #[test]
-    fn usage_lists_the_names() {
+    fn usage_lists_each_command_with_its_summary() {
+        let list = [
+            described("usage: shipit check [--base <name>]", "Checks."),
+            described("usage: shipit verify", "Verifies."),
+        ];
         assert_eq!(
-            usage(&["check", "verify"]),
-            "usage: shipit <command> [args]\n\ncommands:\n  check\n  verify\n\nshipit --version prints the version.\n"
+            usage(&list),
+            "usage: shipit <command> [args]\n\ncommands:\n  check [--base <name>]  Checks.\n  verify                 Verifies.\n\nshipit help <command> shows what a command needs and its exit codes.\nshipit --version prints the version.\n"
         );
     }
 
@@ -128,8 +210,19 @@ mod tests {
     fn usage_without_names_says_none_yet() {
         assert_eq!(
             usage(&[]),
-            "usage: shipit <command> [args]\n\ncommands:\n  (none yet)\n\nshipit --version prints the version.\n"
+            "usage: shipit <command> [args]\n\ncommands:\n  (none yet)\n\nshipit help <command> shows what a command needs and its exit codes.\nshipit --version prints the version.\n"
         );
+    }
+
+    #[test]
+    fn a_commands_help_says_its_setup_need_and_skips_unused_exit_codes() {
+        let mut command = described("usage: shipit check", "Checks.");
+        assert_eq!(
+            command_help(&command),
+            "usage: shipit check\nChecks.\n\nneeds a setup file: yes\nexit codes:\n  0  done\n  2  bad\n"
+        );
+        command.needs_setup = false;
+        assert!(command_help(&command).contains("needs a setup file: no\n"));
     }
 
     fn config() -> ProptestConfig {

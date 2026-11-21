@@ -3,13 +3,13 @@ use std::io::Write;
 
 use toml::Table;
 
-use crate::commands::setup::load_setup;
+use crate::commands::setup::load_setup_table;
 use crate::edge::base::base_ref;
 use crate::edge::clock::now_utc;
 use crate::edge::git::Git;
 use crate::edge::run::run_check;
 use crate::edge::store::{check_receipt_path, write_json_atomic};
-use crate::pure::base::{BaseRef, BranchName, SelfBase, base_verdict};
+use crate::pure::base::{BaseRef, BranchName, SelfBase, base_verdict, origin_notice};
 use crate::pure::baseline::{
     Flow, SetupVerdict, parse_baseline, setup_changes, setup_only, setup_verdict,
 };
@@ -25,8 +25,15 @@ use crate::pure::work::{
 };
 
 pub(crate) const HIDDEN: bool = false;
-
-const USAGE: &str = "usage: shipit check [--base <name>]";
+pub(crate) const NEEDS_SETUP: bool = true;
+pub(crate) const USAGE: &str = "usage: shipit check [--base <name>]";
+pub(crate) const SUMMARY: &str = "Refuses a dirty tree, measures the size against the cap, runs the setup's check commands in order, and on a full pass writes a check receipt for this exact version of the work.";
+pub(crate) const EXITS: [&str; 4] = [
+    "receipt written (marked setup_change when the slice only changes the setup file)",
+    "a check failed, a check changed the work, the change is over the cap, or the slice changes the checks together with other files",
+    "usage or setup error (bad arguments, a base that is not a branch name, missing or invalid setup file, base branch not found, no shared history with it, a base that is the branch itself, sparse checkout, git failed, the receipt could not be written)",
+    "uncommitted changes, or a tracked file hidden from git",
+];
 
 // The value after --base is taken whatever it starts with, then it must be a branch name.
 pub(crate) fn base_argument(value: Option<&OsString>, usage: &str) -> Result<BranchName, Failure> {
@@ -65,6 +72,16 @@ fn head_commit(git: &Git) -> Result<Oid, Failure> {
 }
 
 const MAX_HOPS: usize = 5;
+
+fn notice_if_origin_differs(git: &Git, base_ref: &BaseRef, origin: &Oid, err: &mut dyn Write) {
+    let BaseRef::Origin(name) = base_ref else {
+        return;
+    };
+    let local = git.commit_of(OsStr::new(&BaseRef::Local(name.clone()).full()));
+    if let Some(text) = origin_notice(base_ref, origin, local.as_ref()) {
+        writeln!(err, "shipit: {text}").ok();
+    }
+}
 
 fn refuse_self_base(
     git: &Git,
@@ -289,7 +306,9 @@ pub(crate) fn run(
 ) -> Result<(), Failure> {
     let override_base = parse_args(args)?;
     let git = Git::find()?;
-    let setup = load_setup(&git, OsStr::new(HEAD))?;
+    let (setup, table) = load_setup_table(&git, OsStr::new(HEAD))?;
+    let slice = parse_baseline(&table)
+        .map_err(|problems| Failure::usage(invalid(&setup_label(HEAD), &problems)))?;
 
     if git.sparse_checkout() {
         return Err(Failure::usage(
@@ -311,12 +330,10 @@ pub(crate) fn run(
         .commit_of(OsStr::new(&base_ref.full()))
         .ok_or_else(|| Failure::usage(format!("cannot resolve {base_ref} to a commit")))?;
     refuse_self_base(&git, &base, trusted, &base_commit)?;
+    notice_if_origin_differs(&git, &base_ref, &base_commit, err);
     let merge_base = git
         .merge_base_with_head(OsStr::new(&base_ref.full()))
         .ok_or_else(|| Failure::usage(format!("no shared history with {base_ref}")))?;
-    let slice = read_flow(&git, OsStr::new(HEAD), &setup_label(HEAD))?.ok_or_else(|| {
-        Failure::usage(format!("no setup file at {SETUP_PATH} (see docs/setup.md)"))
-    })?;
     let setup_fields = judge_setup(
         &git,
         &slice,

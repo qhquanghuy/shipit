@@ -5,10 +5,12 @@
 )]
 
 use std::ffi::OsStr;
-use std::io::{ErrorKind, Read as _, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::os::unix::process::ExitStatusExt as _;
 use std::path::Path;
 use std::process::{Command, ExitStatus, Stdio};
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::time::Duration;
 
 const NOT_FOUND: i32 = 127;
 const NOT_STARTED: i32 = 126;
@@ -26,6 +28,31 @@ fn exit_code(status: ExitStatus) -> i32 {
         .code()
         .or_else(|| status.signal().map(|signal| KILLED + signal))
         .unwrap_or(NOT_STARTED)
+}
+
+// How long the output may stay silent after the program has exited. A background process that
+// kept the pipe open must not hold the caller up; what it writes later is lost.
+const SILENCE_AFTER_EXIT: Duration = Duration::from_millis(200);
+
+// An interrupted read is read again; any other error is handed on and ends the copy.
+fn copy_chunks(mut reader: impl Read, mut send: impl FnMut(std::io::Result<Vec<u8>>) -> bool) {
+    let mut chunk = [0_u8; 8192];
+    loop {
+        match reader.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(read) => {
+                let bytes = chunk.get(..read).unwrap_or_default().to_vec();
+                if !send(Ok(bytes)) {
+                    break;
+                }
+            }
+            Err(why) if why.kind() == ErrorKind::Interrupted => {}
+            Err(why) => {
+                send(Err(why));
+                break;
+            }
+        }
+    }
 }
 
 // With a sink, stdout and stderr share one pipe, so their order is the program's; each chunk is
@@ -50,30 +77,50 @@ pub(crate) fn run_words(
     command
         .args(args)
         .current_dir(top)
-        .env("PWD", top)
         .envs(vars.iter().copied())
+        .env("PWD", top)
         .stdin(Stdio::null());
     let Some(sink) = sink else {
         let status = command.status().map_err(|why| cannot_run(&why))?;
         return Ok((exit_code(status), Vec::new()));
     };
-    let (mut reader, writer) = std::io::pipe().map_err(|why| cannot_run(&why))?;
+    let (reader, writer) = std::io::pipe().map_err(|why| cannot_run(&why))?;
     let stderr = writer.try_clone().map_err(|why| cannot_run(&why))?;
     command.stdout(writer).stderr(stderr);
     let mut child = command.spawn().map_err(|why| cannot_run(&why))?;
     drop(command);
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || copy_chunks(reader, |item| sender.send(item).is_ok()));
     let mut kept = Vec::new();
-    let mut chunk = [0_u8; 8192];
-    while let Ok(read) = reader.read(&mut chunk) {
-        let Some(bytes) = chunk.get(..read).filter(|bytes| !bytes.is_empty()) else {
-            break;
-        };
-        sink.write_all(bytes).ok();
-        sink.flush().ok();
-        kept.extend_from_slice(bytes);
+    let mut unread = None;
+    let mut exited = None;
+    loop {
+        match receiver.recv_timeout(SILENCE_AFTER_EXIT) {
+            Ok(Ok(bytes)) => {
+                sink.write_all(&bytes).ok();
+                sink.flush().ok();
+                kept.extend_from_slice(&bytes);
+            }
+            Ok(Err(why)) => unread = Some(why),
+            Err(RecvTimeoutError::Disconnected) => break,
+            Err(RecvTimeoutError::Timeout) => {
+                if exited.is_none() {
+                    exited = child.try_wait().map_err(|why| cannot_run(&why))?;
+                }
+                if exited.is_some() {
+                    break;
+                }
+            }
+        }
     }
-    let status = child.wait().map_err(|why| cannot_run(&why))?;
-    Ok((exit_code(status), kept))
+    let status = match exited {
+        Some(status) => status,
+        None => child.wait().map_err(|why| cannot_run(&why))?,
+    };
+    match unread {
+        Some(why) => Err(cannot_run(&why)),
+        None => Ok((exit_code(status), kept)),
+    }
 }
 
 // `<prefix…> bash -c <command>` in the repository top, as the shell's `cd` and `"${prefix[@]}"`
@@ -97,6 +144,7 @@ pub(crate) fn run_check(
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::time::Instant;
 
     use proptest::prelude::*;
 
@@ -137,6 +185,69 @@ mod tests {
         assert_eq!(code, 3);
         assert_eq!(kept.len(), 1_500_000);
         assert_eq!(sink, kept);
+    }
+
+    // Reads the scripted results one by one, then ends.
+    struct Script(Vec<std::io::Result<Vec<u8>>>);
+
+    impl Read for Script {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.0.is_empty() {
+                return Ok(0);
+            }
+            match self.0.remove(0) {
+                Ok(bytes) => {
+                    let n = bytes.len().min(buf.len());
+                    buf.get_mut(..n)
+                        .unwrap_or_default()
+                        .copy_from_slice(bytes.get(..n).unwrap_or_default());
+                    Ok(n)
+                }
+                Err(why) => Err(why),
+            }
+        }
+    }
+
+    #[test]
+    fn an_interrupted_read_is_read_again_and_no_byte_is_lost() {
+        let reader = Script(vec![
+            Ok(b"a".to_vec()),
+            Err(ErrorKind::Interrupted.into()),
+            Ok(b"b".to_vec()),
+        ]);
+        let mut got = Vec::new();
+        copy_chunks(reader, |item| {
+            got.extend(item.expect("no error"));
+            true
+        });
+        assert_eq!(got, b"ab");
+    }
+
+    #[test]
+    fn any_other_read_error_is_handed_on_and_ends_the_copy() {
+        let reader = Script(vec![
+            Ok(b"a".to_vec()),
+            Err(ErrorKind::PermissionDenied.into()),
+            Ok(b"never".to_vec()),
+        ]);
+        let mut seen = Vec::new();
+        copy_chunks(reader, |item| {
+            seen.push(item.map_err(|why| why.kind()));
+            true
+        });
+        assert_eq!(seen, [Ok(b"a".to_vec()), Err(ErrorKind::PermissionDenied)]);
+    }
+
+    #[test]
+    fn a_background_process_holding_the_pipe_does_not_hold_the_caller_up() {
+        let top = scratch("run-background");
+        let args = [OsStr::new("-c"), OsStr::new("sleep 8 & echo done")];
+        let mut sink: Vec<u8> = Vec::new();
+        let started = Instant::now();
+        let result = run_words(&top, OsStr::new("sh"), &args, &[], Some(&mut sink));
+        assert!(started.elapsed() < Duration::from_secs(4));
+        assert_eq!(result, Ok((0, b"done\n".to_vec())));
+        fs::remove_dir_all(&top).ok();
     }
 
     #[test]

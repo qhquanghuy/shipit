@@ -9,18 +9,18 @@ tracks them:
   receipts/check/<tree>.json                    shipit check
   receipts/review/<patch id>/<kind>.json        kind: informed-review | second-opinion
   receipts/test-drive/<tree>.json
-  receipts/coverage/<tree>.json
-  receipts/metric/<tree>/<name>.json
   receipts/plan-review/<file hash>.json         review of a roadmap or a build plan
-  logbooks/<slice>.jsonl                        append-only
-  roadmap/roadmap.md                            the roadmap
-  slices/<slice>/build-plan.md                  one build plan per slice
+  goals/<goal>/goal.md                         one folder per named goal
+  goals/<goal>/roadmap.md                      the goal's roadmap
+  goals/<goal>/logbook.jsonl                   append-only; one per goal, each entry names its slice
+  goals/<goal>/slices/<slice>/build-plan.md    one build plan per slice
+  metrics/<goal>.toml                          kept metrics: one table per slice, numbers only
 ```
 
-Slice 1 writes only `receipts/check/`. The other paths are reserved for later slices, which
-add files and never change this layout.
-
-Each slice adds its own paths here. A path that is listed is reserved: no other slice writes it.
+Only `receipts/check/` is written today. The other paths are reserved for later commands, which
+add files and never change this layout. Receipts are keyed by the work and not by a goal, so they
+stay at the root. The coverage map of a slice is not here: it is committed in the project, at
+`.shipit/coverage/<goal>/<slice>.toml`.
 
 ## Rules
 
@@ -33,7 +33,7 @@ Each slice adds its own paths here. A path that is listed is reserved: no other 
 - Review, test-drive and plan-review receipts are never overwritten: a new one is made under a temporary name and
   hard-linked to its final name, which fails if the name is taken.
 - Logbooks are appended, never rewritten.
-- Check, coverage and metric records are replaced atomically (the rename above).
+- Check receipts and the metrics file are replaced atomically (the rename above).
 - Every receipt is one JSON object with `kind`, `version`, `key`, `time` (UTC, ISO 8601) and
   `tool` (`shipit <version>`).
 

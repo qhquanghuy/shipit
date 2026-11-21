@@ -191,7 +191,7 @@ fn render(root: &Path) -> Result<String, String> {
         let stem = &module.stem;
         writeln!(
             out,
-            "    Command {{ name: {name:?}, hidden: commands::{stem}::HIDDEN, run: commands::{stem}::run }},"
+            "    Command {{ name: {name:?}, hidden: commands::{stem}::HIDDEN, needs_setup: commands::{stem}::NEEDS_SETUP, usage: commands::{stem}::USAGE, summary: commands::{stem}::SUMMARY, exits: commands::{stem}::EXITS, run: commands::{stem}::run }},"
         )
         .map_err(fail)?;
     }
@@ -340,7 +340,7 @@ mod tests {
         fs::write(root.join("clippy.toml"), include_str!("clippy.toml")).expect("writes");
         fs::write(
             root.join("src").join("main.rs"),
-            "include!(\"modules.rs\");\nstruct Command {\n    name: &'static str,\n    hidden: bool,\n    run: fn(),\n}\nfn main() {}\n",
+            "include!(\"modules.rs\");\nstruct Command {\n    name: &'static str,\n    hidden: bool,\n    needs_setup: bool,\n    usage: &'static str,\n    summary: &'static str,\n    exits: [&'static str; 4],\n    run: fn(),\n}\nfn main() {}\n",
         )
         .expect("writes");
         fs::write(

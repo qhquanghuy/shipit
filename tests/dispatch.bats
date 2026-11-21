@@ -15,14 +15,39 @@ load helpers
   [[ $output == *"shipit help"* ]]
 }
 
-@test "help and no arguments list check and verify, not the hidden setup" {
+@test "help and no arguments list check and verify with their summaries, not the hidden setup" {
   run_shipit help
   [ "$status" -eq 0 ]
   local helped=$output
   run_shipit
   [ "$status" -eq 0 ]
   [ "$output" = "$helped" ]
-  grep -qx '  check' <<<"$output"
-  grep -qx '  verify' <<<"$output"
-  ! grep -qx '  setup' <<<"$output"
+  grep -qE '^  check \[--base <name>\]  +Refuses a dirty tree' <<<"$output"
+  grep -qE '^  verify \[commit\]  +Says whether a valid check receipt exists' <<<"$output"
+  ! grep -q 'usage: shipit setup' <<<"$output"
+  ! grep -qE '^  setup' <<<"$output"
+}
+
+@test "help <command> gives the usage, the setup need and the exit codes, for hidden commands too" {
+  run_shipit help check
+  [ "$status" -eq 0 ]
+  [[ $output == "usage: shipit check [--base <name>]"* ]]
+  [[ $output == *$'needs a setup file: yes\nexit codes:\n  0  receipt written'* ]]
+  [[ $output == *$'\n  3  uncommitted changes'* ]]
+  run_shipit --help verify
+  [ "$status" -eq 0 ]
+  [[ $output == *"needs a setup file: no"* ]]
+  [[ $output != *"  3  "* ]]
+  run_shipit help setup
+  [ "$status" -eq 0 ]
+  [[ $output == "usage: shipit setup [ref]"* ]]
+}
+
+@test "help of an unknown command or with too many arguments exits 2" {
+  run_shipit help nosuchcommand
+  [ "$status" -eq 2 ]
+  [[ $output == *"unknown command 'nosuchcommand'"* ]]
+  run_shipit help check verify
+  [ "$status" -eq 2 ]
+  [[ $output == *"usage: shipit help [command]"* ]]
 }

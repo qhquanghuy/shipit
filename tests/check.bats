@@ -106,6 +106,22 @@ LOG="$BATS_TEST_TMPDIR/log"
   [ "$(cat "$LOG")" = "$base|$one"$'\n'"$base|$two" ]
 }
 
+@test "check reads the setup file at HEAD once" {
+  start_repo
+  commit_files 1
+  local shim="$BATS_TEST_TMPDIR/shim"
+  mkdir -p "$shim"
+  cat >"$shim/git" <<SHIM
+#!/bin/sh
+printf '%s\n' "\$*" >> "$LOG"
+exec "$(command -v git)" "\$@"
+SHIM
+  chmod +x "$shim/git"
+  PATH="$shim:$PATH" run_check
+  [ "$status" -eq 0 ]
+  [ "$(grep -c -- 'HEAD:.config/shipit.toml' "$LOG")" -eq 1 ]
+}
+
 @test "the first failing command stops the run: exit 1, named, no receipt" {
   start_repo "gate.check=$(checks true false 'touch ran-after')"
   commit_files 1
@@ -178,6 +194,9 @@ clone_of_main() {
   git config commit.gpgsign false
 }
 
+# What a check says when it compares with origin/main while the local main is elsewhere.
+NOTICE="shipit: comparing with origin/main; the local main is at another commit (fetch or push if that is not wanted)"
+
 @test "local main ahead of origin/main: origin/main is used" {
   clone_of_main "$(fixture_with 'gate.check=[]' 'gate.max_files=9')"
   commit_files 5 m
@@ -187,6 +206,16 @@ clone_of_main() {
   run_check
   [ "$status" -eq 0 ]
   [[ $output == *"size: 8 files (cap 9)"* ]]
+  [ "$stderr" = "$NOTICE" ]
+}
+
+@test "origin/main at the same commit as local main: no notice" {
+  clone_of_main "$(fixture_with 'gate.check=[]')"
+  git checkout -q -b feature
+  commit_files 1
+  run_check
+  [ "$status" -eq 0 ]
+  [ -z "$stderr" ]
 }
 
 @test "local main and origin/main diverged: origin/main is used" {
@@ -216,7 +245,7 @@ clone_of_main() {
   commit_files 2
   run_check
   [ "$status" -eq 1 ]
-  [ "$stderr" = "$(changed_msg gate.max_files)" ]
+  [ "$stderr" = "$NOTICE"$'\n'"$(changed_msg gate.max_files)" ]
   no_receipt
 }
 
@@ -391,7 +420,7 @@ $(changed_msg 'version, gate.base, gate.max_files, gate.check, gate.environment,
   run_check
   [ "$status" -eq 0 ]
   [[ $output == *"size: 1 files (cap 20)"* ]]
-  [ -z "$stderr" ]
+  [ "$stderr" = "$NOTICE" ]
 }
 
 @test "--base overrides the base named in the setup" {

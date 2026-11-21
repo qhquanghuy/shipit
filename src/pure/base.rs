@@ -82,6 +82,21 @@ pub(crate) fn choose_base_ref(base: &BranchName, origin: bool, local: bool) -> O
     }
 }
 
+// The refusals about the setup say "merge or rebase", which does not help when origin is stale or
+// the owner has not pushed: this line says what to do instead.
+pub(crate) fn origin_notice(
+    base_ref: &BaseRef,
+    origin: &Oid,
+    local: Option<&Oid>,
+) -> Option<String> {
+    match (base_ref, local) {
+        (BaseRef::Origin(name), Some(local)) if local != origin => Some(format!(
+            "comparing with origin/{name}; the local {name} is at another commit (fetch or push if that is not wanted)"
+        )),
+        (BaseRef::Origin(_) | BaseRef::Local(_), Some(_) | None) => None,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SelfBase {
     TheBranch,
@@ -154,6 +169,41 @@ mod tests {
     }
 
     #[test]
+    fn origin_wins_whenever_it_exists() {
+        let main = name("main");
+        let origin = Some(BaseRef::Origin(main.clone()));
+        let local = Some(BaseRef::Local(main.clone()));
+        for (has_origin, has_local, expected) in [
+            (true, true, &origin),
+            (true, false, &origin),
+            (false, true, &local),
+            (false, false, &None),
+        ] {
+            assert_eq!(
+                &choose_base_ref(&main, has_origin, has_local),
+                expected,
+                "origin {has_origin}, local {has_local}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_notice_only_when_origin_is_used_and_the_local_base_is_elsewhere() {
+        let (a, b) = (oid('a'), oid('b'));
+        let origin = BaseRef::Origin(name("main"));
+        let local = BaseRef::Local(name("main"));
+        assert_eq!(
+            origin_notice(&origin, &a, Some(&b)).as_deref(),
+            Some(
+                "comparing with origin/main; the local main is at another commit (fetch or push if that is not wanted)"
+            )
+        );
+        assert_eq!(origin_notice(&origin, &a, Some(&a)), None);
+        assert_eq!(origin_notice(&origin, &a, None), None);
+        assert_eq!(origin_notice(&local, &a, Some(&b)), None);
+    }
+
+    #[test]
     fn the_reasons_read_as_the_shell_said_them() {
         assert_eq!(
             SelfBase::TheBranch.to_string(),
@@ -192,19 +242,6 @@ mod tests {
             ]),
         ) {
             prop_assert_eq!(BranchName::parse(&shape.replace('X', &x)), None);
-        }
-
-        #[test]
-        fn origin_wins_whenever_it_exists(origin in any::<bool>(), local in any::<bool>()) {
-            let main = name("main");
-            let expected = if origin {
-                Some(BaseRef::Origin(main.clone()))
-            } else if local {
-                Some(BaseRef::Local(main.clone()))
-            } else {
-                None
-            };
-            prop_assert_eq!(choose_base_ref(&main, origin, local), expected);
         }
 
         #[test]

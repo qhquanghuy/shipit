@@ -1,6 +1,6 @@
 # ShipIt: goal
 
-Status: approved by the owner on 2026-11-21; later owner decisions are folded in. Terms are defined in [vocab.md](vocab.md).
+Status: version 2, approved by the owner on 2026-11-21 (v1 approved 2026-11-21). Terms are defined in [vocab.md](vocab.md).
 
 ## Goal
 
@@ -110,8 +110,7 @@ The decision-point template enforces this form: label, What, Context, Recommenda
 One command, a Rust program, kept in this repo. It runs git as a process and needs only git, and
 bash to run the check commands, at run time. Hooks and CI call the same tool.
 
-The current command reference, with the exit codes and the commands that run without a setup, is in
-[commands.md](commands.md).
+The commands, their usage and their exit codes are printed by `shipit help` and `shipit help <command>`.
 
 - **A receipt is keyed by the exact input of what it records.**
   - A check and a test drive judge the whole work, so their key is the git tree hash. An amended
@@ -133,7 +132,7 @@ The current command reference, with the exit codes and the commands that run wit
 - The roadmap has a machine-readable part: each slice's and proof step's name, `after` (what it follows), `meets` (the done-when items it
   proves), `owns` (what it owns), test-drive mark and branch. `shipit status` reads it, so a slice with no receipts yet still shows.
 - All working copies of a project see the same roadmap, logbook and receipts.
-- `.shipit/coverage/<slice>.toml` is committed evidence of which done-when items a slice covers.
+- `.shipit/coverage/<goal>/<slice>.toml` is committed evidence of which done-when items a slice covers.
 
 **Slice states.** The list is fixed, and each state is computed, never set:
 
@@ -300,6 +299,8 @@ The goal is met when all of these are true.
     ships. The pull request shows its receipts and its known issues.
 17. Test drive of ShipIt itself: a fresh agent that has only the README and the docs sets ShipIt
     up in a sample project and takes one small slice to "ready to ship".
+18. Several goals run at the same time. Each has a short name; its slices use branches `slice/<goal>/<slice>`, its done-when items are written `<goal>:DW<n>` where goals meet, and the slice cap counts across all goals.
+19. When every slice and proof step of a goal has shipped, `shipit complete <goal>` keeps only the data a tool reads (each slice's metrics), turns the goal's open known issues into GitHub issues after the owner confirms, and deletes the rest.
 
 ## Non-goals (version 1)
 

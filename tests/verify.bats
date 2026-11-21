@@ -190,3 +190,13 @@ receipt_file() {
   [ "$status" -eq 0 ]
   [ "$output" = "valid receipt for $(short_tree) (--base refs/heads/main)" ]
 }
+
+@test "verify finds the repository from the folder, whatever GIT_DIR the environment holds" {
+  start_repo
+  do_check
+  local other
+  other=$(make_repo)
+  GIT_DIR="$other/.git" run_verify
+  [ "$status" -eq 0 ]
+  [ "$output" = "valid receipt for $(short_tree)" ]
+}
