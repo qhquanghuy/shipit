@@ -59,6 +59,10 @@ effort = "medium"
 [agents.roles.reader]
 tier = 1
 
+[agents.parallel]
+slices = 3
+agents = 4
+
 [packs]
 skill = "superpowers"
 domain = "coding"
@@ -90,20 +94,23 @@ An effort above the cap is reported as `must not be above agents.effort_cap`.
 | `gate.max_files` | An integer, 1 or more: the size cap for one change, in changed files. |
 | `gate.check` | An array of non-empty strings: the check commands. It may be empty (a new project's first day). |
 | `gate.environment` | Exactly `prefix`: an array of non-empty strings, the command prefix that enters the project's tool environment (for example `["nix", "develop", "--command"]`, `["mise", "exec", "--"]`, `["devbox", "run", "--"]`); an empty array means none. Each check runs as `<prefix…> bash -c "<command>"`. |
-| `agents` | Exactly `max_fix_rounds`, `effort_cap`, `tiers`, `roles`. |
+| `agents` | Exactly `max_fix_rounds`, `effort_cap`, `tiers`, `roles`, and optionally `parallel`. |
 | `agents.max_fix_rounds` | An integer, 0 or more. |
 | `agents.effort_cap` | On the effort scale: `low`, `medium`, `high`, `xhigh`, `max`, in that order. |
 | `agents.tiers` | A non-empty array of tables. The `tier` values are exactly 1 to n, in order. `model` is a non-empty string. `stand_in` is optional, a table in any TOML form (the example writes it inline); if present it has both `model` (a non-empty string) and `effort` (on the scale, not above `agents.effort_cap`). |
 | `agents.roles` | Exactly `scout`, `planner`, `maker`, `tester`, `reader`. Each has `tier`, the number of an existing tier. `effort` is optional: on the scale, not above `agents.effort_cap`. `scout` also requires `retries` (an integer, 0 or more) and `escalate_to` (a table with only `tier`: an existing tier above `agents.roles.scout.tier`). |
+| `agents.parallel` | Optional; when it is missing the defaults below hold. A table with only `slices` and `agents`, both optional. |
+| `agents.parallel.slices` | An integer, 1 or more; default 3: the cap on slices running in parallel. |
+| `agents.parallel.agents` | An integer, 1 or more; default 4: the cap on agents running in parallel. |
 | `packs` | Exactly `skill`, `domain`, `model`; each a non-empty string. |
 | `owner` | Exactly `max_lines` and `status_update_max_lines`, each an integer, 1 or more; `status_update_max_lines` is not above `max_lines`. `max_lines` is the most lines any message to the owner may have. `status_update_max_lines` is the most lines a progress update to the owner may have. |
 
 ## Who reads what
 
 `shipit check` reads `gate.base`, `gate.max_files`, `gate.check` and `gate.environment`. `shipit verify` reads no setup at all: a receipt is
-valid for a tree and nothing else. `agents` (`max_fix_rounds`, `effort_cap`, `tiers`, `roles`, `planner` included), `packs` and `owner` are
+valid for a tree and nothing else. `agents` (`max_fix_rounds`, `effort_cap`, `tiers`, `roles`, `planner` included, `parallel`), `packs` and `owner` are
 validated now but read by later parts of ShipIt (the roles that make and review work, the packs they use, the
-limits on messages to the owner).
+limits on messages to the owner). `agents.parallel.slices` is read by `shipit start` and `shipit status`, and `agents.parallel.agents` by the plugin (its agent cap), both from the base branch's setup.
 
 ## Loading
 
