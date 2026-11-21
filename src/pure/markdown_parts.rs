@@ -26,6 +26,45 @@ pub(crate) fn list_item(text: &str) -> Option<&str> {
     text.get(digits..)?.strip_prefix(". ").map(str::trim)
 }
 
+// The text after a run of `n` backticks up to the next run of exactly `n`, as the offset after
+// that closing run.
+fn closing_run(text: &str, n: usize) -> Option<usize> {
+    let mut at = 0;
+    while let Some(found) = text.get(at..)?.find('`') {
+        let start = at + found;
+        let run = text.get(start..)?.chars().take_while(|c| *c == '`').count();
+        if run == n {
+            return Some(start + run);
+        }
+        at = start + run;
+    }
+    None
+}
+
+// A code span becomes one space, so that a name in it is a mention and a word cannot be joined
+// across it. A run of backticks with no closing run is text.
+pub(crate) fn without_code_spans(line: &str) -> String {
+    let mut kept = String::new();
+    let mut rest = line;
+    while let Some(open) = rest.find('`') {
+        let Some((before, from)) = rest.split_at_checked(open) else {
+            break;
+        };
+        kept.push_str(before);
+        let run = from.chars().take_while(|c| *c == '`').count();
+        let inside = from.get(run..).unwrap_or_default();
+        if let Some(tail) = closing_run(inside, run).and_then(|end| inside.get(end..)) {
+            kept.push(' ');
+            rest = tail;
+        } else {
+            kept.push_str(from.get(..run).unwrap_or_default());
+            rest = inside;
+        }
+    }
+    kept.push_str(rest);
+    kept
+}
+
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;
@@ -79,6 +118,45 @@ mod tests {
             let wanted = (indent == 0).then_some(text.trim());
             prop_assert_eq!(list_item(&line), wanted);
         }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            failure_persistence: None,
+            ..ProptestConfig::default()
+        })]
+
+        // Text on either side of a span is kept; the span is one space whatever it holds.
+        #[test]
+        fn a_span_is_replaced_by_one_space(
+            before in "[a-z ]{0,6}",
+            inside in "[a-z ]{1,6}",
+            after in "[a-z ]{0,6}",
+            ticks in 1_usize..4,
+        ) {
+            let fence = "`".repeat(ticks);
+            let line = format!("{before}{fence}{inside}{fence}{after}");
+            prop_assert_eq!(without_code_spans(&line), format!("{before} {after}"));
+        }
+
+        #[test]
+        fn text_without_a_closing_run_is_kept(
+            before in "[a-z ]{0,6}",
+            after in "[a-z ]{0,6}",
+            open in 1_usize..4,
+            close in 1_usize..4,
+        ) {
+            prop_assume!(open != close);
+            let line = format!("{before}{}{after}{}", "`".repeat(open), "`".repeat(close));
+            prop_assert_eq!(without_code_spans(&line), line);
+        }
+    }
+
+    #[test]
+    fn a_longer_run_can_hold_a_shorter_one_and_spans_do_not_nest() {
+        assert_eq!(without_code_spans("a ``b ` c`` d"), "a   d");
+        assert_eq!(without_code_spans("`a` and `b`"), "  and  ");
+        assert_eq!(without_code_spans("`a``b`"), " ");
     }
 
     #[test]
