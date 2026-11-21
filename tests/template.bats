@@ -19,13 +19,13 @@ setup() {
 @test "template: without a kind it lists the kinds" {
   run --separate-stderr "$SHIPIT_BIN" template
   [ "$status" -eq 0 ]
-  [ "$output" = 'kinds: decision-point, explanation, informed-review, known-issue, model-advice, scout-report, second-opinion, test-drive' ]
+  [ "$output" = 'kinds: build-plan, decision-point, explanation, informed-review, known-issue, model-advice, roadmap, scout-report, second-opinion, test-drive' ]
 }
 
 @test "template: an unknown kind and extra arguments exit 2" {
   run --separate-stderr "$SHIPIT_BIN" template review
   [ "$status" -eq 2 ]
-  [ "$stderr" = 'shipit: unknown kind "review"; kinds: decision-point, explanation, informed-review, known-issue, model-advice, scout-report, second-opinion, test-drive' ]
+  [ "$stderr" = 'shipit: unknown kind "review"; kinds: build-plan, decision-point, explanation, informed-review, known-issue, model-advice, roadmap, scout-report, second-opinion, test-drive' ]
   run --separate-stderr "$SHIPIT_BIN" template decision-point more
   [ "$status" -eq 2 ]
   [ "$stderr" = 'shipit: usage: shipit template [kind]' ]

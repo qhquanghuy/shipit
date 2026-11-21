@@ -72,10 +72,10 @@ write_message() {
   write_message out.md
   run --separate-stderr "$SHIPIT_BIN" validate review out.md
   [ "$status" -eq 2 ]
-  [ "$stderr" = 'shipit: unknown kind "review"; kinds: decision-point, explanation, informed-review, known-issue, model-advice, scout-report, second-opinion, test-drive' ]
+  [ "$stderr" = 'shipit: unknown kind "review"; kinds: build-plan, decision-point, explanation, informed-review, known-issue, model-advice, roadmap, scout-report, second-opinion, test-drive' ]
   run --separate-stderr "$SHIPIT_BIN" validate decision-point
   [ "$status" -eq 2 ]
-  [ "$stderr" = 'shipit: usage: shipit validate <kind> <file>' ]
+  [ "$stderr" = 'shipit: usage: shipit validate <kind> <file> [--goal <name> | --goal-file <path>]' ]
 }
 
 @test "validate: a missing setup stops it" {
@@ -87,4 +87,65 @@ write_message() {
   run --separate-stderr "$SHIPIT_BIN" validate decision-point out.md
   [ "$status" -eq 2 ]
   [ "$stderr" = 'shipit: no setup file at .config/shipit.toml (see docs/setup.md)' ]
+}
+
+# write_roadmap <file>: the formats' roadmap fixture, wrapped as this kind's output.
+write_roadmap() {
+  {
+    printf '## Form\n\n```toml\nkind = "roadmap"\noutcome = "ready-for-review"\ninput = "a goal"\n```\n\n'
+    cat "$SHIPIT_SRC/tests/fixtures/roadmap.md"
+    printf '\n## Goal\nThe demo goal.\n\n## Shared contracts\n- none\n\n## Owner decisions\n- none\n\n## Risks\n- none\n'
+  } >"$1"
+}
+
+# bigger_goal: the goal fixture with a fourth done-when item that no slice meets.
+bigger_goal() {
+  sed 's/^3\. The third item\./3. The third item.\n4. The fourth item./' "$SHIPIT_SRC/tests/fixtures/goal.md"
+}
+
+@test "validate: a roadmap needs its goal, and only a roadmap takes one" {
+  repo=$(make_repo)
+  cd "$repo"
+  write_roadmap road.md
+  write_message out.md
+  run --separate-stderr "$SHIPIT_BIN" validate roadmap road.md
+  [ "$status" -eq 2 ]
+  [ "$stderr" = 'shipit: the roadmap needs its goal: shipit validate roadmap <file> --goal <name> or --goal-file <path>' ]
+  run --separate-stderr "$SHIPIT_BIN" validate decision-point out.md --goal demo
+  [ "$status" -eq 2 ]
+  [ "$stderr" = 'shipit: --goal and --goal-file are only for the roadmap, and only one of them' ]
+  run --separate-stderr "$SHIPIT_BIN" validate roadmap road.md --goal demo --goal-file "$SHIPIT_SRC/tests/fixtures/goal.md"
+  [ "$status" -eq 2 ]
+  [ "$stderr" = "shipit: usage: shipit validate <kind> <file> [--goal <name> | --goal-file <path>]" ]
+}
+
+@test "validate: a roadmap is held against its goal file, read from the caller's folder" {
+  repo=$(make_repo)
+  mkdir -p "$repo/sub"
+  cd "$repo/sub"
+  write_roadmap ../road.md
+  cp "$SHIPIT_SRC/tests/fixtures/goal.md" ../goal.md
+  run --separate-stderr "$SHIPIT_BIN" validate roadmap ../road.md --goal-file ../goal.md
+  [ "$status" -eq 0 ]
+  [ "$output" = 'valid roadmap: ready-for-review' ]
+  bigger_goal >../bigger.md
+  run --separate-stderr "$SHIPIT_BIN" validate roadmap ../road.md --goal-file ../bigger.md
+  [ "$status" -eq 1 ]
+  [ "$stderr" = 'shipit: ../road.md is not a valid roadmap:
+  DW4: no slice' ]
+}
+
+@test "validate: --goal reads the newest version of the goal in the store" {
+  repo=$(make_repo)
+  cd "$repo"
+  write_roadmap road.md
+  store=$(git rev-parse --path-format=absolute --git-common-dir)/shipit/goals/demo
+  mkdir -p "$store"
+  bigger_goal >"$store/goal.v9.md"
+  cp "$SHIPIT_SRC/tests/fixtures/goal.md" "$store/goal.v10.md"
+  run --separate-stderr "$SHIPIT_BIN" validate roadmap road.md --goal demo
+  [ "$status" -eq 0 ]
+  run --separate-stderr "$SHIPIT_BIN" validate roadmap road.md --goal nonesuch
+  [ "$status" -eq 2 ]
+  [ "$stderr" = 'shipit: no goal "nonesuch" in the store' ]
 }

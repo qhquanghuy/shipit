@@ -1,18 +1,24 @@
-use toml::Value;
+use toml::{Table, Value};
 
 use crate::pure::block::toml_block;
+use crate::pure::coverage_map::parse_map;
 use crate::pure::finding::{
     Class, Outcome as FindingOutcome, ResultKind, outcome_problems, parse_finding,
 };
+use crate::pure::goal::goal_items;
 use crate::pure::markdown::{Kind, Line, lines};
 use crate::pure::markdown_parts::{bold_marker, heading, list_item};
 use crate::pure::messages::{FILE_PROBLEM, NO_BLOCK, NOT_TOML, say};
+use crate::pure::roadmap::{Element, meets_problems, parse_roadmap};
 use crate::pure::setup::toml_table;
 use crate::pure::text::comma_list;
 
 const FORM: &str = "## Form";
 const HEADER_KEYS: [&str; 3] = ["kind", "outcome", "input"];
 const NEXT: &str = "Next";
+const SLICES: &str = "## Slices";
+const COVERAGE: &str = "## Done-when coverage";
+const SPIKE: &str = "settled by spike ";
 
 #[derive(Debug)]
 pub(crate) struct Outcome {
@@ -30,6 +36,15 @@ pub(crate) struct Spec {
     pub(crate) findings: Option<(&'static str, ResultKind)>,
     // Parts where one item `none` says there is nothing to say.
     pub(crate) none_allowed: &'static [&'static str],
+    pub(crate) embedded: Embedded,
+}
+
+// A machine format inside the output, read by the formats and found under a heading of its own.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Embedded {
+    Nothing,
+    Roadmap,
+    CoverageMap,
 }
 
 #[derive(Debug)]
@@ -37,6 +52,8 @@ pub(crate) enum Check {
     Answer(&'static [&'static str]),
     Contains(&'static [&'static str]),
     FileLines,
+    // The item contains one of the phrases and then the name of a slice or proof step.
+    NamesElement(&'static [&'static str]),
 }
 
 impl Spec {
@@ -56,6 +73,8 @@ impl Spec {
 pub(crate) struct Context<'a> {
     pub(crate) file: &'a str,
     pub(crate) max_lines: u64,
+    // The text of the goal file a roadmap is held against.
+    pub(crate) goal: Option<&'a str>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -70,16 +89,61 @@ pub(crate) struct Header {
     pub(crate) outcome: String,
 }
 
-pub(crate) fn header(file: &str, text: &str) -> Result<Header, Vec<String>> {
-    let block = match toml_block(text, FORM) {
-        Ok(Some(block)) => block,
-        Ok(None) => {
-            return Err(vec![say(NO_BLOCK, &[("file", &file), ("heading", &FORM)])]);
-        }
-        Err(why) => return Err(vec![say(FILE_PROBLEM, &[("file", &file), ("why", &why)])]),
+// The formats' own messages for a block that is missing or cannot be read.
+fn block_table(file: &str, text: &str, heading: &str) -> Result<Table, String> {
+    match toml_block(text, heading) {
+        Ok(Some(block)) => toml_table(block.as_bytes())
+            .map_err(|why| say(NOT_TOML, &[("file", &file), ("why", &why)])),
+        Ok(None) => Err(say(NO_BLOCK, &[("file", &file), ("heading", &heading)])),
+        Err(why) => Err(say(FILE_PROBLEM, &[("file", &file), ("why", &why)])),
+    }
+}
+
+// The names of the slices and proof steps, when the block is a valid roadmap, and the problems
+// the formats find in it and in its goal. Without the goal text nothing is held against it.
+fn roadmap_problems(
+    file: &str,
+    text: &str,
+    goal: Option<&str>,
+) -> (Option<Vec<String>>, Vec<String>) {
+    let table = match block_table(file, text, SLICES) {
+        Ok(table) => table,
+        Err(why) => return (None, vec![why]),
     };
-    let table = toml_table(block.as_bytes())
-        .map_err(|why| vec![say(NOT_TOML, &[("file", &file), ("why", &why)])])?;
+    let roadmap = match parse_roadmap(&table) {
+        Ok(roadmap) => roadmap,
+        Err(problems) => return (None, problems.iter().map(ToString::to_string).collect()),
+    };
+    let names = roadmap
+        .elements
+        .iter()
+        .map(|element| match element {
+            Element::Slice(slice) => slice.name.to_string(),
+            Element::Proof(proof) => proof.name.to_string(),
+        })
+        .collect();
+    let problems = match goal.map(goal_items) {
+        None => Vec::new(),
+        Some(Err(why)) => vec![why],
+        Some(Ok(items)) => meets_problems(&roadmap, &items)
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
+    };
+    (Some(names), problems)
+}
+
+fn map_problems(file: &str, text: &str) -> Vec<String> {
+    match block_table(file, text, COVERAGE) {
+        Err(why) => vec![why],
+        Ok(table) => parse_map(&table).err().map_or_else(Vec::new, |problems| {
+            problems.iter().map(ToString::to_string).collect()
+        }),
+    }
+}
+
+pub(crate) fn header(file: &str, text: &str) -> Result<Header, Vec<String>> {
+    let table = block_table(file, text, FORM).map_err(|why| vec![why])?;
     let mut unknown: Vec<&String> = table
         .keys()
         .filter(|key| !HEADER_KEYS.contains(&key.as_str()))
@@ -259,9 +323,27 @@ fn is_file_lines(item: &str) -> bool {
         && !text.trim().is_empty()
 }
 
+// A name after a phrase; a spike is not in the roadmap, so any name will do for it. Without the
+// roadmap's names (it did not parse) nothing can be held against them.
+fn names_an_element(item: &str, phrases: &[&str], names: Option<&[String]>) -> bool {
+    let Some(names) = names else {
+        return true;
+    };
+    phrases.iter().any(|phrase| {
+        let Some((_, after)) = item.split_once(phrase) else {
+            return false;
+        };
+        let name: String = after
+            .chars()
+            .take_while(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '-')
+            .collect();
+        !name.is_empty() && (*phrase == SPIKE || names.contains(&name))
+    })
+}
+
 impl Check {
     // None when the item passes; else what it must do, to follow the item's number.
-    fn refuse(&self, item: &str) -> Option<String> {
+    fn refuse(&self, item: &str, names: Option<&[String]>) -> Option<String> {
         match self {
             Self::Answer(starts) => {
                 let answered = starts.iter().any(|start| {
@@ -279,11 +361,23 @@ impl Check {
                 .then(|| format!("must contain one of: {}", comma_list(phrases.iter()))),
             Self::FileLines => (!is_file_lines(item))
                 .then(|| "must start with <file>:<line> or <file>:<first>-<last>".to_owned()),
+            Self::NamesElement(phrases) => (!names_an_element(item, phrases, names)).then(|| {
+                format!(
+                    "must name a slice or proof step after one of: {}",
+                    comma_list(phrases.iter().map(|phrase| phrase.trim_end()))
+                )
+            }),
         }
     }
 }
 
-fn check_problems(name: &str, check: &Check, items: &[&str], none_is_ok: bool) -> Vec<String> {
+fn check_problems(
+    name: &str,
+    check: &Check,
+    items: &[&str],
+    none_is_ok: bool,
+    names: Option<&[String]>,
+) -> Vec<String> {
     if items.is_empty() {
         return vec![format!("part \"{name}\" has no list items")];
     }
@@ -295,7 +389,7 @@ fn check_problems(name: &str, check: &Check, items: &[&str], none_is_ok: bool) -
         .enumerate()
         .filter_map(|(index, item)| {
             check
-                .refuse(item)
+                .refuse(item, names)
                 .map(|why| format!("part \"{name}\" item {} {why}", index + 1))
         })
         .collect()
@@ -373,13 +467,24 @@ pub(crate) fn validate(spec: &Spec, ctx: &Context<'_>, text: &str) -> Result<Ver
     } else {
         (None, None)
     };
+    let (names, embedded) = match spec.embedded {
+        Embedded::Nothing => (None, Vec::new()),
+        Embedded::Roadmap => roadmap_problems(ctx.file, text, ctx.goal),
+        Embedded::CoverageMap => (None, map_problems(ctx.file, text)),
+    };
     let found = parts(spec, all);
     let mut problems: Vec<String> = label.into_iter().collect();
     problems.extend(part_problems(&spec.part_names(), outcome.parts, &found));
     for (name, check) in spec.checks {
         if let Some(part) = once(&found, name) {
             let none_is_ok = spec.none_allowed.contains(name);
-            problems.extend(check_problems(name, check, &items(part), none_is_ok));
+            problems.extend(check_problems(
+                name,
+                check,
+                &items(part),
+                none_is_ok,
+                names.as_deref(),
+            ));
         }
     }
     let mut counts = None;
@@ -402,6 +507,7 @@ pub(crate) fn validate(spec: &Spec, ctx: &Context<'_>, text: &str) -> Result<Ver
         problems.push(format!("part \"{NEXT}\" must be the last part"));
     }
     problems.extend(length);
+    problems.extend(embedded);
     if problems.is_empty() {
         Ok(Verdict {
             outcome: head.outcome,
@@ -432,25 +538,75 @@ mod tests {
         list.get(which).copied().unwrap_or_default()
     }
 
-    // One valid item for a part: the check of the part says what it must look like.
+    const GOAL: &str = "# Goal\n\n## Done-when\n\n1. one\n2. two\n";
+
+    const ROADMAP_BLOCK: [&str; 24] = [
+        "```toml",
+        "goal = \"demo\"",
+        "",
+        "[[slice]]",
+        "name = \"alpha\"",
+        "after = []",
+        "meets = [\"DW1\"]",
+        "owns = [\"src/alpha.rs\"]",
+        "test_drive = false",
+        "",
+        "[[slice]]",
+        "name = \"beta\"",
+        "after = [\"alpha\"]",
+        "meets = [\"DW2\"]",
+        "owns = [\"src/beta.rs\"]",
+        "test_drive = true",
+        "",
+        "[[proof]]",
+        "name = \"proof\"",
+        "after = [\"beta\"]",
+        "meets = []",
+        "how = \"by the owner\"",
+        "```",
+        "",
+    ];
+
+    const COVERAGE_BLOCK: [&str; 3] = ["```toml", "DW1 = [\"a_test\", \"another test\"]", "```"];
+
+    fn lines_of(block: &[&str]) -> Vec<String> {
+        block.iter().map(|line| (*line).to_owned()).collect()
+    }
+
+    // The lines of a part: list items made so that the check of the part passes, or the block
+    // the formats read.
     fn sample(spec: &Spec, outcome: &str, part: &str, seed: u64) -> Vec<String> {
-        if let Some((name, _kind)) = spec.findings
+        match (spec.embedded, part) {
+            (Embedded::Roadmap, "Slices") => return lines_of(&ROADMAP_BLOCK),
+            (Embedded::CoverageMap, "Done-when coverage") => return lines_of(&COVERAGE_BLOCK),
+            _ => {}
+        }
+        let item = if let Some((name, _kind)) = spec.findings
             && name == part
         {
-            return vec![if is_must_fix_result(outcome) {
+            if is_must_fix_result(outcome) {
                 "issue (blocking, security): words".to_owned()
             } else {
                 "nitpick: words".to_owned()
-            }];
-        }
-        let check = spec.checks.iter().find(|(name, _)| *name == part);
-        vec![match check.map(|(_, check)| check) {
-            Some(Check::Answer(starts)) => format!("{}because of {seed}", chosen(starts, seed)),
-            Some(Check::Contains(phrases)) => format!("a {}word", chosen(phrases, seed)),
-            Some(Check::FileLines) if seed.is_multiple_of(2) => "src/a.rs:3-5: words".to_owned(),
-            Some(Check::FileLines) => "src/a.rs:4: words".to_owned(),
-            None => format!("words {seed}"),
-        }]
+            }
+        } else {
+            let check = spec.checks.iter().find(|(name, _)| *name == part);
+            match check.map(|(_, check)| check) {
+                Some(Check::Answer(starts)) => {
+                    format!("{}because of {seed}", chosen(starts, seed))
+                }
+                Some(Check::Contains(phrases)) => format!("a {}word", chosen(phrases, seed)),
+                Some(Check::FileLines) if seed.is_multiple_of(2) => {
+                    "src/a.rs:3-5: words".to_owned()
+                }
+                Some(Check::FileLines) => "src/a.rs:4: words".to_owned(),
+                Some(Check::NamesElement(phrases)) => {
+                    format!("a thing, {}alpha and more", chosen(phrases, seed))
+                }
+                None => format!("words {seed}"),
+            }
+        };
+        vec![format!("- {item}")]
     }
 
     fn bodies(spec: &Spec, outcome: &str, seed: u64) -> Bodies {
@@ -468,7 +624,8 @@ mod tests {
 
     // The seed picks the style of the part markers and whether nested content is added.
     fn render(spec: &Spec, shown: &str, seed: u64, parts: &Bodies) -> String {
-        let bold = seed & 1 == 0;
+        // A block is found under a heading, so a kind with one has heading parts only.
+        let bold = seed & 1 == 0 && matches!(spec.embedded, Embedded::Nothing);
         let nested = seed & 2 == 0;
         let mut text = format!(
             "## Form\n\n```toml\nkind = \"{}\"\noutcome = \"{shown}\"\ninput = \"x\"\n```\n\n",
@@ -484,7 +641,7 @@ mod tests {
                 write!(text, "## {name}\n\nsome words\n").ok();
             }
             for item in items {
-                writeln!(text, "- {item}").ok();
+                writeln!(text, "{item}").ok();
             }
             if nested {
                 text.push_str(if bold {
@@ -508,6 +665,7 @@ mod tests {
         Context {
             file: "out.md",
             max_lines,
+            goal: Some(GOAL),
         }
     }
 
@@ -530,7 +688,7 @@ mod tests {
 
     fn with_body(spec: &Spec, outcome: &str, part: &str, items: &[&str]) -> String {
         let mut parts = bodies(spec, outcome, 0);
-        let items = items.iter().map(|item| (*item).to_owned()).collect();
+        let items = items.iter().map(|item| format!("- {item}")).collect();
         if let Some((_, body)) = parts.iter_mut().find(|(name, _)| *name == part) {
             *body = items;
         } else {
@@ -760,11 +918,12 @@ mod tests {
             let spec = &KINDS[kind % KINDS.len()];
             prop_assume!(!spec.checks.is_empty());
             let (name, _check) = &spec.checks[which % spec.checks.len()];
+            prop_assume!(!spec.none_allowed.contains(name));
             let outcome = spec.outcomes.iter().find(|listed| listed.parts.contains(name)).expect("an outcome");
             let mut parts = bodies(spec, outcome.name, seed);
             for (part, body) in &mut parts {
                 if *part == *name {
-                    *body = vec!["none".to_owned()];
+                    *body = vec!["- none".to_owned()];
                 }
             }
             let text = render(spec, outcome.name, seed, &parts);
@@ -782,6 +941,7 @@ mod tests {
         checks: &[("Facts", Check::Contains(&["(source: "]))],
         findings: None,
         none_allowed: &["Facts"],
+        embedded: Embedded::Nothing,
     };
 
     #[test]
@@ -800,6 +960,128 @@ mod tests {
         assert_eq!(
             problems_of(scout, &text),
             ["part \"Facts\" item 1 must contain one of: (source: "]
+        );
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            failure_persistence: None,
+            ..ProptestConfig::default()
+        })]
+
+        // The roadmap block has alpha, beta and a proof step; a spike may be named freely.
+        #[test]
+        fn named_slices_must_exist(
+            part in 0_usize..3,
+            name in "[a-z][a-z0-9-]{0,6}",
+            known in prop::sample::select(vec!["alpha", "beta", "proof"]),
+            use_known in any::<bool>(),
+        ) {
+            let spec = spec_of("roadmap");
+            let (part, phrase, shown) = [
+                ("Shared contracts", "lands first in slice ", "lands first in slice"),
+                ("Owner decisions", "before slice ", "before slice"),
+                ("Risks", "settled by slice ", "settled by slice, settled by spike"),
+            ][part];
+            let name = if use_known { known.to_owned() } else { name };
+            let text = with_body(spec, "ready-for-review", part, &[&format!("a thing, {phrase}{name} and more")]);
+            let exists = ["alpha", "beta", "proof"].contains(&name.as_str());
+            let got = validate(spec, &ctx(1000), &text);
+            prop_assert_eq!(got.is_ok(), exists, "{:?}", got);
+            if !exists {
+                let message = format!(
+                    "part \"{part}\" item 1 must name a slice or proof step after one of: {shown}"
+                );
+                prop_assert_eq!(got, Err(vec![message]));
+            }
+            let spike = with_body(spec, "ready-for-review", "Risks", &[&format!("a risk, settled by spike {name}")]);
+            prop_assert!(validate(spec, &ctx(1000), &spike).is_ok());
+        }
+    }
+
+    #[test]
+    fn a_roadmap_may_say_none_in_the_three_parts_and_nowhere_else() {
+        let spec = spec_of("roadmap");
+        for part in ["Shared contracts", "Owner decisions", "Risks"] {
+            let text = with_body(spec, "ready-for-review", part, &["none"]);
+            assert!(validate(spec, &ctx(1000), &text).is_ok(), "{part}");
+        }
+        let text = with_body(
+            spec,
+            "ready-for-review",
+            "Risks",
+            &["none", "a risk, settled by slice alpha"],
+        );
+        assert_eq!(
+            problems_of(spec, &text),
+            [
+                "part \"Risks\" item 1 must name a slice or proof step after one of: settled by slice, settled by spike"
+            ]
+        );
+    }
+
+    // The block's own problems are the formats' words, after the engine's.
+    #[test]
+    fn roadmap_problems_come_from_formats() {
+        let spec = spec_of("roadmap");
+        let good = filled(spec, "ready-for-review", 1);
+
+        let unknown = good.replace("after = [\"alpha\"]", "after = [\"zzz\"]");
+        let table = toml_table(
+            unknown
+                .split_once("## Slices")
+                .and_then(|(_, rest)| rest.split_once("```toml\n"))
+                .and_then(|(_, rest)| rest.split_once("```"))
+                .map(|(block, _)| block)
+                .expect("a block")
+                .as_bytes(),
+        )
+        .expect("toml");
+        let wanted: Vec<String> = parse_roadmap(&table)
+            .expect_err("an unknown name")
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(
+            wanted,
+            [".slice[1].after[0]: no slice or proof step named \"zzz\""]
+        );
+        assert_eq!(problems_of(spec, &unknown), wanted);
+
+        let unmet = good.replace("meets = [\"DW2\"]", "meets = []");
+        assert_eq!(problems_of(spec, &unmet), ["DW2: no slice"]);
+
+        let outside = good.replace("meets = [\"DW1\"]", "meets = [\"DW9\"]");
+        assert_eq!(
+            problems_of(spec, &outside),
+            [
+                ".slice[0].meets[0]: \"DW9\" is not a done-when item of the goal",
+                "DW1: no slice"
+            ]
+        );
+
+        let no_block = good.replace("```toml\ngoal", "```text\ngoal");
+        assert_eq!(
+            problems_of(spec, &no_block),
+            ["out.md has no toml block under \"## Slices\""]
+        );
+    }
+
+    #[test]
+    fn a_build_plans_coverage_block_is_read_by_the_formats() {
+        let spec = spec_of("build-plan");
+        let good = filled(spec, "ready-for-review", 1);
+        assert!(validate(spec, &ctx(1000), &good).is_ok());
+
+        let bad = good.replace("DW1 = [\"a_test\"", "DW1 = [\"a_DW3_test\"");
+        assert_eq!(
+            problems_of(spec, &bad),
+            [".DW1[0]: a test name must not carry a done-when id"]
+        );
+        let empty = good.replace("DW1 = [\"a_test\", \"another test\"]", "");
+        assert!(
+            validate(spec, &ctx(1000), &empty).is_ok(),
+            "an empty map is valid"
         );
     }
 
@@ -824,14 +1106,14 @@ mod tests {
         let mut parts = bodies(spec, "approve", 0);
         parts.push((
             "Findings",
-            vec!["nitpick: a word".to_owned(), "question: why".to_owned()],
+            vec!["- nitpick: a word".to_owned(), "- question: why".to_owned()],
         ));
         let text = render(spec, "approve", 0, &parts);
         let done = validate(spec, &ctx(1000), &text).expect("valid");
         assert_eq!(done.counts, Some([0, 1, 1]));
 
         let mut worse = bodies(spec, "approve", 0);
-        worse.push(("Findings", vec!["issue (blocking): bad".to_owned()]));
+        worse.push(("Findings", vec!["- issue (blocking): bad".to_owned()]));
         let text = render(spec, "approve", 0, &worse);
         assert_eq!(
             problems_of(spec, &text),

@@ -1,11 +1,32 @@
 use crate::pure::finding::ResultKind;
-use crate::pure::template::{Check, Outcome, Spec};
+use crate::pure::template::{Check, Embedded, Outcome, Spec};
 use crate::pure::text::comma_list;
 
 const ANSWER: Check = Check::Answer(&["none found: ", "concern: ", "not relevant: "]);
 
 // Sorted by kind; the blank forms are data/templates/<kind>.md.
 pub(crate) const KINDS: &[Spec] = &[
+    Spec {
+        kind: "build-plan",
+        outcomes: &[Outcome {
+            name: "ready-for-review",
+            parts: &[
+                "Goal",
+                "Architecture",
+                "Global constraints",
+                "Done-when coverage",
+                "Review focus",
+                "Steps",
+                "Needs from other slices",
+                "Decisions for the owner",
+            ],
+        }],
+        owner_message: false,
+        checks: &[],
+        findings: None,
+        none_allowed: &[],
+        embedded: Embedded::CoverageMap,
+    },
     Spec {
         kind: "decision-point",
         outcomes: &[Outcome {
@@ -16,6 +37,7 @@ pub(crate) const KINDS: &[Spec] = &[
         checks: &[],
         findings: None,
         none_allowed: &[],
+        embedded: Embedded::Nothing,
     },
     Spec {
         kind: "explanation",
@@ -33,6 +55,7 @@ pub(crate) const KINDS: &[Spec] = &[
         checks: &[("Parts", Check::FileLines), ("Unclear", Check::FileLines)],
         findings: None,
         none_allowed: &[],
+        embedded: Embedded::Nothing,
     },
     Spec {
         kind: "informed-review",
@@ -81,6 +104,7 @@ pub(crate) const KINDS: &[Spec] = &[
         ],
         findings: Some(("Findings", ResultKind::Review)),
         none_allowed: &[],
+        embedded: Embedded::Nothing,
     },
     Spec {
         kind: "known-issue",
@@ -92,6 +116,7 @@ pub(crate) const KINDS: &[Spec] = &[
         checks: &[],
         findings: None,
         none_allowed: &[],
+        embedded: Embedded::Nothing,
     },
     Spec {
         kind: "model-advice",
@@ -103,6 +128,35 @@ pub(crate) const KINDS: &[Spec] = &[
         checks: &[("Sources", Check::Contains(&["https://", "http://"]))],
         findings: None,
         none_allowed: &[],
+        embedded: Embedded::Nothing,
+    },
+    Spec {
+        kind: "roadmap",
+        outcomes: &[Outcome {
+            name: "ready-for-review",
+            parts: &[
+                "Goal",
+                "Slices",
+                "Shared contracts",
+                "Owner decisions",
+                "Risks",
+            ],
+        }],
+        owner_message: false,
+        checks: &[
+            (
+                "Shared contracts",
+                Check::NamesElement(&["lands first in slice "]),
+            ),
+            ("Owner decisions", Check::NamesElement(&["before slice "])),
+            (
+                "Risks",
+                Check::NamesElement(&["settled by slice ", "settled by spike "]),
+            ),
+        ],
+        findings: None,
+        none_allowed: &["Shared contracts", "Owner decisions", "Risks"],
+        embedded: Embedded::Roadmap,
     },
     Spec {
         kind: "scout-report",
@@ -124,6 +178,7 @@ pub(crate) const KINDS: &[Spec] = &[
         checks: &[("Facts", Check::Contains(&["(source: "]))],
         findings: None,
         none_allowed: &[],
+        embedded: Embedded::Nothing,
     },
     Spec {
         kind: "second-opinion",
@@ -145,6 +200,7 @@ pub(crate) const KINDS: &[Spec] = &[
         checks: &[("Security", ANSWER), ("Performance", ANSWER)],
         findings: Some(("Findings", ResultKind::Review)),
         none_allowed: &[],
+        embedded: Embedded::Nothing,
     },
     Spec {
         kind: "test-drive",
@@ -162,6 +218,7 @@ pub(crate) const KINDS: &[Spec] = &[
         checks: &[("Done-when", Check::Answer(&["[pass] ", "[fail] "]))],
         findings: Some(("Findings", ResultKind::TestDrive)),
         none_allowed: &[],
+        embedded: Embedded::Nothing,
     },
 ];
 
@@ -224,7 +281,7 @@ mod tests {
     fn every_role_output_has_a_kind() {
         assert_eq!(
             kind_names(),
-            "decision-point, explanation, informed-review, known-issue, model-advice, scout-report, second-opinion, test-drive"
+            "build-plan, decision-point, explanation, informed-review, known-issue, model-advice, roadmap, scout-report, second-opinion, test-drive"
         );
         assert!(kind("decision-point").is_some());
         assert!(kind("review").is_none());
