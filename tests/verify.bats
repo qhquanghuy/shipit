@@ -9,7 +9,7 @@ start_repo() {
   local repo
   repo=$(make_repo)
   cd "$repo"
-  write_setup "$(fixture_with 'check=[]')"
+  write_setup "$(fixture_with 'gate.check=[]')"
   git checkout -q -b feature
   echo one >f1
   git add -A

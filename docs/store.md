@@ -48,7 +48,7 @@ design (`shipit check --base <own branch>` compares the slice with itself, and a
 
 `base_ref` is the full ref the slice was compared with (`refs/heads/<base>` or `refs/remotes/origin/<base>`) and
 `base_commit` the commit it was at. When the slice changed only the setup file (docs/setup.md), the receipt also has
-`"setup_change": true` and `"setup_fields": ["check"]` (the changed fields, in the order base, cap, check, environment),
+`"setup_change": true` and `"setup_fields": ["gate.check"]` (the changed fields, in the order gate.base, gate.max_files, gate.check, gate.environment),
 placed after `commands`; `shipit verify` says so. Receipts without a setup change have neither key.
 
 ## In code

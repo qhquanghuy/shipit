@@ -34,8 +34,8 @@ valid_setup() {
 }
 
 # fixture_with <path=value>...: the fixture with these values replaced, as TOML.
-# A path is the table and the key, dotted: `cap=100`, `environment.run=["env"]`,
-# `roles.reader.tier=2`. Each key must already be a one-line `key = value` in the
+# A path is the table and the key, dotted: `gate.max_files=100`, `gate.environment.prefix=["env"]`,
+# `agents.roles.reader.tier=2`. Each key must already be a one-line `key = value` in the
 # fixture; an edit that matches no line fails.
 fixture_with() {
   local edits

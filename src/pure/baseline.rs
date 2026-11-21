@@ -20,18 +20,20 @@ impl Flow {
     }
 
     pub(crate) fn of(setup: &Setup) -> Self {
-        let run = setup
+        let prefix = setup
+            .gate
             .environment
-            .run
+            .prefix
             .iter()
             .map(|command| Value::String(command.as_str().to_owned()))
             .collect();
         let mut environment = Table::new();
-        environment.insert("run".to_owned(), Value::Array(run));
+        environment.insert("prefix".to_owned(), Value::Array(prefix));
         Self {
-            base: setup.base.as_str().to_owned(),
-            cap: setup.cap.get(),
+            base: setup.gate.base.as_str().to_owned(),
+            cap: setup.gate.max_files.get(),
             check: setup
+                .gate
                 .check
                 .iter()
                 .map(|command| command.as_str().to_owned())
@@ -60,10 +62,10 @@ pub(crate) const ALL_FIELDS: [FlowField; 4] = [
 impl fmt::Display for FlowField {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            Self::Base => "base",
-            Self::Cap => "cap",
-            Self::Check => "check",
-            Self::Environment => "environment",
+            Self::Base => "gate.base",
+            Self::Cap => "gate.max_files",
+            Self::Check => "gate.check",
+            Self::Environment => "gate.environment",
         })
     }
 }
@@ -129,31 +131,40 @@ fn all_strings(value: &Value) -> Option<Vec<String>> {
         .collect()
 }
 
-// Only the four fields the comparison reads, and only their types: growing the schema never
-// breaks a base branch's file.
+// Only the four `gate` fields the comparison reads, and only their types: growing the schema
+// never breaks a base branch's file.
 pub(crate) fn parse_baseline(object: &Table) -> Parsed<Flow> {
-    let base = object
-        .get("base")
+    let gate = object.get("gate").and_then(Value::as_table);
+    let base = gate
+        .and_then(|gate| gate.get("base"))
         .and_then(Value::as_str)
         .filter(|text| !text.is_empty());
-    let cap = object.get("cap").and_then(whole).filter(|cap| *cap >= 1);
-    let check = object.get("check").and_then(all_strings);
-    let environment = object
-        .get("environment")
-        .filter(|value| value.get("run").and_then(all_strings).is_some());
+    let cap = gate
+        .and_then(|gate| gate.get("max_files"))
+        .and_then(whole)
+        .filter(|cap| *cap >= 1);
+    let check = gate
+        .and_then(|gate| gate.get("check"))
+        .and_then(all_strings);
+    let environment = gate
+        .and_then(|gate| gate.get("environment"))
+        .filter(|value| value.get("prefix").and_then(all_strings).is_some());
     let mut problems = Vec::new();
     if base.is_none() {
-        problems.push(Problem::new(".base", "must be a non-empty string"));
+        problems.push(Problem::new(".gate.base", "must be a non-empty string"));
     }
     if cap.is_none() {
-        problems.push(Problem::new(".cap", "must be an integer of at least 1"));
+        problems.push(Problem::new(
+            ".gate.max_files",
+            "must be an integer of at least 1",
+        ));
     }
     if check.is_none() {
-        problems.push(Problem::new(".check", "must be an array of strings"));
+        problems.push(Problem::new(".gate.check", "must be an array of strings"));
     }
     if environment.is_none() {
         problems.push(Problem::new(
-            ".environment.run",
+            ".gate.environment.prefix",
             "must be an array of strings",
         ));
     }
@@ -181,7 +192,7 @@ mod tests {
 
     fn environment(run: &[String]) -> Value {
         let mut table = Table::new();
-        table.insert("run".to_owned(), strings(run));
+        table.insert("prefix".to_owned(), strings(run));
         Value::Table(table)
     }
 
@@ -217,13 +228,13 @@ mod tests {
     #[test]
     fn the_whole_environment_table_is_compared() {
         let mut with_extra = Table::new();
-        with_extra.insert("run".to_owned(), strings(&[]));
+        with_extra.insert("prefix".to_owned(), strings(&[]));
         with_extra.insert("extra".to_owned(), Value::Integer(1));
         let extra = Flow {
             environment: Value::Table(with_extra),
             ..flow()
         };
-        assert_eq!(names(&setup_changes(&extra, &flow())), ["environment"]);
+        assert_eq!(names(&setup_changes(&extra, &flow())), ["gate.environment"]);
     }
 
     fn problems(doc: &Table) -> Vec<String> {
@@ -238,8 +249,8 @@ mod tests {
     #[test]
     fn a_base_file_of_another_schema_is_read_for_its_four_fields() {
         let doc = table(
-            "base = \"main\"\ncap = 60\ncheck = []\n\
-             [environment]\nrun = []\n[from_the_future]\na = 1\n",
+            "version = 1\n[gate]\nbase = \"main\"\nmax_files = 60\ncheck = []\n\
+             [gate.environment]\nprefix = []\n[from_the_future]\na = 1\n",
         );
         assert_eq!(
             parse_baseline(&doc),
@@ -253,24 +264,26 @@ mod tests {
 
     #[test]
     fn every_wrong_field_is_listed_in_order() {
-        let doc = table("base = 1\ncap = \"60\"\ncheck = [1]\n[environment]\nrun = [2]\n");
+        let doc = table(
+            "[gate]\nbase = 1\nmax_files = \"60\"\ncheck = [1]\n[gate.environment]\nprefix = [2]\n",
+        );
         assert_eq!(
             problems(&doc),
             [
-                ".base: must be a non-empty string",
-                ".cap: must be an integer of at least 1",
-                ".check: must be an array of strings",
-                ".environment.run: must be an array of strings",
+                ".gate.base: must be a non-empty string",
+                ".gate.max_files: must be an integer of at least 1",
+                ".gate.check: must be an array of strings",
+                ".gate.environment.prefix: must be an array of strings",
             ]
         );
         assert_eq!(problems(&Table::new()).len(), 4);
-        let doc = table("base = \"\"\ncap = 0\ncheck = []\nenvironment = \"x\"\n");
+        let doc = table("[gate]\nbase = \"\"\nmax_files = 0\ncheck = []\nenvironment = \"x\"\n");
         assert_eq!(
             problems(&doc),
             [
-                ".base: must be a non-empty string",
-                ".cap: must be an integer of at least 1",
-                ".environment.run: must be an array of strings",
+                ".gate.base: must be a non-empty string",
+                ".gate.max_files: must be an integer of at least 1",
+                ".gate.environment.prefix: must be an array of strings",
             ]
         );
     }
@@ -349,11 +362,15 @@ mod tests {
             fix_rounds in 0_i64..9,
         ) {
             let mut doc = table(include_str!("../../tests/fixtures/setup-valid.toml"));
-            doc.insert("base".to_owned(), Value::String(base));
-            doc.insert("cap".to_owned(), Value::Integer(cap));
-            doc.insert("check".to_owned(), strings(&check));
-            doc.insert("environment".to_owned(), environment(&run));
-            doc.insert("fix_rounds".to_owned(), Value::Integer(fix_rounds));
+            let mut gate = Table::new();
+            gate.insert("base".to_owned(), Value::String(base));
+            gate.insert("max_files".to_owned(), Value::Integer(cap));
+            gate.insert("check".to_owned(), strings(&check));
+            gate.insert("environment".to_owned(), environment(&run));
+            doc.insert("gate".to_owned(), Value::Table(gate));
+            if let Some(Value::Table(agents)) = doc.get_mut("agents") {
+                agents.insert("max_fix_rounds".to_owned(), Value::Integer(fix_rounds));
+            }
             let setup = parse_setup(&doc)
                 .map_err(|_why| TestCaseError::fail("the changed fixture parses"))?;
             prop_assert_eq!(Some(Flow::of(&setup)), parse_baseline(&doc).ok());

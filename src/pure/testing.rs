@@ -20,10 +20,10 @@ pub(crate) fn os(args: &[&str]) -> Vec<OsString> {
 
 pub(crate) fn cap(n: u64) -> Cap {
     let text = include_str!("../../tests/fixtures/setup-valid.toml")
-        .replace("cap = 60", &format!("cap = {n}"));
+        .replace("max_files = 60", &format!("max_files = {n}"));
     toml_table(text.as_bytes())
         .ok()
         .and_then(|table| parse_setup(&table).ok())
-        .map(|setup| setup.cap)
+        .map(|setup| setup.gate.max_files)
         .expect("the fixture parses")
 }

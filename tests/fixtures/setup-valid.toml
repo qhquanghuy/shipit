@@ -1,49 +1,52 @@
 version = 1
+
+[gate]
 base = "main"
-cap = 60
+max_files = 60
 check = ["nix flake check --print-build-logs"]
-fix_rounds = 2
+
+[gate.environment]
+prefix = []
+
+[agents]
+max_fix_rounds = 2
 effort_cap = "high"
 
-[environment]
-run = []
-
-[[tiers]]
+[[agents.tiers]]
 tier = 1
 model = "haiku"
 
-[[tiers]]
+[[agents.tiers]]
 tier = 2
 model = "sonnet"
 
-[[tiers]]
+[[agents.tiers]]
 tier = 3
 model = "opus"
 
-[[tiers]]
+[[agents.tiers]]
 tier = 4
 model = "fable"
+stand_in = { model = "opus", effort = "high" }
 
-[tiers.stand_in]
-model = "opus"
-effort = "high"
-
-[roles.scout]
+[agents.roles.scout]
 tier = 1
 retries = 1
+escalate_to = { tier = 2 }
 
-[roles.scout.then]
-tier = 2
+[agents.roles.planner]
+tier = 3
+effort = "high"
 
-[roles.maker]
+[agents.roles.maker]
 tier = 2
 effort = "high"
 
-[roles.tester]
+[agents.roles.tester]
 tier = 3
 effort = "medium"
 
-[roles.reader]
+[agents.roles.reader]
 tier = 1
 
 [packs]
@@ -51,6 +54,6 @@ skill = "superpowers"
 domain = "coding"
 model = "claude"
 
-[messages_to_owner]
+[owner]
 max_lines = 30
 status_update_max_lines = 10

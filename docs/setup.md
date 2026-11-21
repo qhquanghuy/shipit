@@ -9,51 +9,54 @@ whenever a command reads the file.
 
 ```toml
 version = 1
+
+[gate]
 base = "main"
-cap = 60
+max_files = 60
 check = ["nix flake check --print-build-logs"]
-fix_rounds = 2
+
+[gate.environment]
+prefix = []
+
+[agents]
+max_fix_rounds = 2
 effort_cap = "high"
 
-[environment]
-run = []
-
-[[tiers]]
+[[agents.tiers]]
 tier = 1
 model = "haiku"
 
-[[tiers]]
+[[agents.tiers]]
 tier = 2
 model = "sonnet"
 
-[[tiers]]
+[[agents.tiers]]
 tier = 3
 model = "opus"
 
-[[tiers]]
+[[agents.tiers]]
 tier = 4
 model = "fable"
+stand_in = { model = "opus", effort = "high" }
 
-[tiers.stand_in]
-model = "opus"
-effort = "high"
-
-[roles.scout]
+[agents.roles.scout]
 tier = 1
 retries = 1
+escalate_to = { tier = 2 }
 
-[roles.scout.then]
-tier = 2
+[agents.roles.planner]
+tier = 3
+effort = "high"
 
-[roles.maker]
+[agents.roles.maker]
 tier = 2
 effort = "high"
 
-[roles.tester]
+[agents.roles.tester]
 tier = 3
 effort = "medium"
 
-[roles.reader]
+[agents.roles.reader]
 tier = 1
 
 [packs]
@@ -61,7 +64,7 @@ skill = "superpowers"
 domain = "coding"
 model = "claude"
 
-[messages_to_owner]
+[owner]
 max_lines = 30
 status_update_max_lines = 10
 ```
@@ -73,29 +76,31 @@ then its effort.
 
 The file is one TOML document, which is a table of keys (the messages say "object" for a table). Every table in it refuses keys that this page does
 not list. Every problem is reported at once, each with its path (for example
-`.roles.maker.effort`). A value of the wrong type is a reported problem. TOML tells integers from
+`.agents.roles.maker.effort`). A value of the wrong type is a reported problem. TOML tells integers from
 floats: a float, even `60.0`, is the wrong type where an integer is needed. A TOML integer is at most
 9223372036854775807 (2^63 - 1); a larger one, or a key written twice, makes the file not valid TOML.
 
 | Path | Rule |
 |---|---|
-| top level | A table with exactly the keys above; all are required. |
+| top level | A table with exactly the keys `version`, `gate`, `agents`, `packs`, `owner`; all are required. |
 | `version` | The integer `1`. |
-| `base` | A branch name, as `git check-ref-format --branch` accepts it: the base branch. Not a revision (`HEAD~1`), not a tag. |
-| `cap` | An integer, 1 or more: the size cap for one change. |
-| `check` | An array of non-empty strings: the check commands. It may be empty (a new project's first day). |
-| `environment` | Exactly `run`: an array of non-empty strings, the command prefix that enters the project's tool environment (for example `["nix", "develop", "--command"]`, `["mise", "exec", "--"]`, `["devbox", "run", "--"]`); an empty array means none. Each check runs as `<run…> bash -c "<command>"`. |
-| `fix_rounds` | An integer, 0 or more. |
-| `effort_cap` | On the effort scale: `low`, `medium`, `high`, `xhigh`, `max`, in that order. |
-| `tiers` | A non-empty array of objects. The `tier` values are exactly 1 to n, in order. `model` is a non-empty string. `stand_in` is optional; if present it has both `model` (a non-empty string) and `effort` (on the scale, not above `effort_cap`). |
-| `roles` | Exactly `scout`, `maker`, `tester`, `reader`. Each has `tier`, the number of an existing tier. `effort` is optional: on the scale, not above `effort_cap`. `scout` also requires `retries` (an integer, 0 or more) and `then` (an object with only `tier`: an existing tier above `scout.tier`). |
+| `gate` | Exactly `base`, `max_files`, `check`, `environment`: what `shipit check` reads. |
+| `gate.base` | A branch name, as `git check-ref-format --branch` accepts it: the base branch. Not a revision (`HEAD~1`), not a tag. |
+| `gate.max_files` | An integer, 1 or more: the size cap for one change, in changed files. |
+| `gate.check` | An array of non-empty strings: the check commands. It may be empty (a new project's first day). |
+| `gate.environment` | Exactly `prefix`: an array of non-empty strings, the command prefix that enters the project's tool environment (for example `["nix", "develop", "--command"]`, `["mise", "exec", "--"]`, `["devbox", "run", "--"]`); an empty array means none. Each check runs as `<prefix…> bash -c "<command>"`. |
+| `agents` | Exactly `max_fix_rounds`, `effort_cap`, `tiers`, `roles`. |
+| `agents.max_fix_rounds` | An integer, 0 or more. |
+| `agents.effort_cap` | On the effort scale: `low`, `medium`, `high`, `xhigh`, `max`, in that order. |
+| `agents.tiers` | A non-empty array of tables. The `tier` values are exactly 1 to n, in order. `model` is a non-empty string. `stand_in` is optional, a table in any TOML form (the example writes it inline); if present it has both `model` (a non-empty string) and `effort` (on the scale, not above `agents.effort_cap`). |
+| `agents.roles` | Exactly `scout`, `planner`, `maker`, `tester`, `reader`. Each has `tier`, the number of an existing tier. `effort` is optional: on the scale, not above `agents.effort_cap`. `scout` also requires `retries` (an integer, 0 or more) and `escalate_to` (a table with only `tier`: an existing tier above `agents.roles.scout.tier`). |
 | `packs` | Exactly `skill`, `domain`, `model`; each a non-empty string. |
-| `messages_to_owner` | Exactly `max_lines` and `status_update_max_lines`, each an integer, 1 or more; `status_update_max_lines` is not above `max_lines`. `max_lines` is the most lines any message to the owner may have. `status_update_max_lines` is the most lines a progress update to the owner may have. |
+| `owner` | Exactly `max_lines` and `status_update_max_lines`, each an integer, 1 or more; `status_update_max_lines` is not above `max_lines`. `max_lines` is the most lines any message to the owner may have. `status_update_max_lines` is the most lines a progress update to the owner may have. |
 
 ## Who reads what
 
-`shipit check` reads `base`, `cap`, `check` and `environment`. `shipit verify` reads no setup at all: a receipt is
-valid for a tree and nothing else. `tiers`, `roles`, `packs`, `fix_rounds`, `effort_cap` and `messages_to_owner` are
+`shipit check` reads `gate.base`, `gate.max_files`, `gate.check` and `gate.environment`. `shipit verify` reads no setup at all: a receipt is
+valid for a tree and nothing else. `agents` (`max_fix_rounds`, `effort_cap`, `tiers`, `roles`, `planner` included), `packs` and `owner` are
 validated now but read by later parts of ShipIt (the roles that make and review work, the packs they use, the
 limits on messages to the owner).
 
@@ -106,17 +111,19 @@ that breaks a rule above each stop the command with exit 2 and a message that sa
 a file that is not TOML is `shipit: .config/shipit.toml is not valid TOML: <the parser's message>` (the path takes a `<ref>:` prefix for a ref other than HEAD; for the base branch's file, there is no
 parser message). A setup file named `.config/shipit.json` is not read: there is no fallback.
 
-`check` also reads the base branch's setup, but only `base`, `cap`,
-`check` and `environment` (validated for their type only). Those four fields are compared with the setup of the slice's merge base with that branch: the base branch's tip must
+`check` also reads the base branch's setup, but only `gate.base`, `gate.max_files`,
+`gate.check` and `gate.environment` (validated for their type only). Those four fields are compared with the setup of the slice's merge base with that branch: the base branch's tip must
 not differ from it (else: merge or rebase; a slice whose fields equal the tip's own is never refused for that), and the slice's fields must be identical to it, with one
 exception: when the slice's diff against the base touches only `.config/shipit.toml`, a change is allowed. `check` then
-runs the slice's new checks with its new cap and environment, prints `shipit: this slice changes the checks (<fields>);
+runs the slice's new checks with its new cap (`gate.max_files`) and environment, prints `shipit: this slice changes the checks (<fields>);
 setup change: the owner approves it by merging` on stderr, and marks the receipt (`"setup_change": true`,
 `"setup_fields"`); `shipit verify` prints `valid receipt for <tree> (setup change)`. The owner's merge is the approval.
 With any other file in the diff, any difference is refused, because a branch must not choose its own checks along with
 its own code; the owner merges setup changes on the base first. Nothing else in the base file is looked at, so the schema
 can grow. A base without a setup file prints a notice and nothing is compared, but the slice's diff must then be the setup file alone; with any other file in it the check is refused as for any setup change. `shipit check --base <name>` names the
-base instead of the setup's `base` (a branch name too).
+base instead of the setup's `gate.base` (a branch name too).
+
+The setup had another shape before (`base`, `cap`, `check`, `fix_rounds`, `environment.run`, `then`, `messages_to_owner` at the top level): that shape is refused key by key, each old key as `unknown key`. There is no migration.
 
 ## What a local check cannot stop
 

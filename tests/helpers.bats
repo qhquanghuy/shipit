@@ -31,12 +31,12 @@ load helpers
 }
 
 @test "fixture_with replaces a top-level key and a key in a table, and nothing else" {
-  run fixture_with 'cap=100' 'environment.run=["env"]' 'roles.reader.tier=2'
+  run fixture_with 'gate.max_files=100' 'gate.environment.prefix=["env"]' 'agents.roles.reader.tier=2'
   [ "$status" -eq 0 ]
   diff <(printf '%s\n' "$output") <(sed \
-    -e 's/^cap = 60$/cap = 100/' \
-    -e 's/^run = \[\]$/run = ["env"]/' \
-    -e '/^\[roles.reader\]$/{n;s/.*/tier = 2/;}' "$FIXTURE")
+    -e 's/^max_files = 60$/max_files = 100/' \
+    -e 's/^prefix = \[\]$/prefix = ["env"]/' \
+    -e '/^\[agents.roles.reader\]$/{n;s/.*/tier = 2/;}' "$FIXTURE")
 }
 
 @test "fixture_with fails on a path the fixture has no line for" {

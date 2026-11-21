@@ -42,7 +42,7 @@ file: `core.sparseCheckout` must be off).
 ### The base
 
 The base is the branch the size cap is counted against (the files the current commit changes since it left the base)
-and the one whose setup the slice is compared with. It comes from `base` in the setup, or from `shipit check --base <name>`,
+and the one whose setup the slice is compared with. It comes from `gate.base` in the setup, or from `shipit check --base <name>`,
 which wins; CI passes the pull request's base branch there, because the setup is the branch's own word. A base is a branch
 name, as `git check-ref-format --branch` accepts it: never a revision such as `HEAD~1`, and never a tag. ShipIt asks git for
 the full refs `refs/heads/<base>` and `refs/remotes/origin/<base>` only, so a tag with the same name cannot stand in for the
@@ -50,7 +50,7 @@ branch. The ref used for `<base>`: the local branch if it has everything `origin
 change counts), else `origin/<base>`, else the local branch; if none exists, exit 2. The receipt records the full ref
 (`base_ref`) and the commit it was at (`base_commit`).
 
-The slice's own `base` never judges the slice: if the branch it names has a setup whose `base` is another branch,
+The slice's own `gate.base` never judges the slice: if the branch it names has a setup whose `gate.base` is another branch,
 ShipIt follows that (at most 5 steps) until a branch names itself. A slice stacked on a feature branch is therefore
 counted, and its setup judged, against the root base that branch's setup names, so its size includes the files of the
 branch under it. `--base` is taken as given.
@@ -72,16 +72,16 @@ receipt shows it. CI's `--base` is the real gate.
 
 ### Changing the checks
 
-`base`, `cap`, `check` and `environment` in the setup are compared with the base branch's setup as it was where the slice
+`gate.base`, `gate.max_files`, `gate.check` and `gate.environment` in the setup are compared with the base branch's setup as it was where the slice
 forked from it. If the base branch's setup has changed since the fork, the check is refused with "merge or rebase" (a
 stale base is never mistaken for the slice's own change; a slice whose four fields already equal the base tip's, as after a squash merge of its parent, is not refused). The slice's own change is refused, with one exception. If the
-slice's diff against the base touches only `.config/shipit.toml`, `check` runs the slice's new checks with its new cap and
+slice's diff against the base touches only `.config/shipit.toml`, `check` runs the slice's new checks with its new `gate.max_files` and
 environment, prints `shipit: this slice changes the checks (<fields>); setup change: the owner approves it by merging` on
 stderr, and writes the receipt with `"setup_change": true` and `"setup_fields"` (the changed fields). `shipit verify` then
 prints `valid receipt for <tree> (setup change)`. The owner's merge is the approval, and CI rechecks.
 
 Any other file in the diff together with a setup change is refused (a check added, removed or reordered, a new cap, any
-change to `environment`, another base): the owner merges setup changes on the base first, or sends them as a slice of
+change to `gate.environment`, another `gate.base`): the owner merges setup changes on the base first, or sends them as a slice of
 their own (or merge or rebase the base if it moved on). If the base has no setup file yet (adopting ShipIt), a notice is
 printed and nothing is compared, but the slice's diff must be the setup file alone: with any other file in it the check
 is refused as for any setup change, because a base with no setup vouches for nothing.
