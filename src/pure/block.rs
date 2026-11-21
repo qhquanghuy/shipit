@@ -1,32 +1,38 @@
-fn take_line(text: &str) -> Option<(&str, &str)> {
-    if text.is_empty() {
-        return None;
-    }
-    let (line, rest) = text.split_once('\n').unwrap_or((text, ""));
-    Some((line.strip_suffix('\r').unwrap_or(line), rest))
-}
+use crate::pure::markdown::{Kind, lines, section};
+use crate::pure::messages::{BLOCK_TWICE, HTML_COMMENT, say};
 
-fn skip_until<'a>(mut rest: &'a str, wanted: &str) -> Option<&'a str> {
-    loop {
-        let (line, after) = take_line(rest)?;
-        rest = after;
-        if line == wanted {
-            return Some(rest);
-        }
+// Only what a reviewer sees under the heading counts: a toml block inside another fence, or in
+// a later section, is never read, and a second candidate is an error rather than a choice.
+pub(crate) fn toml_block<'a>(text: &'a str, heading: &str) -> Result<Option<&'a str>, String> {
+    let all = lines(text)?;
+    let under = section(&all, heading)?;
+    let hidden = under
+        .iter()
+        .any(|line| matches!(line.kind, Kind::Prose) && line.text.contains("<!--"));
+    if hidden {
+        return Err(say(HTML_COMMENT, &[("heading", &heading)]));
     }
-}
-
-// The lines between the fences, each with its line end; an unclosed fence is no block.
-pub(crate) fn toml_block<'a>(text: &'a str, heading: &str) -> Option<&'a str> {
-    let body = skip_until(skip_until(text, heading)?, "```toml")?;
-    let mut rest = body;
-    loop {
-        let (line, after) = take_line(rest)?;
-        if line == "```" {
-            return body.get(..body.len() - rest.len());
-        }
-        rest = after;
+    let mut candidates = under
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| matches!(line.kind, Kind::Open { info: "toml" }))
+        .map(|(index, _)| index);
+    let Some(open) = candidates.next() else {
+        return Ok(None);
+    };
+    if candidates.next().is_some() {
+        return Err(say(BLOCK_TWICE, &[("heading", &heading)]));
     }
+    let inside = under.get(open + 1..).unwrap_or_default();
+    let close = inside
+        .iter()
+        .find(|line| matches!(line.kind, Kind::Close))
+        .map(|line| line.rest.len());
+    let body = inside
+        .first()
+        .zip(close)
+        .and_then(|(first, after)| first.rest.get(..first.rest.len() - after));
+    Ok(body)
 }
 
 #[cfg(test)]
@@ -37,7 +43,7 @@ mod tests {
 
     const HEADING: &str = "## Slices";
 
-    fn lines(pattern: &'static str) -> impl Strategy<Value = Vec<String>> {
+    fn line_set(pattern: &'static str) -> impl Strategy<Value = Vec<String>> {
         proptest::collection::vec(pattern, 0..4)
     }
 
@@ -59,15 +65,15 @@ mod tests {
         })]
 
         #[test]
-        fn the_block_is_the_first_toml_fence_after_the_heading(
-            before in lines("[a-z ]{0,10}"),
-            early in lines("[a-z =\"]{0,12}"),
-            between in lines("[a-z ]{0,10}"),
-            body in lines("[a-z =\"\\[\\]]{0,12}"),
-            later in lines("[a-z =\"]{0,12}"),
+        fn the_block_is_the_one_toml_fence_directly_under_the_heading(
+            before in line_set("[a-z ]{0,10}"),
+            early in line_set("[a-z =\"]{0,12}"),
+            between in line_set("[a-z ]{0,10}"),
+            body in line_set("[a-z =\"\\[\\]]{0,12}"),
+            later in line_set("[a-z =\"]{0,12}"),
         ) {
             let text = format!(
-                "{}{}{HEADING}\n{}{}{}",
+                "{}{}{HEADING}\n{}{}## Notes\n{}",
                 joined(&before),
                 fenced(&early),
                 joined(&between),
@@ -75,23 +81,78 @@ mod tests {
                 fenced(&later),
             );
             let wanted = joined(&body);
-            prop_assert_eq!(toml_block(&text, HEADING), Some(wanted.as_str()));
+            prop_assert_eq!(toml_block(&text, HEADING), Ok(Some(wanted.as_str())));
         }
 
         #[test]
-        fn there_is_no_block_without_the_heading_or_a_closed_toml_fence(
-            body in lines("[a-z =\"]{0,12}"),
-            prose in lines("[a-z ]{0,10}"),
+        fn a_block_inside_another_fence_or_in_a_later_section_is_not_read(
+            outer in 3_usize..7,
+            body in line_set("[a-z =\"]{0,12}"),
+            real in line_set("[a-z =\"]{0,12}"),
         ) {
-            let fence = fenced(&body);
-            let unclosed = format!("```toml\n{}", joined(&body));
-            let prose = joined(&prose);
-            let no_heading = format!("{prose}{fence}");
-            let no_fence = format!("{HEADING}\n{prose}");
-            let no_close = format!("{HEADING}\n{unclosed}");
-            prop_assert!(toml_block(&no_heading, HEADING).is_none());
-            prop_assert!(toml_block(&no_fence, HEADING).is_none());
-            prop_assert!(toml_block(&no_close, HEADING).is_none());
+            let example = format!(
+                "{}markdown\n{}{}\n",
+                "`".repeat(outer + 1),
+                fenced(&body),
+                "`".repeat(outer + 1),
+            );
+            let hidden = format!("{HEADING}\n{example}## Notes\n{}", fenced(&body));
+            prop_assert_eq!(toml_block(&hidden, HEADING), Ok(None));
+            let both = format!("{HEADING}\n{example}{}", fenced(&real));
+            let wanted = joined(&real);
+            prop_assert_eq!(toml_block(&both, HEADING), Ok(Some(wanted.as_str())));
         }
+
+        #[test]
+        fn a_heading_inside_a_fence_is_not_the_heading(
+            body in line_set("[a-z =\"]{0,12}"),
+            fake in line_set("[a-z =\"]{0,12}"),
+        ) {
+            let text = format!(
+                "````\n{HEADING}\n{}````\n{HEADING}\n{}",
+                fenced(&fake),
+                fenced(&body),
+            );
+            let wanted = joined(&body);
+            prop_assert_eq!(toml_block(&text, HEADING), Ok(Some(wanted.as_str())));
+        }
+
+        #[test]
+        fn two_candidates_are_an_error(body in line_set("[a-z =\"]{0,12}")) {
+            let text = format!("{HEADING}\n{}{}", fenced(&body), fenced(&body));
+            prop_assert_eq!(
+                toml_block(&text, HEADING),
+                Err("more than one toml block under \"## Slices\"".to_owned())
+            );
+        }
+    }
+
+    #[test]
+    fn what_cannot_be_read_with_certainty_is_an_error() {
+        assert_eq!(
+            toml_block("## Slices\n```toml\nx = 1\n", HEADING),
+            Err("a fence opened at line 2 is never closed".to_owned())
+        );
+        assert_eq!(
+            toml_block("## Slices\n## Slices\n", HEADING),
+            Err("\"## Slices\" appears twice".to_owned())
+        );
+        assert_eq!(
+            toml_block("## Slices\n<!--\n```toml\nx = 1\n```\n-->\n", HEADING),
+            Err("\"## Slices\" holds an HTML comment, which hides text from the reader".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_missing_heading_or_block_is_none_and_an_empty_block_is_empty() {
+        assert_eq!(toml_block("x\n```toml\ny\n```\n", HEADING), Ok(None));
+        assert_eq!(
+            toml_block("## Slices\n```text\ny\n```\n", HEADING),
+            Ok(None)
+        );
+        assert_eq!(
+            toml_block("## Slices\n```toml\n```\n", HEADING),
+            Ok(Some(""))
+        );
     }
 }

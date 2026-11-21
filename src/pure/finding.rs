@@ -2,6 +2,11 @@ use std::fmt;
 
 use serde::{Serialize, Serializer};
 
+use crate::pure::messages::{
+    ALLOWS_NO_MUST_FIX, BAD_START, EMPTY_TEXT, FINDING_REFUSED, IS_REVIEW, IS_TEST_DRIVE,
+    NEED_BLOCKING, NEEDS_MUST_FIX, NITPICK_BLOCKING, NOT_DECORATION, ONE_LINE, QUESTION_FLAG, say,
+};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum Label {
@@ -61,7 +66,19 @@ fn is_perspective(word: &str) -> bool {
         && chars.all(|c| c.is_ascii_lowercase() || c == '-')
 }
 
-// The label is the leading lowercase word; what follows is ": " or " (decorations): ".
+// A refusal is one line even when the finding was not.
+fn shown(text: &str) -> String {
+    let mut shown = String::new();
+    for c in text.chars() {
+        if c.is_control() {
+            shown.extend(c.escape_default());
+        } else {
+            shown.push(c);
+        }
+    }
+    shown
+}
+
 fn split_finding(text: &str) -> Option<(Label, Option<&str>, &str)> {
     let end = text
         .find(|c: char| !c.is_ascii_lowercase())
@@ -75,26 +92,23 @@ fn split_finding(text: &str) -> Option<(Label, Option<&str>, &str)> {
     Some((label, Some(decorations), body))
 }
 
-// Decorations are blocking, non-blocking, or a perspective; the first two decide the class.
 fn class_of(label: Label, blocking: usize, non_blocking: usize) -> Result<Class, &'static str> {
     match (label, blocking, non_blocking) {
         (Label::Issue | Label::Suggestion, 1, 0) => Ok(Class::MustFix),
         (Label::Issue | Label::Suggestion, 0, 1) | (Label::Nitpick, 0, _) => Ok(Class::NiceToFix),
-        (Label::Issue | Label::Suggestion, _, _) => {
-            Err("issue and suggestion need (blocking) or (non-blocking)")
-        }
-        (Label::Nitpick, _, _) => Err("a nitpick is never blocking"),
+        (Label::Issue | Label::Suggestion, _, _) => Err(NEED_BLOCKING),
+        (Label::Nitpick, _, _) => Err(NITPICK_BLOCKING),
         (Label::Question, 0, 0) => Ok(Class::MustAnswer),
-        (Label::Question, _, _) => Err("a question is neither blocking nor non-blocking"),
+        (Label::Question, _, _) => Err(QUESTION_FLAG),
     }
 }
 
-// `index` counts from 0; the id is F<index + 1>.
 pub(crate) fn parse_finding(index: usize, text: &str) -> Result<Finding, String> {
-    let refuse = |why: &str| format!("finding \"{text}\": {why}");
-    let (label, decorations, body) = split_finding(text).ok_or_else(|| {
-        refuse("must start with issue, suggestion, question or nitpick, then \": \"")
-    })?;
+    let refuse = |why: &str| say(FINDING_REFUSED, &[("finding", &shown(text)), ("why", &why)]);
+    if text.chars().any(char::is_control) {
+        return Err(refuse(ONE_LINE));
+    }
+    let (label, decorations, body) = split_finding(text).ok_or_else(|| refuse(BAD_START))?;
     let mut blocking = 0;
     let mut non_blocking = 0;
     let mut perspectives = Vec::new();
@@ -104,13 +118,13 @@ pub(crate) fn parse_finding(index: usize, text: &str) -> Result<Finding, String>
             "blocking" => blocking += 1,
             "non-blocking" => non_blocking += 1,
             _ if is_perspective(word) => perspectives.push(word.to_owned()),
-            _ => return Err(refuse(&format!("\"{word}\" is not a decoration"))),
+            _ => return Err(refuse(&say(NOT_DECORATION, &[("word", &word)]))),
         }
     }
     let class = class_of(label, blocking, non_blocking).map_err(refuse)?;
     let body = body.trim();
     if body.is_empty() {
-        return Err(refuse("the text after \": \" is empty"));
+        return Err(refuse(EMPTY_TEXT));
     }
     Ok(Finding {
         id: format!("F{}", index + 1),
@@ -189,16 +203,16 @@ pub(crate) fn outcome_problems(
 ) -> Vec<String> {
     if outcome.kind() != kind {
         return vec![match kind {
-            ResultKind::Review => format!("{outcome} is a test-drive result"),
-            ResultKind::TestDrive => format!("{outcome} is a review result"),
+            ResultKind::Review => say(IS_TEST_DRIVE, &[("result", &outcome)]),
+            ResultKind::TestDrive => say(IS_REVIEW, &[("result", &outcome)]),
         }];
     }
     let must_fix = findings
         .iter()
         .any(|finding| finding.class == Class::MustFix);
     match (outcome.needs_must_fix(), must_fix) {
-        (true, false) => vec![format!("{outcome} needs a must-fix finding")],
-        (false, true) => vec![format!("{outcome} allows no must-fix finding")],
+        (true, false) => vec![say(NEEDS_MUST_FIX, &[("result", &outcome)])],
+        (false, true) => vec![say(ALLOWS_NO_MUST_FIX, &[("result", &outcome)])],
         (true, true) | (false, false) => Vec::new(),
     }
 }
@@ -256,11 +270,11 @@ mod tests {
                     Ok(Class::NiceToFix)
                 }
                 (Label::Issue | Label::Suggestion, _, _) => {
-                    Err("issue and suggestion need (blocking) or (non-blocking)")
+                    Err(NEED_BLOCKING)
                 }
                 (Label::Nitpick, true, _) => Err("a nitpick is never blocking"),
                 (Label::Question, false, false) => Ok(Class::MustAnswer),
-                (Label::Question, _, _) => Err("a question is neither blocking nor non-blocking"),
+                (Label::Question, _, _) => Err(QUESTION_FLAG),
             };
             match (parse_finding(index, &text), expected) {
                 (Ok(found), Ok(class)) => prop_assert_eq!(
@@ -372,5 +386,34 @@ mod tests {
             refused("question:  "),
             "finding \"question:  \": the text after \": \" is empty"
         );
+        assert_eq!(
+            refused("issue (non-blocking): x\nissue (blocking): y"),
+            "finding \"issue (non-blocking): x\\nissue (blocking): y\": a finding is one line, without control characters"
+        );
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            failure_persistence: None,
+            ..ProptestConfig::default()
+        })]
+
+        #[test]
+        fn a_control_character_anywhere_is_refused_and_the_refusal_is_one_line(
+            at in 0_usize..24,
+            control in prop::sample::select(vec!['\n', '\r', '\t', '\0', '\u{1b}', '\u{7f}']),
+        ) {
+            let valid = "issue (blocking, security): a hole in it";
+            let mut text = String::new();
+            for (index, c) in valid.chars().enumerate() {
+                if index == at {
+                    text.push(control);
+                }
+                text.push(c);
+            }
+            let why = parse_finding(0, &text).expect_err("refused");
+            prop_assert!(why.ends_with(": a finding is one line, without control characters"));
+            prop_assert!(!why.chars().any(char::is_control));
+        }
     }
 }

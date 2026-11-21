@@ -2,6 +2,9 @@ use std::fmt;
 
 use serde::{Serialize, Serializer};
 
+use crate::pure::markdown::{Kind, lines, section};
+use crate::pure::messages::{GOAL_NONE, GOAL_PROBLEM, GOAL_TWICE, say};
+
 const HEADING: &str = "## Done-when";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -23,12 +26,16 @@ impl Serialize for DoneWhen {
 #[serde(transparent)]
 pub(crate) struct GoalName(String);
 
+// Goals and slices share this one pattern; a slice name only adds a reserved word.
+pub(crate) fn is_name(text: &str) -> bool {
+    let mut chars = text.chars();
+    chars.next().is_some_and(|first| first.is_ascii_lowercase())
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
 impl GoalName {
     pub(crate) fn parse(text: &str) -> Option<Self> {
-        let mut chars = text.chars();
-        let valid = chars.next().is_some_and(|first| first.is_ascii_lowercase())
-            && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
-        valid.then(|| Self(text.to_owned()))
+        is_name(text).then(|| Self(text.to_owned()))
     }
 }
 
@@ -92,27 +99,22 @@ fn item(line: &str) -> Option<DoneWhen> {
     number(digits).map(DoneWhen)
 }
 
-// Items come only from the lines of the "## Done-when" section that are outside fenced blocks.
+// A goal that cannot be read with certainty is an error: a dropped item would pass `DW3: no slice`.
 pub(crate) fn goal_items(text: &str) -> Result<Vec<DoneWhen>, String> {
-    let mut fenced = false;
+    let problem = |why: String| say(GOAL_PROBLEM, &[("why", &why)]);
+    let all = lines(text).map_err(problem)?;
+    let under = section(&all, HEADING).map_err(problem)?;
     let mut items: Vec<DoneWhen> = Vec::new();
-    for line in text.lines().skip_while(|line| *line != HEADING).skip(1) {
-        if line.trim_start().starts_with("```") {
-            fenced = !fenced;
-        } else if !fenced {
-            if line.starts_with("## ") {
-                break;
+    for line in under.iter().filter(|line| matches!(line.kind, Kind::Prose)) {
+        if let Some(found) = item(line.text) {
+            if items.contains(&found) {
+                return Err(say(GOAL_TWICE, &[("n", &found.0)]));
             }
-            if let Some(found) = item(line) {
-                if items.contains(&found) {
-                    return Err(format!("goal: {found} is numbered twice"));
-                }
-                items.push(found);
-            }
+            items.push(found);
         }
     }
     if items.is_empty() {
-        Err(format!("goal: no numbered items under \"{HEADING}\""))
+        Err(GOAL_NONE.to_owned())
     } else {
         Ok(items)
     }
@@ -133,12 +135,14 @@ mod tests {
             .prop_shuffle()
     }
 
-    fn fence_with(numbers: &[u64]) -> String {
-        let mut text = String::from("```\n");
+    // Inside a longer fence, a shorter fence line is only text.
+    fn fence_with(numbers: &[u64], len: usize) -> String {
+        let mut text = format!("{}\n", "`".repeat(len));
         for n in numbers {
             writeln!(text, "{n}. inside").ok();
         }
-        text.push_str("```\n");
+        writeln!(text, "{}", "`".repeat(len - 1)).ok();
+        writeln!(text, "{}", "`".repeat(len)).ok();
         text
     }
 
@@ -152,17 +156,60 @@ mod tests {
         fn items_are_read_only_under_done_when(
             numbers in distinct_numbers(),
             noise in proptest::collection::vec(1_u64..1000, 0..4),
+            len in 4_usize..8,
         ) {
             let mut text = format!("# Goal\n\n1. before the heading\n{HEADING}\n\n");
             for n in &numbers {
                 writeln!(text, "{n}. item").ok();
-                text.push_str(&fence_with(&noise));
+                text.push_str(&fence_with(&noise, len));
             }
             text.push_str("## Next\n\n");
-            text.push_str(&fence_with(&noise));
+            text.push_str(&fence_with(&noise, len));
             text.push_str("1. after the section\n");
             let wanted: Vec<DoneWhen> = numbers.iter().copied().map(DoneWhen).collect();
             prop_assert_eq!(goal_items(&text), Ok(wanted));
+        }
+
+        #[test]
+        fn a_done_when_heading_inside_a_fenced_example_is_not_the_section(
+            numbers in distinct_numbers(),
+            fake in distinct_numbers(),
+            len in 3_usize..8,
+        ) {
+            let mut text = format!("{}markdown\n{HEADING}\n\n", "`".repeat(len));
+            for n in &fake {
+                writeln!(text, "{n}. an example").ok();
+            }
+            writeln!(text, "{}", "`".repeat(len)).ok();
+            writeln!(text, "{HEADING}").ok();
+            for n in &numbers {
+                writeln!(text, "{n}. real").ok();
+            }
+            let wanted: Vec<DoneWhen> = numbers.iter().copied().map(DoneWhen).collect();
+            prop_assert_eq!(goal_items(&text), Ok(wanted));
+        }
+
+        #[test]
+        fn a_fence_that_never_closes_is_an_error_wherever_it_is(
+            numbers in distinct_numbers(),
+            len in 3_usize..8,
+            before in any::<bool>(),
+        ) {
+            let items = numbers.iter().fold(String::new(), |mut all, n| {
+                writeln!(all, "{n}. item").ok();
+                all
+            });
+            let open = format!("{}\n", "`".repeat(len));
+            let text = if before {
+                format!("{open}{HEADING}\n{items}")
+            } else {
+                format!("{HEADING}\n{items}{open}9999. lost\n")
+            };
+            let line = if before { 1 } else { numbers.len() + 2 };
+            prop_assert_eq!(
+                goal_items(&text),
+                Err(format!("goal: a fence opened at line {line} is never closed"))
+            );
         }
 
         #[test]

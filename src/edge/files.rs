@@ -7,13 +7,13 @@ use std::fs;
 use std::path::Path;
 
 use crate::pure::failure::Failure;
+use crate::pure::messages::{NO_FILE, NOT_UTF8, say};
 
 // Creates nothing; a folder and an unreadable file count as missing.
 pub(crate) fn read_text(path: &Path) -> Result<String, Failure> {
-    let bytes =
-        fs::read(path).map_err(|_why| Failure::usage(format!("no file at {}", path.display())))?;
-    String::from_utf8(bytes)
-        .map_err(|_why| Failure::usage(format!("{} is not UTF-8 text", path.display())))
+    let shown = path.display();
+    let bytes = fs::read(path).map_err(|_why| Failure::usage(say(NO_FILE, &[("path", &shown)])))?;
+    String::from_utf8(bytes).map_err(|_why| Failure::usage(say(NOT_UTF8, &[("path", &shown)])))
 }
 
 #[cfg(test)]

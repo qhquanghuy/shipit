@@ -4,6 +4,9 @@ use serde::Serialize;
 use toml::{Table, Value};
 
 use crate::pure::goal::{DoneWhen, parse_done_when};
+use crate::pure::messages::{
+    LISTED_TWICE, MAP_ARRAY, MAP_KEY, MAP_NONE, NAME_HAS_ID, NOT_EMPTY, say,
+};
 use crate::pure::rules::{Parsed, Problem, Problems, fail, non_empty};
 
 // An empty map is valid: the change meets no done-when item.
@@ -23,23 +26,22 @@ fn carries_done_when_id(name: &str) -> bool {
 
 fn parse_names(value: &Value, path: &str) -> Parsed<Vec<String>> {
     let Some(items) = value.as_array() else {
-        return fail(path, "must be an array of non-empty strings");
+        return fail(path, MAP_ARRAY);
     };
     if items.is_empty() {
-        return fail(path, "must list at least one test name");
+        return fail(path, MAP_NONE);
     }
     let mut problems = Vec::new();
     let mut found: Vec<String> = Vec::new();
     for (index, item) in items.iter().enumerate() {
         let here = format!("{path}[{index}]");
         match non_empty(item) {
-            None => problems.push(Problem::new(here, "must be a non-empty string")),
-            Some(name) if carries_done_when_id(name) => problems.push(Problem::new(
-                here,
-                "a test name must not carry a done-when id",
-            )),
+            None => problems.push(Problem::new(here, NOT_EMPTY)),
+            Some(name) if carries_done_when_id(name) => {
+                problems.push(Problem::new(here, NAME_HAS_ID));
+            }
             Some(name) if found.iter().any(|seen| seen == name) => {
-                problems.push(Problem::new(here, format!("\"{name}\" is listed twice")));
+                problems.push(Problem::new(here, say(LISTED_TWICE, &[("item", &name)])));
             }
             Some(name) => found.push(name.to_owned()),
         }
@@ -57,7 +59,7 @@ pub(crate) fn parse_map(table: &Table) -> Parsed<CoverageMap> {
     for (key, value) in table {
         let path = format!(".{key}");
         match parse_done_when(key) {
-            None => problems.push(Problem::new(path, "must be a done-when id such as \"DW4\"")),
+            None => problems.push(Problem::new(path, MAP_KEY)),
             Some(id) => {
                 if let Some(names) = problems.take(parse_names(value, &path)) {
                     items.insert(id, names);

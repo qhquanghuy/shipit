@@ -5,12 +5,14 @@ load helpers
 
 ROADMAP="$SHIPIT_SRC/tests/fixtures/roadmap.md"
 GOAL="$SHIPIT_SRC/tests/fixtures/goal.md"
+COVERAGE="$SHIPIT_SRC/tests/fixtures/coverage.toml"
 
-# What `shipit format roadmap` prints for the fixtures.
-PRINTED='{"roadmap":{"goal":"demo","elements":[{"kind":"slice","name":"alpha","after":[],"meets":["demo:DW1"],"owns":["src/alpha.rs","docs/alpha/"],"test_drive":false,"branch":"slice/demo/alpha"},{"kind":"slice","name":"beta","after":["alpha"],"meets":["demo:DW2"],"owns":["src/beta.rs"],"test_drive":true,"branch":"slice/demo/beta"},{"kind":"slice","name":"gamma","after":["alpha"],"meets":["demo:DW3"],"owns":["src/gamma.rs"],"test_drive":false,"branch":"slice/demo/gamma"},{"kind":"proof","name":"proof","after":["beta","gamma"],"meets":[],"how":"run by the owner"}]},"waves":[["alpha"],["beta","gamma"],["proof"]],"goal":["demo:DW1","demo:DW2","demo:DW3"]}'
+# What `shipit format roadmap` prints for the fixtures; `docs/alpha/` is printed as `docs/alpha`.
+PRINTED='{"roadmap":{"goal":"demo","elements":[{"kind":"slice","name":"alpha","after":[],"meets":["demo:DW1"],"owns":["src/alpha.rs","docs/alpha"],"test_drive":false},{"kind":"slice","name":"beta","after":["alpha"],"meets":["demo:DW2"],"owns":["src/beta.rs"],"test_drive":true},{"kind":"slice","name":"gamma","after":["alpha"],"meets":["demo:DW3"],"owns":["src/gamma.rs"],"test_drive":false},{"kind":"proof","name":"proof","after":["beta","gamma"],"meets":[],"how":"run by the owner"}]},"waves":[["alpha"],["beta","gamma"],["proof"]],"goal":["demo:DW1","demo:DW2","demo:DW3"]}'
 
+# The formats need no repository and no setup: run in an empty folder.
 setup() {
-  cd "$(make_repo)"
+  cd "$BATS_TEST_TMPDIR"
 }
 
 @test "format roadmap: prints the parsed roadmap and its waves" {
@@ -20,14 +22,14 @@ setup() {
   [ "$output" = "$PRINTED" ]
 }
 
-@test "format roadmap: without a goal the goal prints as null" {
+@test "format roadmap: without a goal file the goal prints as null" {
   run --separate-stderr "$SHIPIT_BIN" format roadmap "$ROADMAP"
   [ "$status" -eq 0 ]
   [[ $output == *'"waves":[["alpha"],["beta","gamma"],["proof"]],"goal":null}' ]]
 }
 
 @test "format roadmap: an invalid roadmap exits 2 with every problem" {
-  sed -e 's/^name = "beta"/name = "alpha"/' -e 's/^owns = \["src\/gamma.rs"\]/owns = []/' \
+  sed -e 's/^name = "beta"/name = "alpha"/' -e 's/^owns = \["src\/gamma.rs"\]/owns = ["\/gamma.rs"]/' \
     "$ROADMAP" >bad.md
   run --separate-stderr "$SHIPIT_BIN" format roadmap bad.md
   [ "$status" -eq 2 ]
@@ -35,21 +37,7 @@ setup() {
   [ "$stderr" = 'shipit: bad.md is invalid:
 .slice[1].name: "alpha" is used twice
 .slice[1].after[0]: "alpha" cannot come after itself
-.slice[2].owns: must list at least one path' ]
-}
-
-@test "format roadmap: a roadmap without a goal or with a branch outside its goal exits 2" {
-  sed '/^goal = /d' "$ROADMAP" >nogoal.md
-  run --separate-stderr "$SHIPIT_BIN" format roadmap nogoal.md
-  [ "$status" -eq 2 ]
-  [ "$stderr" = 'shipit: nogoal.md is invalid:
-.goal: missing' ]
-
-  sed 's#slice/demo/beta#slice/beta#' "$ROADMAP" >branch.md
-  run --separate-stderr "$SHIPIT_BIN" format roadmap branch.md
-  [ "$status" -eq 2 ]
-  [ "$stderr" = 'shipit: branch.md is invalid:
-.slice[1].branch: must be "slice/demo/beta"' ]
+.slice[2].owns[0]: must be a path inside the repository, written like src/a.rs or docs/' ]
 }
 
 @test "format roadmap: an item nobody meets exits 2 with \"DW3: no slice\"" {
@@ -60,7 +48,7 @@ setup() {
 DW3: no slice' ]
 }
 
-@test "format roadmap: a file without the block, without TOML or missing exits 2" {
+@test "format roadmap: a file that cannot be read with certainty exits 2" {
   printf '# Roadmap\n' >none.md
   run --separate-stderr "$SHIPIT_BIN" format roadmap none.md
   [ "$status" -eq 2 ]
@@ -71,24 +59,47 @@ DW3: no slice' ]
   [ "$status" -eq 2 ]
   [[ $stderr == "shipit: broken.md is not valid TOML: "* ]]
 
+  printf '## Slices\n```toml\ngoal = "x"\n' >unclosed.md
+  run --separate-stderr "$SHIPIT_BIN" format roadmap unclosed.md
+  [ "$status" -eq 2 ]
+  [ "$stderr" = 'shipit: unclosed.md: a fence opened at line 2 is never closed' ]
+
+  printf '## Slices\n```toml\n```\n```toml\n```\n' >twice.md
+  run --separate-stderr "$SHIPIT_BIN" format roadmap twice.md
+  [ "$status" -eq 2 ]
+  [ "$stderr" = 'shipit: twice.md: more than one toml block under "## Slices"' ]
+
   run --separate-stderr "$SHIPIT_BIN" format roadmap missing.md
   [ "$status" -eq 2 ]
   [ "$stderr" = 'shipit: no file at missing.md' ]
 }
 
-@test "format roadmap: a goal without items exits 2" {
+@test "format roadmap: a goal that cannot be read with certainty exits 2" {
+  printf '## Done-when\n\n1. a\n```\n2. b\n' >open-goal.md
+  run --separate-stderr "$SHIPIT_BIN" format roadmap "$ROADMAP" --goal open-goal.md
+  [ "$status" -eq 2 ]
+  [ "$stderr" = 'shipit: goal: a fence opened at line 4 is never closed' ]
+
   printf '## Done-when\n' >empty-goal.md
   run --separate-stderr "$SHIPIT_BIN" format roadmap "$ROADMAP" --goal empty-goal.md
   [ "$status" -eq 2 ]
   [ "$stderr" = 'shipit: goal: no numbered items under "## Done-when"' ]
 }
 
-@test "format: a missing setup stops it" {
-  git rm -q .config/shipit.toml
-  git commit -q -m "drop setup"
-  run --separate-stderr "$SHIPIT_BIN" format roadmap "$ROADMAP"
-  [ "$status" -eq 2 ]
-  [ "$stderr" = "shipit: no setup file at .config/shipit.toml (see docs/setup.md)" ]
+@test "format roadmap: a chain of four thousand slices is checked well under a second" {
+  {
+    printf 'goal = "long"\n'
+    for ((i = 3999; i >= 0; i--)); do
+      printf '[[slice]]\nname = "s%d"\nafter = [%s]\nmeets = []\nowns = ["f/s%d.rs"]\ntest_drive = false\n' \
+        "$i" "$([[ $i -eq 0 ]] || printf '"s%d"' $((i - 1)))" "$i"
+    done
+  } >chain.toml
+  { printf '## Slices\n```toml\n'; cat chain.toml; printf '```\n'; } >chain.md
+  start=$(date +%s%N)
+  run --separate-stderr "$SHIPIT_BIN" format roadmap chain.md
+  elapsed=$((($(date +%s%N) - start) / 1000000))
+  [ "$status" -eq 0 ]
+  [ "$elapsed" -lt 1000 ]
 }
 
 @test "format: an unknown form exits 2 with the usage" {
@@ -96,8 +107,6 @@ DW3: no slice' ]
   [ "$status" -eq 2 ]
   [ "$stderr" = "shipit: usage: shipit format <roadmap|map|findings> …" ]
 }
-
-COVERAGE="$SHIPIT_SRC/tests/fixtures/coverage.toml"
 
 @test "format map: prints the items of a file and of a build-plan block" {
   want='{"DW2":["a single test"],"DW10":["status: a slice walks from planned to shipped","the_state_is_the_longest_chain_that_holds"]}'
@@ -109,8 +118,8 @@ COVERAGE="$SHIPIT_SRC/tests/fixtures/coverage.toml"
     printf '# Build plan\n\n## Done-when coverage\n\n```toml\n'
     cat "$COVERAGE"
     printf '```\n'
-  } >plan.md
-  run --separate-stderr "$SHIPIT_BIN" format map plan.md
+  } >plan.MD
+  run --separate-stderr "$SHIPIT_BIN" format map plan.MD
   [ "$status" -eq 0 ]
   [ "$output" = "$want" ]
 
@@ -120,15 +129,14 @@ COVERAGE="$SHIPIT_SRC/tests/fixtures/coverage.toml"
   [ "$output" = '{}' ]
 }
 
-@test "format map: a bad map exits 2 with every problem" {
-  printf 'DW4 = ["dw4 works"]\nnope = ["a"]\n' >bad.toml
+@test "format map: a bad map exits 2 and a block of another section is not borrowed" {
+  printf 'DW4 = ["dw4 works"]\n' >bad.toml
   run --separate-stderr "$SHIPIT_BIN" format map bad.toml
   [ "$status" -eq 2 ]
   [ "$stderr" = 'shipit: bad.toml is invalid:
-.DW4[0]: a test name must not carry a done-when id
-.nope: must be a done-when id such as "DW4"' ]
+.DW4[0]: a test name must not carry a done-when id' ]
 
-  printf '# Plan\n' >plan.md
+  printf '## Done-when coverage\n\n## Other\n\n```toml\nDW9 = ["x"]\n```\n' >plan.md
   run --separate-stderr "$SHIPIT_BIN" format map plan.md
   [ "$status" -eq 2 ]
   [ "$stderr" = 'shipit: plan.md has no toml block under "## Done-when coverage"' ]
@@ -147,11 +155,11 @@ COVERAGE="$SHIPIT_SRC/tests/fixtures/coverage.toml"
   [ "$stderr" = "shipit: rework needs a must-fix finding" ]
 }
 
-@test "format findings: every refused finding and result is named" {
-  run --separate-stderr "$SHIPIT_BIN" format findings review approve "oops" "issue: x"
+@test "format findings: every refused finding and result is named, one line each" {
+  run --separate-stderr "$SHIPIT_BIN" format findings review approve "oops" $'issue (non-blocking): x\nissue (blocking): y'
   [ "$status" -eq 2 ]
   [ "$stderr" = 'shipit: finding "oops": must start with issue, suggestion, question or nitpick, then ": "
-finding "issue: x": issue and suggestion need (blocking) or (non-blocking)' ]
+finding "issue (non-blocking): x\nissue (blocking): y": a finding is one line, without control characters' ]
 
   run --separate-stderr "$SHIPIT_BIN" format findings test-drive approve
   [ "$status" -eq 2 ]

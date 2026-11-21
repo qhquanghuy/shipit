@@ -4,25 +4,22 @@ use std::path::Path;
 
 use serde::Serialize;
 
-use crate::commands::setup::load_setup;
 use crate::edge::files::read_text;
-use crate::edge::git::Git;
 use crate::pure::block::toml_block;
 use crate::pure::coverage_map::parse_map;
 use crate::pure::failure::Failure;
 use crate::pure::finding::{Finding, Outcome, ResultKind, outcome_problems, parse_finding};
 use crate::pure::goal::{QualifiedDoneWhen, goal_items};
+use crate::pure::messages::{
+    FILE_PROBLEM, FINDINGS_USAGE, MAP_USAGE, NO_BLOCK, NOT_A_RESULT, NOT_TOML, ROADMAP_USAGE,
+    USAGE, say,
+};
 use crate::pure::roadmap::{Roadmap, SliceName, meets_problems, parse_roadmap, waves};
 use crate::pure::rules::invalid;
-use crate::pure::setup::{HEAD, toml_table};
+use crate::pure::setup::toml_table;
 
 pub(crate) const HIDDEN: bool = true;
 
-const USAGE: &str = "usage: shipit format <roadmap|map|findings> …";
-const ROADMAP_USAGE: &str = "usage: shipit format roadmap <file> [--goal <goal file>]";
-const MAP_USAGE: &str = "usage: shipit format map <file>";
-const FINDINGS_USAGE: &str =
-    "usage: shipit format findings <review|test-drive> <result> [<finding>…]";
 const SLICES: &str = "## Slices";
 const COVERAGE: &str = "## Done-when coverage";
 
@@ -33,11 +30,41 @@ struct Printed<'a> {
     goal: Option<Vec<QualifiedDoneWhen>>,
 }
 
+#[derive(Serialize)]
+struct PrintedFindings<'a> {
+    result: Outcome,
+    findings: &'a [Finding],
+}
+
 fn print(out: &mut dyn Write, value: &impl Serialize) -> Result<(), Failure> {
     let text = serde_json::to_string(value)
         .map_err(|why| Failure::usage(format!("cannot print the result: {why}")))?;
     writeln!(out, "{text}").ok();
     Ok(())
+}
+
+fn block_table(label: &str, text: &str, heading: &str) -> Result<toml::Table, Failure> {
+    let block = match toml_block(text, heading) {
+        Ok(Some(block)) => block,
+        Ok(None) => {
+            return Err(Failure::usage(say(
+                NO_BLOCK,
+                &[("file", &label), ("heading", &heading)],
+            )));
+        }
+        Err(why) => {
+            return Err(Failure::usage(say(
+                FILE_PROBLEM,
+                &[("file", &label), ("why", &why)],
+            )));
+        }
+    };
+    file_table(label, block)
+}
+
+fn file_table(label: &str, text: &str) -> Result<toml::Table, Failure> {
+    toml_table(text.as_bytes())
+        .map_err(|why| Failure::usage(say(NOT_TOML, &[("file", &label), ("why", &why)])))
 }
 
 fn roadmap_command(args: &[OsString], out: &mut dyn Write) -> Result<(), Failure> {
@@ -46,16 +73,11 @@ fn roadmap_command(args: &[OsString], out: &mut dyn Write) -> Result<(), Failure
         [file, flag, goal] if flag == OsStr::new("--goal") => (file, Some(goal)),
         _ => return Err(Failure::usage(ROADMAP_USAGE)),
     };
-    let git = Git::find()?;
-    let setup = load_setup(&git, OsStr::new(HEAD))?;
     let label = file.to_string_lossy();
     let text = read_text(Path::new(file))?;
-    let block = toml_block(&text, SLICES)
-        .ok_or_else(|| Failure::usage(format!("{label} has no toml block under \"{SLICES}\"")))?;
-    let table = toml_table(block.as_bytes())
-        .map_err(|why| Failure::usage(format!("{label} is not valid TOML: {why}")))?;
-    let roadmap = parse_roadmap(&table, &setup.gate.base)
-        .map_err(|problems| Failure::usage(invalid(&label, &problems)))?;
+    let table = block_table(&label, &text, SLICES)?;
+    let roadmap =
+        parse_roadmap(&table).map_err(|problems| Failure::usage(invalid(&label, &problems)))?;
     let goal = match goal_file {
         None => None,
         Some(goal_file) => {
@@ -88,23 +110,16 @@ fn map_command(args: &[OsString], out: &mut dyn Write) -> Result<(), Failure> {
     };
     let label = file.to_string_lossy();
     let text = read_text(Path::new(file))?;
-    let source = if Path::new(file).extension() == Some(OsStr::new("md")) {
-        toml_block(&text, COVERAGE).ok_or_else(|| {
-            Failure::usage(format!("{label} has no toml block under \"{COVERAGE}\""))
-        })?
+    let is_markdown = Path::new(file)
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("md"));
+    let table = if is_markdown {
+        block_table(&label, &text, COVERAGE)?
     } else {
-        &text
+        file_table(&label, &text)?
     };
-    let table = toml_table(source.as_bytes())
-        .map_err(|why| Failure::usage(format!("{label} is not valid TOML: {why}")))?;
     let map = parse_map(&table).map_err(|problems| Failure::usage(invalid(&label, &problems)))?;
     print(out, &map)
-}
-
-#[derive(Serialize)]
-struct PrintedFindings<'a> {
-    result: Outcome,
-    findings: &'a [Finding],
 }
 
 fn findings_command(args: &[OsString], out: &mut dyn Write) -> Result<(), Failure> {
@@ -117,11 +132,8 @@ fn findings_command(args: &[OsString], out: &mut dyn Write) -> Result<(), Failur
         Some(_) | None => return Err(Failure::usage(FINDINGS_USAGE)),
     };
     let result = result.to_string_lossy();
-    let outcome = Outcome::parse(&result).ok_or_else(|| {
-        Failure::usage(format!(
-            "\"{result}\" is not a result: approve, approve-after-fixes, rework, pass or findings"
-        ))
-    })?;
+    let outcome = Outcome::parse(&result)
+        .ok_or_else(|| Failure::usage(say(NOT_A_RESULT, &[("word", &result)])))?;
     let mut findings = Vec::new();
     let mut refused = Vec::new();
     for (index, text) in texts.iter().enumerate() {
