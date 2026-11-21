@@ -53,6 +53,9 @@ pub(crate) enum Entry {
     ShippedProof {
         note: String,
     },
+    Started {
+        branch: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -131,6 +134,9 @@ fn parse_entry(object: &Map<String, Value>) -> Option<Entry> {
             matched: object.get("matched")?.as_bool()?,
             note: field("note"),
         },
+        "started" => Entry::Started {
+            branch: field("branch")?,
+        },
         "shipped" => Entry::ShippedProof {
             note: field("note")?,
         },
@@ -180,7 +186,8 @@ pub(crate) fn closed(entries: &[Logged], slice: &SliceName, kind: &str, key: &st
             | Entry::Receipt { .. }
             | Entry::Note { .. }
             | Entry::ShippedMerge { .. }
-            | Entry::ShippedProof { .. } => None,
+            | Entry::ShippedProof { .. }
+            | Entry::Started { .. } => None,
         })
         .collect()
 }
@@ -245,6 +252,7 @@ mod tests {
                 }
             ),
             text().prop_map(|note| Entry::ShippedProof { note }),
+            text().prop_map(|branch| Entry::Started { branch }),
         ]
     }
 

@@ -132,6 +132,46 @@ pub(crate) fn patch_id(git: &Git, from: &Oid, to: &Oid) -> Result<Option<Oid>, F
     Ok(text.split_whitespace().next().and_then(Oid::parse))
 }
 
+// How many commits the tip has that the base does not.
+pub(crate) fn commits_beyond(git: &Git, tip: &Oid, base: &BaseRef) -> Result<u64, Failure> {
+    let cannot = || Failure::usage(format!("cannot count the commits of {tip} beyond {base}"));
+    let range = format!("{}..{tip}", base.full());
+    let bytes = git
+        .output(&[
+            OsStr::new("rev-list"),
+            OsStr::new("--count"),
+            OsStr::new(&range),
+        ])
+        .map_err(|_why| cannot())?;
+    String::from_utf8_lossy(&bytes)
+        .trim()
+        .parse()
+        .map_err(|_why| cannot())
+}
+
+// The branch names under `slice/`, local or on origin (no network), each once.
+pub(crate) fn slice_branches(git: &Git) -> Result<Vec<String>, Failure> {
+    let bytes = git
+        .output(&[
+            OsStr::new("for-each-ref"),
+            OsStr::new("--format=%(refname)"),
+            OsStr::new("refs/heads/slice"),
+            OsStr::new("refs/remotes/origin/slice"),
+        ])
+        .map_err(|_why| Failure::usage("cannot list the slice branches"))?;
+    let mut names: Vec<String> = String::from_utf8_lossy(&bytes)
+        .lines()
+        .filter_map(|name| {
+            name.strip_prefix("refs/heads/")
+                .or_else(|| name.strip_prefix("refs/remotes/origin/"))
+        })
+        .map(str::to_owned)
+        .collect();
+    names.sort();
+    names.dedup();
+    Ok(names)
+}
+
 // What `shipit check` judged: the base it used (its short name), the commit where the work left
 // it, and the id of the change since.
 #[derive(Debug, PartialEq, Eq)]

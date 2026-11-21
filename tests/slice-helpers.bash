@@ -78,3 +78,28 @@ reviewed() {
 lg() {
   run --separate-stderr "$SHIPIT_BIN" log "$@"
 }
+
+# st <args>: run shipit status, stdout in $output, stderr in $stderr.
+st() {
+  run --separate-stderr "$SHIPIT_BIN" status "$@"
+}
+
+# plan_ready <slice> [goal]: a build plan for the slice with a counting plan review.
+plan_ready() {
+  write_build_plan "$1" "the plan of $1" "${2:-demo}"
+  "$SHIPIT_BIN" receipt plan-review "$1" --goal "${2:-demo}" --author opus:high --by fable:high --result approve >/dev/null
+}
+
+# ship_entry <slice> [goal]: a shipped line in the goal's logbook, as the owner's merge leaves it.
+ship_entry() {
+  local book
+  book="$(store)/goals/${2:-demo}/logbook.jsonl"
+  mkdir -p "$(dirname "$book")"
+  printf '{"slice":"%s","event":"shipped","commit":"%s","matched":true,"time":"2026-11-21T10:00:00Z","tool":"shipit 0.1.0"}\n' \
+    "$1" "$(printf '%040d' 0)" >>"$book"
+}
+
+# the_line <slice> [goal]: the status line of one slice, from $output.
+the_line() {
+  grep -F "${2:-demo}/$1:" <<<"$output"
+}

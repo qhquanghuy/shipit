@@ -2,9 +2,10 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::pure::finding::{Class, Finding, Outcome, ResultKind};
-use crate::pure::rank::{Basis, Rank};
+use crate::pure::rank::{Basis, Rank, Worker, rank_verdict};
 use crate::pure::receipt::Oid;
 use crate::pure::roadmap::SliceName;
+use crate::pure::setup::{Effort, Setup};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ReceiptKind {
@@ -123,6 +124,65 @@ pub(crate) fn stored_findings(doc: &Value) -> Option<Vec<Stored>> {
         .collect()
 }
 
+// What status reads from a receipt file.
+#[derive(Debug)]
+pub(crate) struct ReceiptView {
+    pub(crate) key: String,
+    pub(crate) result: Outcome,
+    pub(crate) author: Worker,
+    pub(crate) by: Worker,
+    pub(crate) fresh: bool,
+    pub(crate) findings: Vec<Stored>,
+}
+
+fn worker_of(value: &Value) -> Option<Worker> {
+    let tier = value.get("tier")?.as_u64()?;
+    Some(Worker {
+        model: value.get("model")?.as_str()?.to_owned(),
+        effort: Effort::parse(value.get("effort")?.as_str()?)?,
+        stands_in: value.get("stand_in")?.as_bool()?.then_some(tier),
+    })
+}
+
+pub(crate) fn read_receipt(docs: Option<&[Value]>) -> Option<ReceiptView> {
+    let Some([doc]) = docs else {
+        return None;
+    };
+    Some(ReceiptView {
+        key: doc.get("key")?.as_str()?.to_owned(),
+        result: Outcome::parse(doc.get("result")?.as_str()?)?,
+        author: worker_of(doc.get("author")?)?,
+        by: worker_of(doc.get("by")?)?,
+        fresh: doc.get("rank")?.as_str()? == "fresh",
+        findings: stored_findings(doc)?,
+    })
+}
+
+impl ReceiptView {
+    pub(crate) fn is_rework(&self) -> bool {
+        self.result == Outcome::Rework
+    }
+}
+
+// The findings that no known issue or answer has closed.
+pub(crate) fn open_findings<'a>(view: &'a ReceiptView, closed: &[String]) -> Vec<&'a Stored> {
+    view.findings
+        .iter()
+        .filter(|finding| !closed.contains(&finding.id))
+        .collect()
+}
+
+// A receipt counts for a version when it is that version's, its ranks still hold under the
+// current setup, it is not a rework, and every blocking finding is closed.
+pub(crate) fn counts(view: &ReceiptView, policy: &Setup, key: &str, closed: &[String]) -> bool {
+    view.key == key
+        && !view.is_rework()
+        && rank_verdict(policy, &view.author, &view.by, view.fresh).is_ok()
+        && open_findings(view, closed)
+            .iter()
+            .all(|finding| finding.class == Class::NiceToFix)
+}
+
 // What a check receipt says it was compared with: the ref's short name and the commit.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct CheckBase {
@@ -189,6 +249,57 @@ mod tests {
                 }])
             );
             prop_assert_eq!(stored_findings(&json!({"findings": [{"id": "F1"}]})), None);
+        }
+
+        #[test]
+        fn a_receipt_counts_iff_its_rank_holds_and_its_blocking_findings_are_closed(
+            author in 0..3_usize,
+            by in 0..4_usize,
+            result in 0..3_usize,
+            classes in proptest::collection::vec(0..3_usize, 0..5),
+            closed in proptest::collection::vec(any::<bool>(), 5),
+            same_key in any::<bool>(),
+        ) {
+            let models = ["haiku", "sonnet", "opus", "fable"];
+            let worker = |tier: usize| Worker {
+                model: models.get(tier).copied().expect("a model").to_owned(),
+                effort: Effort::High,
+                stands_in: None,
+            };
+            let all = [Class::MustFix, Class::MustAnswer, Class::NiceToFix];
+            let results = [Outcome::Approve, Outcome::ApproveAfterFixes, Outcome::Rework];
+            let findings: Vec<Stored> = classes
+                .iter()
+                .enumerate()
+                .map(|(index, class)| Stored {
+                    id: format!("F{index}"),
+                    is_question: false,
+                    class: all.get(*class).copied().expect("a class"),
+                    text: "t".to_owned(),
+                })
+                .collect();
+            let closed_ids: Vec<String> = findings
+                .iter()
+                .zip(&closed)
+                .filter(|(_, closed)| **closed)
+                .map(|(finding, _)| finding.id.clone())
+                .collect();
+            let blocking_closed = findings
+                .iter()
+                .all(|finding| finding.class == Class::NiceToFix || closed_ids.contains(&finding.id));
+            let outcome = results.get(result).copied().expect("a result");
+            let view = ReceiptView {
+                key: "k".to_owned(),
+                result: outcome,
+                author: worker(author),
+                by: worker(by),
+                fresh: false,
+                findings,
+            };
+            let policy = crate::pure::testing::setup_with(&[]);
+            let expected = by > author && outcome != Outcome::Rework && blocking_closed && same_key;
+            let key = if same_key { "k" } else { "other" };
+            prop_assert_eq!(counts(&view, &policy, key, &closed_ids), expected);
         }
 
         #[test]

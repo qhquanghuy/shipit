@@ -283,7 +283,8 @@ fn newest_review<'a>(entries: &'a [Logged], slice: &SliceName) -> Option<(&'a st
             | Entry::KnownIssue { .. }
             | Entry::Answer { .. }
             | Entry::ShippedMerge { .. }
-            | Entry::ShippedProof { .. } => None,
+            | Entry::ShippedProof { .. }
+            | Entry::Started { .. } => None,
         })
 }
 
@@ -297,7 +298,8 @@ fn already_named_by<'a>(entries: &'a [Logged], commit: &Oid) -> Option<&'a Slice
         | Entry::Note { .. }
         | Entry::KnownIssue { .. }
         | Entry::Answer { .. }
-        | Entry::ShippedProof { .. } => None,
+        | Entry::ShippedProof { .. }
+        | Entry::Started { .. } => None,
     })
 }
 
@@ -346,6 +348,7 @@ pub(crate) fn run(
         Entry::Answer { .. } => "answer",
         Entry::ShippedMerge { .. } | Entry::ShippedProof { .. } => "shipped",
         Entry::Receipt { .. } => "receipt",
+        Entry::Started { .. } => "started",
     };
     let text = line(&entry, &slice, &now_utc(), &tool()).map_err(Failure::usage)?;
     append_line(&logbook_path(&store, &goal), &text)?;

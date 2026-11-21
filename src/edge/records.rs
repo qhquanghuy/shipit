@@ -123,6 +123,18 @@ pub(crate) fn load_goal(common: &Path, goal: &GoalName) -> Result<Roadmap, Failu
     Ok(roadmap)
 }
 
+// Every goal of the store with its newest roadmap, by goal name.
+pub(crate) fn load_goals(common: &Path) -> Result<Vec<(GoalName, Roadmap)>, Failure> {
+    let names = goal_names(&store_dir(common));
+    if names.is_empty() {
+        return Err(Failure::usage("no goal in the store"));
+    }
+    names
+        .into_iter()
+        .map(|goal| load_goal(common, &goal).map(|roadmap| (goal, roadmap)))
+        .collect()
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum WriteNew {
     Exists,
