@@ -50,6 +50,11 @@ branch. The ref used for `<base>`: the local branch if it has everything `origin
 change counts), else `origin/<base>`, else the local branch; if none exists, exit 2. The receipt records the full ref
 (`base_ref`) and the commit it was at (`base_commit`).
 
+The slice's own `base` never judges the slice: if the branch it names has a setup whose `base` is another branch,
+ShipIt follows that (at most 5 steps) until a branch names itself, so a slice cannot pick a branch that holds its own
+code to judge itself by. `--base` is taken as
+given.
+
 A base named by the setup may not be the branch being checked, nor point at the commit being checked: it could not vouch
 for the checks. Exit 2, and pass `--base <name>`. With `--base`, the base may be HEAD itself (CI on the base branch):
 size is 0 and the checks run.
@@ -61,7 +66,9 @@ developer's machine can be gamed by design: it says that this machine ran the ch
 
 ### Changing the checks
 
-`base`, `cap`, `check` and `environment` in the setup must be identical to the base branch's, with one exception. If the
+`base`, `cap`, `check` and `environment` in the setup are compared with the base branch's setup as it was where the slice
+forked from it. If the base branch's setup has changed since the fork, the check is refused with "merge or rebase" (a
+stale base is never mistaken for the slice's own change). The slice's own change is refused, with one exception. If the
 slice's diff against the base touches only `.config/shipit.json`, `check` runs the slice's new checks with its new cap and
 environment, prints `shipit: this slice changes the checks (<fields>); setup change: the owner approves it by merging` on
 stderr, and writes the receipt with `"setup_change": true` and `"setup_fields"` (the changed fields). `shipit verify` then
@@ -73,7 +80,8 @@ their own (or merge or rebase the base if it moved on). If the base has no setup
 printed and the check goes on.
 
 A receipt covers the content git tracks, as `git status` reports it with submodules never ignored (`--ignore-submodules=none`)
-and no file system monitor (`core.fsmonitor=false`). What git itself does not see is outside the check: ignored files,
+and no file system monitor (`core.fsmonitor=false`); the counts and lists of changed files use `--ignore-submodules=none` too
+(a `.gitmodules` entry with `ignore = all` hides nothing). What git itself does not see is outside the check: ignored files,
 `.git/info/exclude`, clean filters and `core.autocrlf` (git compares the converted content, not the bytes on disk).
 
 Exit codes:

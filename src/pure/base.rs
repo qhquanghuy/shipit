@@ -126,11 +126,7 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
-    use crate::pure::testing::oid;
-
-    fn name(text: &str) -> BranchName {
-        BranchName::parse(text).expect("a non-empty name")
-    }
+    use crate::pure::testing::{name, oid};
 
     #[test]
     fn the_base_ref_truth_table() {

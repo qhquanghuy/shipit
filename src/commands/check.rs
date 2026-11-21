@@ -7,7 +7,9 @@ use crate::edge::git::Git;
 use crate::edge::run::run_check;
 use crate::edge::store::{check_receipt_path, write_json_atomic};
 use crate::pure::base::{BaseRef, BranchName, SelfBase, base_verdict, choose_base_ref};
-use crate::pure::baseline::{Flow, FlowField, parse_baseline, setup_changes, setup_only};
+use crate::pure::baseline::{
+    Flow, FlowField, SetupVerdict, parse_baseline, setup_only, setup_verdict,
+};
 use crate::pure::failure::Failure;
 use crate::pure::json::invalid;
 use crate::pure::receipt::{BaseUsed, CheckReceipt, Oid};
@@ -59,6 +61,8 @@ fn head_commit(git: &Git) -> Result<Oid, Failure> {
         .ok_or_else(|| Failure::usage("cannot resolve HEAD to a commit"))
 }
 
+const MAX_HOPS: usize = 5;
+
 fn base_ref(git: &Git, base: &BranchName) -> Result<BaseRef, Failure> {
     let origin_ref = BaseRef::Origin(base.clone());
     let local_ref = BaseRef::Local(base.clone());
@@ -69,8 +73,12 @@ fn base_ref(git: &Git, base: &BranchName) -> Result<BaseRef, Failure> {
     let local_has_origin =
         origin && local && git.is_ancestor(OsStr::new(&origin_full), OsStr::new(&local_full));
     choose_base_ref(base, origin, local, local_has_origin).ok_or_else(|| {
+        let hint = match base.as_str().strip_prefix("origin/") {
+            Some(branch) => format!("; name the branch, not the remote: \"{branch}\""),
+            None => String::new(),
+        };
         Failure::usage(format!(
-            "base branch \"{base}\" not found (looked for origin/{base} and {base})"
+            "base branch \"{base}\" not found (looked for origin/{base} and {base}){hint}"
         ))
     })
 }
@@ -93,17 +101,9 @@ fn refuse_self_base(
     )
 }
 
-fn load_baseline(
-    git: &Git,
-    base_ref: &BaseRef,
-    err: &mut dyn Write,
-) -> Result<Option<Flow>, Failure> {
-    let name = base_ref.to_string();
-    let full = base_ref.full();
-    let rev = OsStr::new(&full);
-    let label = setup_label(&name);
+// None when the file is missing.
+fn read_flow(git: &Git, rev: &OsStr, label: &str) -> Result<Option<Flow>, Failure> {
     if !git.file_exists(rev, SETUP_PATH) {
-        writeln!(err, "shipit: no setup file on {name}; nothing to compare").ok();
         return Ok(None);
     }
     let bytes = git
@@ -113,19 +113,58 @@ fn load_baseline(
         json_values(&bytes).map_err(|_why| Failure::usage(format!("{label} is not valid JSON")))?;
     parse_baseline(&docs)
         .map(Some)
-        .map_err(|problems| Failure::usage(invalid(&label, &problems)))
+        .map_err(|problems| Failure::usage(invalid(label, &problems)))
 }
 
-// The fields of base, cap, check and environment that differ from the base branch's setup.
-fn changed_fields(
+fn load_baseline(
     git: &Git,
-    setup: &Setup,
     base_ref: &BaseRef,
     err: &mut dyn Write,
-) -> Result<Vec<FlowField>, Failure> {
-    Ok(load_baseline(git, base_ref, err)?
-        .map(|baseline| setup_changes(&baseline, &Flow::of(setup)))
-        .unwrap_or_default())
+) -> Result<Option<Flow>, Failure> {
+    let name = base_ref.to_string();
+    let flow = read_flow(git, OsStr::new(&base_ref.full()), &setup_label(&name))?;
+    if flow.is_none() {
+        writeln!(err, "shipit: no setup file on {name}; nothing to compare").ok();
+    }
+    Ok(flow)
+}
+
+// The base branch's own setup says which branch is the base. A slice that names another branch
+// (one that holds its own code) is followed to the base that branch's setup names, until a
+// branch names itself: the slice's new value never judges the slice. --base is taken as given.
+fn settle_base(
+    git: &Git,
+    start: BranchName,
+    trusted: bool,
+    err: &mut dyn Write,
+) -> Result<(BranchName, BaseRef, Option<Flow>), Failure> {
+    let mut base = start;
+    for _hop in 0..MAX_HOPS {
+        let base_ref = base_ref(git, &base)?;
+        let tip = load_baseline(git, &base_ref, err)?;
+        let named = match &tip {
+            Some(flow) if !trusted && flow.base() != base.as_str() => flow.base().to_owned(),
+            Some(_) | None => return Ok((base, base_ref, tip)),
+        };
+        base = BranchName::parse(&named).ok_or_else(|| {
+            Failure::usage(format!(
+                "{} names the base \"{named}\", which is not a branch name",
+                setup_label(&base_ref.to_string())
+            ))
+        })?;
+    }
+    Err(Failure::usage(format!(
+        "the base setups lead from branch to branch and no branch names itself as the base \
+         (stopped at \"{base}\")"
+    )))
+}
+
+fn changed_setup(fields: &[FlowField], base: &BranchName) -> Failure {
+    Failure::no(format!(
+        "this slice changes the checks ({}); the owner merges setup changes on {base} first \
+         (or merge/rebase {base} if it moved on)",
+        comma_list(fields)
+    ))
 }
 
 // A branch that could change the checks along with its code could vouch for itself, so the
@@ -137,24 +176,40 @@ fn approve_setup_change(
     since: &Oid,
     base: &BranchName,
     err: &mut dyn Write,
-) -> Result<Option<Vec<String>>, Failure> {
-    if changes.is_empty() {
-        return Ok(None);
-    }
-    let fields = comma_list(changes);
+) -> Result<Vec<String>, Failure> {
     if !setup_only(&git.changed_names(since)?) {
-        return Err(Failure::no(format!(
-            "this slice changes the checks ({fields}); the owner merges setup changes on {base} \
-             first (or merge/rebase {base} if it moved on)"
-        )));
+        return Err(changed_setup(changes, base));
     }
     writeln!(
         err,
-        "shipit: this slice changes the checks ({fields}); setup change: the owner approves it \
-         by merging"
+        "shipit: this slice changes the checks ({}); setup change: the owner approves it by \
+         merging",
+        comma_list(changes)
     )
     .ok();
-    Ok(Some(changes.iter().map(ToString::to_string).collect()))
+    Ok(changes.iter().map(ToString::to_string).collect())
+}
+
+fn judge_setup(
+    git: &Git,
+    setup: &Setup,
+    (tip, base): (Option<&Flow>, &BranchName),
+    (base_ref, merge_base): (&BaseRef, &Oid),
+    err: &mut dyn Write,
+) -> Result<Option<Vec<String>>, Failure> {
+    let Some(tip) = tip else {
+        return Ok(None);
+    };
+    let forked = read_flow(git, OsStr::new(merge_base.as_str()), &base_ref.to_string())
+        .ok()
+        .flatten();
+    match setup_verdict(tip, forked.as_ref(), &Flow::of(setup)) {
+        SetupVerdict::Same => Ok(None),
+        SetupVerdict::Moved(fields) => Err(changed_setup(&fields, base)),
+        SetupVerdict::Changed(fields) => {
+            approve_setup_change(git, &fields, merge_base, base, err).map(Some)
+        }
+    }
 }
 
 fn refuse_changed_work(git: &Git, command: &str, commit: &Oid, tree: &Oid) -> Result<(), Failure> {
@@ -252,17 +307,22 @@ pub(crate) fn run(
     }
 
     let trusted = override_base.is_some();
-    let base = override_base.unwrap_or_else(|| setup.base.clone());
-    let base_ref = base_ref(&git, &base)?;
+    let start = override_base.unwrap_or_else(|| setup.base.clone());
+    let (base, base_ref, tip) = settle_base(&git, start, trusted, err)?;
     let base_commit = git
         .commit_of(OsStr::new(&base_ref.full()))
         .ok_or_else(|| Failure::usage(format!("cannot resolve {base_ref} to a commit")))?;
     refuse_self_base(&git, &base, trusted, &base_commit)?;
-    let changes = changed_fields(&git, &setup, &base_ref, err)?;
     let merge_base = git
         .merge_base_with_head(OsStr::new(&base_ref.full()))
         .ok_or_else(|| Failure::usage(format!("no shared history with {base_ref}")))?;
-    let setup_fields = approve_setup_change(&git, &changes, &merge_base, &base, err)?;
+    let setup_fields = judge_setup(
+        &git,
+        &setup,
+        (tip.as_ref(), &base),
+        (&base_ref, &merge_base),
+        err,
+    )?;
     let files = git.changed_files_count(&merge_base)?;
     let (fits, message) = size_verdict(files, setup.cap);
     writeln!(out, "{message}").ok();
@@ -307,11 +367,7 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
-    use crate::pure::testing::os;
-
-    fn name(text: &str) -> BranchName {
-        BranchName::parse(text).expect("a branch name")
-    }
+    use crate::pure::testing::{name, os};
 
     #[test]
     fn no_argument_means_the_setup_names_the_base() {

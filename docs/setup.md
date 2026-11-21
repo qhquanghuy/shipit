@@ -69,7 +69,8 @@ Every command that reads the setup reads it as committed at a ref (default `HEAD
 that breaks a rule above each stop the command with exit 2 and a message that says what to fix.
 
 `check` also reads the base branch's setup, but only `base`, `cap`,
-`check` and `environment` (validated for their type only). Those four fields must be identical to the slice's, with one
+`check` and `environment` (validated for their type only). Those four fields are compared with the setup of the slice's merge base with that branch: the base branch's tip must
+not differ from it (else: merge or rebase), and the slice's fields must be identical to it, with one
 exception: when the slice's diff against the base touches only `.config/shipit.json`, a change is allowed. `check` then
 runs the slice's new checks with its new cap and environment, prints `shipit: this slice changes the checks (<fields>);
 setup change: the owner approves it by merging` on stderr, and marks the receipt (`"setup_change": true`,

@@ -71,10 +71,7 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
-
-    fn os(args: &[&str]) -> Vec<OsString> {
-        args.iter().map(OsString::from).collect()
-    }
+    use crate::pure::testing::os;
 
     fn not_a_name(name: &str) -> Failure {
         Failure::usage(format!(

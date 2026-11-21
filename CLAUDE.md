@@ -14,6 +14,7 @@ Rust CLI: checks and receipts for agent work. Terms: `docs/vocab.md`. Behaviour:
 `src/pure/` types and decisions, no I/O. `src/edge/` effects (`git.rs` is the only module that runs git).
 `src/commands/<name>.rs` one command each. `src/main.rs` is the only place that writes errors and exits.
 `build.rs` finds the files in those folders and generates the `mod` lines and `COMMANDS`; `data/` is embedded.
+It puts `#[forbid(clippy::disallowed_methods, clippy::disallowed_types)]` on `mod pure` and `mod commands`: nothing below can switch the effect lints off.
 
 ## Adding without colliding (never edit a shared file)
 

@@ -27,12 +27,7 @@ pub(crate) fn run_check(top: &Path, prefix: &[String], command: &str) -> Result<
         .iter()
         .map(String::as_str)
         .chain(["bash", "-c", command]);
-    let Some(program) = words.next() else {
-        return Err(CannotRun {
-            code: NOT_STARTED,
-            message: "cannot run: no program".to_owned(),
-        });
-    };
+    let program = words.next().unwrap_or("bash");
     let status = Command::new(program)
         .args(words)
         .current_dir(top)

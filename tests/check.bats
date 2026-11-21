@@ -435,7 +435,7 @@ changed_msg() {
   commit_files 1
   run_check
   [ "$status" -eq 1 ]
-  [ "$stderr" = "$(changed_msg base other)" ]
+  [ "$stderr" = "$(changed_msg base main)" ]
   no_receipt
 }
 
@@ -1003,4 +1003,65 @@ rename_files() {
   [ "$status" -eq 3 ]
   [[ $stderr == "shipit: uncommitted changes: commit first"* ]]
   no_receipt
+}
+
+@test "a slice cannot name a branch that holds its own code to judge itself by" {
+  start_repo ".check = $(checks 'echo ran')"
+  commit_files 1
+  git branch feat-code
+  write_setup "$(jq -c ".check = $(checks "echo ran >> '$LOG'") | .base = \"feat-code\"" "$FIXTURE")"
+  run_check
+  [ "$status" -eq 1 ]
+  [ "$stderr" = "$(changed_msg 'base, check' main)" ]
+  [ ! -e "$LOG" ]
+  no_receipt
+}
+
+@test "a base that moved on is not mistaken for the slice's change: refused, not marked" {
+  start_repo ".check = $(checks 'true')"
+  write_setup "$(jq -c '.check = ["true"] | .roles.reader.tier = 2' "$FIXTURE")"
+  git checkout -q main
+  write_setup "$(jq -c '.check = ["true", "test -f a"]' "$FIXTURE")"
+  git checkout -q feature
+  run_check
+  [ "$status" -eq 1 ]
+  [ "$stderr" = "$(changed_msg check)" ]
+  no_receipt
+}
+
+@test "a submodule that .gitmodules says to ignore still counts as a changed file" {
+  start_repo ".check = $(checks 'true')"
+  local sub="$BATS_TEST_TMPDIR/sub"
+  git init -q -b main "$sub"
+  git -C "$sub" config user.name t
+  git -C "$sub" config user.email t@example.invalid
+  git -C "$sub" config commit.gpgsign false
+  printf 's\n' >"$sub/s"
+  git -C "$sub" add s
+  git -C "$sub" commit -q -m s
+  git checkout -q main
+  git -c protocol.file.allow=always submodule add -q "$sub" vendor
+  git config -f .gitmodules submodule.vendor.ignore all
+  git add .gitmodules
+  git commit -q -m "add a submodule"
+  git checkout -q feature
+  git merge -q --ff-only main
+  git -C vendor config user.name t
+  git -C vendor config user.email t@example.invalid
+  git -C vendor config commit.gpgsign false
+  git -C vendor commit -q --allow-empty -m inside
+  git add --force vendor
+  write_setup "$(jq -c '.check = ["true", "echo two"]' "$FIXTURE")"
+  run_check
+  [ "$status" -eq 1 ]
+  [ "$stderr" = "$(changed_msg check)" ]
+  no_receipt
+}
+
+@test "a base written as the remote branch says to name the branch" {
+  start_repo ".base = \"origin/main\" | .check = []"
+  commit_files 1
+  run_check
+  [ "$status" -eq 2 ]
+  [ "$stderr" = 'shipit: base branch "origin/main" not found (looked for origin/origin/main and origin/main); name the branch, not the remote: "main"' ]
 }

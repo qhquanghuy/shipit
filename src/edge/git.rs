@@ -219,6 +219,7 @@ impl Git {
                 "diff",
                 "-z",
                 "--name-only",
+                "--ignore-submodules=none",
                 "-M",
                 "--end-of-options",
                 since.as_str(),
@@ -239,6 +240,7 @@ impl Git {
                 "diff",
                 "-z",
                 "--name-only",
+                "--ignore-submodules=none",
                 "--no-renames",
                 "--end-of-options",
                 since.as_str(),
@@ -258,6 +260,7 @@ impl Git {
         self.run(&[
             "diff",
             "--name-only",
+            "--ignore-submodules=none",
             "--end-of-options",
             before.as_str(),
             after.as_str(),

@@ -15,6 +15,10 @@ pub(crate) struct Flow {
 }
 
 impl Flow {
+    pub(crate) fn base(&self) -> &str {
+        &self.base
+    }
+
     pub(crate) fn of(setup: &Setup) -> Self {
         let run = setup
             .environment
@@ -53,6 +57,35 @@ impl fmt::Display for FlowField {
             Self::Check => "check",
             Self::Environment => "environment",
         })
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum SetupVerdict {
+    Same,
+    // The base branch's setup is not the one the slice forked from: merge or rebase first.
+    Moved(Vec<FlowField>),
+    // The slice itself changed these fields, as against the setup it forked from.
+    Changed(Vec<FlowField>),
+}
+
+// The slice's own change is judged against the base setup at the merge base, so a base that
+// moved on cannot be mistaken for the slice's work. Without a merge-base setup nothing can be
+// told apart, and any difference from the tip counts as moved.
+pub(crate) fn setup_verdict(tip: &Flow, merge_base: Option<&Flow>, slice: &Flow) -> SetupVerdict {
+    let Some(forked) = merge_base else {
+        return match setup_changes(tip, slice) {
+            changes if changes.is_empty() => SetupVerdict::Same,
+            changes => SetupVerdict::Moved(changes),
+        };
+    };
+    let moved = setup_changes(forked, tip);
+    if !moved.is_empty() {
+        return SetupVerdict::Moved(moved);
+    }
+    match setup_changes(forked, slice) {
+        changes if changes.is_empty() => SetupVerdict::Same,
+        changes => SetupVerdict::Changed(changes),
     }
 }
 
@@ -294,6 +327,38 @@ mod tests {
             failure_persistence: None,
             ..ProptestConfig::default()
         })]
+
+        #[test]
+        fn the_verdict_follows_the_merge_base_not_the_tip(
+            forked in arb_flow(),
+            tip in arb_flow(),
+            slice in arb_flow(),
+        ) {
+            let verdict = setup_verdict(&tip, Some(&forked), &slice);
+            let moved = setup_changes(&forked, &tip);
+            let changed = setup_changes(&forked, &slice);
+            if !moved.is_empty() {
+                prop_assert_eq!(verdict, SetupVerdict::Moved(moved));
+            } else if changed.is_empty() {
+                prop_assert_eq!(verdict, SetupVerdict::Same);
+            } else {
+                prop_assert_eq!(verdict, SetupVerdict::Changed(changed));
+            }
+        }
+
+        #[test]
+        fn without_a_merge_base_setup_any_difference_from_the_tip_is_moved(
+            tip in arb_flow(),
+            slice in arb_flow(),
+        ) {
+            let expected = setup_changes(&tip, &slice);
+            let verdict = setup_verdict(&tip, None, &slice);
+            if expected.is_empty() {
+                prop_assert_eq!(verdict, SetupVerdict::Same);
+            } else {
+                prop_assert_eq!(verdict, SetupVerdict::Moved(expected));
+            }
+        }
 
         #[test]
         fn setup_changes_names_exactly_the_fields_that_differ(a in arb_flow(), b in arb_flow()) {

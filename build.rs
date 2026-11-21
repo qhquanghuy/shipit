@@ -9,9 +9,6 @@ use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
-// `data` is named even when it does not exist yet, so the first file added to it is noticed.
-const RERUN: [&str; 2] = ["cargo:rerun-if-changed=src", "cargo:rerun-if-changed=data"];
-
 // Names that cannot be a `mod` name.
 const KEYWORDS: &[&str] = &[
     "as", "break", "const", "continue", "crate", "else", "enum", "extern", "false", "fn", "for",
@@ -44,6 +41,15 @@ impl Folder {
         }
     }
 
+    // Only the edge may run effects: forbid (not deny) so that no `expect`, `allow`, macro or
+    // `#[path]` file below can switch the lints off.
+    const fn forbids_effects(self) -> bool {
+        match self {
+            Self::Pure | Self::Commands => true,
+            Self::Edge => false,
+        }
+    }
+
     const fn rule(self) -> &'static str {
         if self.digits() {
             "^[a-z][a-z0-9_]*\\.rs$"
@@ -56,23 +62,6 @@ impl Folder {
 struct Module {
     stem: String,
     path: String,
-}
-
-// What would silence the effect lints: their own name anywhere, or a group that holds them
-// (`clippy::style`, `clippy::all`, `warnings`) inside an `allow` or `expect` attribute.
-const GROUPS: [&str; 3] = ["clippy::style", "clippy::all", "warnings"];
-
-fn suppression(text: &str) -> Option<&'static str> {
-    if text.contains("disallowed_") {
-        return Some("disallowed_");
-    }
-    ["allow(", "expect("]
-        .into_iter()
-        .flat_map(|marker| text.match_indices(marker))
-        .find_map(|(at, _)| {
-            let attribute = text.get(at..)?.split(']').next()?;
-            GROUPS.into_iter().find(|group| attribute.contains(group))
-        })
 }
 
 fn utf8<'a>(path: &'a Path, what: &str) -> Result<&'a str, String> {
@@ -130,15 +119,6 @@ fn modules(root: &Path, folder: Folder) -> Result<Vec<Module>, String> {
                 "{shown}: '{stem}' is a Rust keyword, not a module name"
             ));
         }
-        if !matches!(folder, Folder::Edge) {
-            let text =
-                fs::read_to_string(&path).map_err(|why| format!("cannot read {shown}: {why}"))?;
-            if let Some(found) = suppression(&text) {
-                return Err(format!(
-                    "{shown}: files in src/pure and src/commands must not suppress the effect lints (found '{found}'); move the effect into src/edge"
-                ));
-            }
-        }
         found.push(Module {
             stem: stem.to_owned(),
             path: utf8(&path, "path")?.to_owned(),
@@ -173,6 +153,13 @@ fn walk(dir: &Path, prefix: &str, found: &mut Vec<(String, String)>) -> Result<(
 
 fn render_modules(out: &mut String, folder: Folder, found: &[Module]) -> Result<(), String> {
     let fail = |why: std::fmt::Error| why.to_string();
+    if folder.forbids_effects() {
+        writeln!(
+            out,
+            "#[forbid(clippy::disallowed_methods, clippy::disallowed_types)]"
+        )
+        .map_err(fail)?;
+    }
     writeln!(out, "pub(crate) mod {} {{", folder.dir()).map_err(fail)?;
     for module in found {
         writeln!(
@@ -222,6 +209,17 @@ fn render(root: &Path) -> Result<String, String> {
     Ok(out)
 }
 
+// `data` is watched only when it exists: a path that does not exist makes cargo rebuild the crate
+// on every run. The first file added to it comes with the source that reads it, which changes
+// `src`, and that reruns this script.
+fn rerun_directives(root: &Path) -> Vec<&'static str> {
+    let mut directives = vec!["cargo:rerun-if-changed=src"];
+    if root.join("data").exists() {
+        directives.push("cargo:rerun-if-changed=data");
+    }
+    directives
+}
+
 // Only when the rules are tested as a module of the crate: a build script may print.
 #[cfg_attr(
     test,
@@ -241,7 +239,7 @@ fn main() -> Result<(), String> {
     let text = render(&root)?;
     fs::write(out_dir.join("modules.rs"), text)
         .map_err(|why| format!("cannot write modules.rs: {why}"))?;
-    for directive in RERUN {
+    for directive in rerun_directives(&root) {
         println!("{directive}");
     }
     Ok(())
@@ -249,68 +247,43 @@ fn main() -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
     use crate::edge::testing::scratch;
 
-    #[test]
-    fn effect_lints_are_not_suppressed_by_name_or_by_a_group_that_holds_them() {
-        for text in [
-            "#[expect(clippy::disallowed_methods, reason = \"x\")]",
-            "#![expect(clippy::style, reason = \"x\")]",
-            "#[expect(clippy::all, reason = \"x\")]",
-            "#[allow(clippy::style)]",
-            "#[expect(warnings, reason = \"x\")]",
-            "#[cfg_attr(test, expect(clippy::all, reason = \"x\"))]",
-            "#[expect(dead_code, clippy::style, reason = \"x\")]",
-        ] {
-            assert!(suppression(text).is_some(), "{text}");
+    fn rendered(folder: Folder, stems: &[String]) -> String {
+        let found: Vec<Module> = stems
+            .iter()
+            .map(|stem| Module {
+                stem: stem.clone(),
+                path: format!("/x/{stem}.rs"),
+            })
+            .collect();
+        let mut out = String::new();
+        render_modules(&mut out, folder, &found).expect("renders");
+        out
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            failure_persistence: None,
+            ..ProptestConfig::default()
+        })]
+
+        #[test]
+        fn only_the_edge_may_switch_the_effect_lints_off(
+            stems in proptest::collection::vec("[a-z]{1,6}", 0..4),
+        ) {
+            let forbid = "#[forbid(clippy::disallowed_methods, clippy::disallowed_types)]\npub(crate) mod";
+            for (folder, forbidden) in [
+                (Folder::Pure, true),
+                (Folder::Commands, true),
+                (Folder::Edge, false),
+            ] {
+                prop_assert_eq!(rendered(folder, &stems).starts_with(forbid), forbidden);
+            }
         }
-    }
-
-    #[test]
-    fn other_suppressions_and_plain_text_pass() {
-        for text in [
-            "#[expect(clippy::cast_possible_truncation, reason = \"checked\")]",
-            "#[expect(clippy::struct_field_names, reason = \"the key\")]",
-            "// clippy::style is the group of the effect lints\nfn f() {}",
-            "fn f() {}",
-        ] {
-            assert_eq!(suppression(text), None, "{text}");
-        }
-    }
-
-    fn folder_with(name: &str, folder: &str, text: &str) -> PathBuf {
-        let root = scratch(name);
-        let dir = root.join("src").join(folder);
-        fs::create_dir_all(&dir).expect("makes the folder");
-        fs::write(dir.join("x.rs"), text).expect("writes");
-        root
-    }
-
-    #[test]
-    fn a_pure_or_command_file_that_suppresses_the_effect_lints_stops_the_build() {
-        let text = "#[expect(clippy::style, reason = \"x\")]\nfn f() {}\n";
-        for (name, folder, kind) in [
-            ("build-pure", "pure", Folder::Pure),
-            ("build-commands", "commands", Folder::Commands),
-        ] {
-            let root = folder_with(name, folder, text);
-            let refusal = modules(&root, kind).err().expect("refused");
-            assert!(refusal.contains("found 'clippy::style'"), "{refusal}");
-            assert!(refusal.contains("x.rs"), "{refusal}");
-            fs::remove_dir_all(&root).ok();
-        }
-    }
-
-    #[test]
-    fn an_edge_file_may_suppress_them() {
-        let root = folder_with(
-            "build-edge",
-            "edge",
-            "#![expect(clippy::disallowed_methods, reason = \"x\")]\n",
-        );
-        assert_eq!(modules(&root, Folder::Edge).map(|found| found.len()), Ok(1));
-        fs::remove_dir_all(&root).ok();
     }
 
     #[test]
@@ -331,8 +304,99 @@ mod tests {
     }
 
     #[test]
-    fn data_is_watched_even_before_it_exists() {
-        assert!(RERUN.contains(&"cargo:rerun-if-changed=data"));
-        assert!(RERUN.contains(&"cargo:rerun-if-changed=src"));
+    fn data_is_watched_once_it_exists() {
+        let root = scratch("build-data");
+        assert_eq!(rerun_directives(&root), ["cargo:rerun-if-changed=src"]);
+        fs::create_dir_all(root.join("data")).expect("makes data");
+        assert_eq!(
+            rerun_directives(&root),
+            ["cargo:rerun-if-changed=src", "cargo:rerun-if-changed=data"]
+        );
+        fs::remove_dir_all(&root).ok();
+    }
+
+    // clippy on a probe crate whose src/pure holds `source`, with the modules.rs this script
+    // generates for it; None where clippy is not installed (the Nix test check has none).
+    #[expect(
+        clippy::disallowed_types,
+        reason = "the test runs clippy on a probe crate"
+    )]
+    fn clippy_on(name: &str, source: &str) -> Option<(bool, String)> {
+        use std::process::Command;
+
+        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+        let version = Command::new(&cargo).args(["clippy", "--version"]).output();
+        if !version.is_ok_and(|output| output.status.success()) {
+            return None;
+        }
+        let root = scratch(name);
+        fs::create_dir_all(root.join("src").join("pure")).expect("makes the folder");
+        fs::write(root.join("src").join("pure").join("probe.rs"), source).expect("writes");
+        fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"probe\"\nversion = \"0.1.0\"\nedition = \"2024\"\n[workspace]\n",
+        )
+        .expect("writes");
+        fs::write(root.join("clippy.toml"), include_str!("clippy.toml")).expect("writes");
+        fs::write(
+            root.join("src").join("main.rs"),
+            "include!(\"modules.rs\");\nstruct Command {\n    name: &'static str,\n    hidden: bool,\n    run: fn(),\n}\nfn main() {}\n",
+        )
+        .expect("writes");
+        fs::write(
+            root.join("src").join("modules.rs"),
+            render(&root).expect("renders"),
+        )
+        .expect("writes");
+        let output = Command::new(&cargo)
+            .args(["clippy", "--quiet", "--manifest-path"])
+            .arg(root.join("Cargo.toml"))
+            .output()
+            .expect("runs clippy");
+        fs::remove_dir_all(&root).ok();
+        Some((
+            output.status.success(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        ))
+    }
+
+    #[test]
+    fn a_pure_file_cannot_run_an_effect_or_switch_the_lint_off() {
+        let call = "std::fs::exists(\"x\").unwrap_or(false)";
+        let cases = [
+            (
+                "plain",
+                format!("pub(crate) fn f() -> bool {{ {call} }}"),
+                "disallowed method",
+            ),
+            (
+                "group",
+                format!(
+                    "#[expect(clippy::style, reason = \"x\")]\npub(crate) fn f() -> bool {{ {call} }}"
+                ),
+                "E0453",
+            ),
+            (
+                "warnings",
+                format!("#[expect(warnings)]\npub(crate) fn f() -> bool {{ {call} }}"),
+                "disallowed method",
+            ),
+            (
+                "macro",
+                format!(
+                    "macro_rules! quiet {{\n    ($g:ident, $f:item) => {{\n        #[expect(clippy::$g, reason = \"x\")]\n        $f\n    }};\n}}\nquiet!(style, pub(crate) fn f() -> bool {{ {call} }});"
+                ),
+                "E0453",
+            ),
+        ];
+        for (name, source, wanted) in cases {
+            let Some((ok, stderr)) = clippy_on(&format!("build-forbid-{name}"), &source) else {
+                return;
+            };
+            assert!(!ok && stderr.contains(wanted), "{name}: {stderr}");
+        }
+        let (ok, stderr) = clippy_on("build-forbid-control", "pub(crate) fn f() {}")
+            .expect("clippy was there a moment ago");
+        assert!(ok, "{stderr}");
     }
 }
