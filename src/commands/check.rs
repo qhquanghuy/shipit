@@ -8,7 +8,7 @@ use crate::edge::run::run_check;
 use crate::edge::store::{check_receipt_path, write_json_atomic};
 use crate::pure::base::{BaseRef, BranchName, SelfBase, base_verdict, choose_base_ref};
 use crate::pure::baseline::{
-    Flow, FlowField, SetupVerdict, parse_baseline, setup_only, setup_verdict,
+    ALL_FIELDS, Flow, FlowField, SetupVerdict, parse_baseline, setup_only, setup_verdict,
 };
 use crate::pure::failure::Failure;
 use crate::pure::json::invalid;
@@ -198,8 +198,15 @@ fn judge_setup(
     err: &mut dyn Write,
 ) -> Result<Option<Vec<String>>, Failure> {
     let Some(tip) = tip else {
-        return Ok(None);
+        // A base with no setup file is the adoption: it vouches for nothing, so only the setup
+        // file alone may come with it, or a slice could name an old branch to skip every check.
+        if setup_only(&git.changed_names(merge_base)?) {
+            return Ok(None);
+        }
+        return Err(changed_setup(&ALL_FIELDS, base));
     };
+    // A broken setup at the merge base reads as none: every difference from the tip is then
+    // refused, which is the safe side.
     let forked = read_flow(git, OsStr::new(merge_base.as_str()), &base_ref.to_string())
         .ok()
         .flatten();

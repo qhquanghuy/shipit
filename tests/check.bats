@@ -503,7 +503,7 @@ changed_msg() {
   [[ $stderr == "shipit: main:.config/shipit.json is not valid JSON" ]]
 }
 
-@test "a base without a setup file: a notice on stderr, then the check goes on" {
+@test "a base without a setup file: a notice on stderr, then a setup-only slice goes on" {
   local repo
   repo=$(mktemp -d "$BATS_TEST_TMPDIR/repo.XXXXXX")
   cd "$repo"
@@ -516,11 +516,34 @@ changed_msg() {
   git commit -q -m "first"
   git checkout -q -b feature
   write_setup "$(jq -c '.check = []' "$FIXTURE")"
-  commit_files 2
   run_check
   [ "$status" -eq 0 ]
   [ "$stderr" = "shipit: no setup file on main; nothing to compare" ]
-  [[ $output == *"size: 3 files (cap 60)"* ]]
+  [[ $output == *"size: 1 files (cap 60)"* ]]
+}
+
+@test "a slice cannot name a branch with no setup file to skip every comparison" {
+  local repo
+  repo=$(mktemp -d "$BATS_TEST_TMPDIR/repo.XXXXXX")
+  cd "$repo"
+  git init -q -b main
+  git config user.name t
+  git config user.email t@example.invalid
+  git config commit.gpgsign false
+  echo readme >README
+  git add README
+  git commit -q -m "first"
+  git branch old
+  write_setup "$(jq -c ".check = $(checks 'false')" "$FIXTURE")"
+  git checkout -q -b feature
+  write_setup "$(jq -c ".check = $(checks "echo ran >> '$LOG'") | .base = \"old\"" "$FIXTURE")"
+  commit_files 1
+  run_check
+  [ "$status" -eq 1 ]
+  [ "$stderr" = "shipit: no setup file on old; nothing to compare
+$(changed_msg 'base, cap, check, environment' old)" ]
+  [ ! -e "$LOG" ]
+  no_receipt
 }
 
 @test "the base setup is read from origin/<base> when local <base> is behind it" {

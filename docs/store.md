@@ -33,7 +33,7 @@ add files and never change this layout.
 
 A receipt proves only that this machine ran the checks. Receipts are trusted locally and nowhere
 else: the store is not shared, and a CI run rechecks the work and trusts none. A local receipt can be gamed by
-design (`shipit check --base <own branch>` compares the slice with itself): CI's recheck is the gate.
+design (`shipit check --base <own branch>` compares the slice with itself, and a slice can name a base branch whose setup names itself; `base_ref` shows which base was used): CI's recheck, with its own `--base`, is the gate.
 
 ## Check receipt
 

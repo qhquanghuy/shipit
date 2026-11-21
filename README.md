@@ -51,9 +51,13 @@ change counts), else `origin/<base>`, else the local branch; if none exists, exi
 (`base_ref`) and the commit it was at (`base_commit`).
 
 The slice's own `base` never judges the slice: if the branch it names has a setup whose `base` is another branch,
-ShipIt follows that (at most 5 steps) until a branch names itself, so a slice cannot pick a branch that holds its own
-code to judge itself by. `--base` is taken as
-given.
+ShipIt follows that (at most 5 steps) until a branch names itself. A slice stacked on a feature branch is therefore
+counted, and its setup judged, against the root base that branch's setup names, so its size includes the files of the
+branch under it. `--base` is taken as given.
+
+A slice can still name a branch whose own setup names itself (a branch that holds its own code): that branch ends the
+steps, and the slice is judged by it. `base_ref` in the receipt shows which branch it was. A local check cannot stop
+this; CI's `--base` is the real gate.
 
 A base named by the setup may not be the branch being checked, nor point at the commit being checked: it could not vouch
 for the checks. Exit 2, and pass `--base <name>`. With `--base`, the base may be HEAD itself (CI on the base branch):
@@ -62,13 +66,15 @@ size is 0 and the checks run.
 **What a local check cannot do.** `--base <your own branch>` is trusted, because CI must be able to name the real base: a
 local check cannot stop you from passing it, and then the slice is compared with itself (size 0, no setup difference). The
 recheck in CI, which passes the pull request's real base and trusts no receipt, is the gate. A receipt written on a
-developer's machine can be gamed by design: it says that this machine ran the checks, nothing more.
+developer's machine can be gamed by design: it says that this machine ran the checks, nothing more. The same holds
+for a slice that names a base branch whose setup names itself: it is compared with that branch, and `base_ref` in the
+receipt shows it. CI's `--base` is the real gate.
 
 ### Changing the checks
 
 `base`, `cap`, `check` and `environment` in the setup are compared with the base branch's setup as it was where the slice
 forked from it. If the base branch's setup has changed since the fork, the check is refused with "merge or rebase" (a
-stale base is never mistaken for the slice's own change). The slice's own change is refused, with one exception. If the
+stale base is never mistaken for the slice's own change; a slice whose four fields already equal the base tip's, as after a squash merge of its parent, is not refused). The slice's own change is refused, with one exception. If the
 slice's diff against the base touches only `.config/shipit.json`, `check` runs the slice's new checks with its new cap and
 environment, prints `shipit: this slice changes the checks (<fields>); setup change: the owner approves it by merging` on
 stderr, and writes the receipt with `"setup_change": true` and `"setup_fields"` (the changed fields). `shipit verify` then
@@ -77,7 +83,8 @@ prints `valid receipt for <tree> (setup change)`. The owner's merge is the appro
 Any other file in the diff together with a setup change is refused (a check added, removed or reordered, a new cap, any
 change to `environment`, another base): the owner merges setup changes on the base first, or sends them as a slice of
 their own (or merge or rebase the base if it moved on). If the base has no setup file yet (adopting ShipIt), a notice is
-printed and the check goes on.
+printed and nothing is compared, but the slice's diff must be the setup file alone: with any other file in it the check
+is refused as for any setup change, because a base with no setup vouches for nothing.
 
 A receipt covers the content git tracks, as `git status` reports it with submodules never ignored (`--ignore-submodules=none`)
 and no file system monitor (`core.fsmonitor=false`); the counts and lists of changed files use `--ignore-submodules=none` too

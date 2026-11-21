@@ -49,6 +49,14 @@ pub(crate) enum FlowField {
     Environment,
 }
 
+// Against no setup at all, every field is the slice's own.
+pub(crate) const ALL_FIELDS: [FlowField; 4] = [
+    FlowField::Base,
+    FlowField::Cap,
+    FlowField::Check,
+    FlowField::Environment,
+];
+
 impl fmt::Display for FlowField {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
@@ -69,15 +77,18 @@ pub(crate) enum SetupVerdict {
     Changed(Vec<FlowField>),
 }
 
-// The slice's own change is judged against the base setup at the merge base, so a base that
-// moved on cannot be mistaken for the slice's work. Without a merge-base setup nothing can be
-// told apart, and any difference from the tip counts as moved.
+// A slice whose setup is the tip's own adds nothing the base has not got, whatever the fork
+// looked like (a squash merge of its parent leaves the fork's setup different). Else the
+// slice's own change is judged against the base setup at the merge base, so a base that moved
+// on cannot be mistaken for the slice's work. Without a merge-base setup nothing can be told
+// apart, and any difference from the tip counts as moved.
 pub(crate) fn setup_verdict(tip: &Flow, merge_base: Option<&Flow>, slice: &Flow) -> SetupVerdict {
+    let ahead = setup_changes(tip, slice);
+    if ahead.is_empty() {
+        return SetupVerdict::Same;
+    }
     let Some(forked) = merge_base else {
-        return match setup_changes(tip, slice) {
-            changes if changes.is_empty() => SetupVerdict::Same,
-            changes => SetupVerdict::Moved(changes),
-        };
+        return SetupVerdict::Moved(ahead);
     };
     let moved = setup_changes(forked, tip);
     if !moved.is_empty() {
@@ -334,6 +345,7 @@ mod tests {
             tip in arb_flow(),
             slice in arb_flow(),
         ) {
+            prop_assume!(!setup_changes(&tip, &slice).is_empty());
             let verdict = setup_verdict(&tip, Some(&forked), &slice);
             let moved = setup_changes(&forked, &tip);
             let changed = setup_changes(&forked, &slice);
@@ -344,6 +356,17 @@ mod tests {
             } else {
                 prop_assert_eq!(verdict, SetupVerdict::Changed(changed));
             }
+        }
+
+        #[test]
+        fn a_slice_with_the_tips_own_setup_is_the_same_whatever_the_fork_was(
+            forked in proptest::option::of(arb_flow()),
+            tip in arb_flow(),
+        ) {
+            prop_assert_eq!(
+                setup_verdict(&tip, forked.as_ref(), &tip),
+                SetupVerdict::Same
+            );
         }
 
         #[test]
