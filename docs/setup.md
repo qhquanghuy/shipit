@@ -3,7 +3,7 @@
 ShipIt reads one file per project: `.config/shipit.toml` at the top of the repository, written in
 [TOML](https://toml.io). Comments are allowed in it. No
 environment variable changes any value in it. The schema is checked in full
-whenever a command reads the file.
+whenever a command reads the file. `shipit init` writes the starting setup, `agents.parallel` included.
 
 ## Example
 

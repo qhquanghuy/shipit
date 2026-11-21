@@ -93,6 +93,45 @@ and no file system monitor (`core.fsmonitor=false`); the counts and lists of cha
 
 `shipit help <command>` lists the exit codes of a command.
 
+## Adopt ShipIt in a project
+
+Needs git 2.39 or newer. Adoption is one command and two small pull requests.
+
+1. Run `shipit init` in the project. It writes the starting setup and adds the pre-push hook; it never overwrites a file.
+   Fill in `gate.check` with your check commands. A new repository needs a first commit on the base branch and a push of it.
+   A branch with no commits beyond the base exits 2 in `shipit check`: commit first, or pass `--base <base>`.
+2. Pull request 1 is the setup file alone: commit it on a new branch, run `shipit check`, push and open the pull request.
+3. After it merges, on a new branch run `shipit init --ci-job`, set SHIPIT_COMMIT in the file it wrote to a ShipIt commit hash,
+   and ship that as a normal slice (pull request 2).
+4. Make the job a required check in the host's branch rules; otherwise a pull request that deletes the job is rechecked by nothing.
+   In a new clone, `shipit init --hook-only` adds the hook again.
+
+**The hook.** `shipit pre-push` asks for a check receipt only on a `slice/*` branch, that is `slice/<goal>/<slice>` (any name
+starting `slice/` counts). Every other branch, tag and delete passes, with a notice such as
+`shipit: <branch> is not a slice/* branch; not checked`. A commit with no setup file passes too, with a notice.
+
+**Mixed teams.** The hook line `if command -v shipit >/dev/null 2>&1; then exec shipit pre-push "$@"; fi` does nothing
+where ShipIt is not installed, so a teammate without it pushes as before. `shipit init` adds it to a plain `.git/hooks/pre-push`,
+to a husky or `core.hooksPath` hook inside the project, or to lefthook (`lefthook-local.yml` or `.lefthook-local.yml`, then
+`lefthook install`), and only when that is safe. Otherwise it prints the line with the reason, and for pre-commit it always prints.
+
+**CI.** `shipit recheck --base <base> --branch <branch>` is what the action runs, and it trusts no receipt. On a `slice/*` branch it
+runs the full `shipit check`: the size cap, the comparison of the setup with the base's, and the checks. On any other branch it runs only
+the base branch's check commands, never the pull request's own. The job summary reports changes to the setup and to the CI job.
+
+**Machine facts.** `shipit doctor` shows the system, the common tools, the setup's health and the machine notes
+(`docs/machine-notes.md`). Hooks and CI are guardrails, not security.
+
+Known gaps:
+
+- A slice that sets `gate.base` to its own name passes the hook; CI's `--base` is the gate.
+- A hook that reads git's input before ShipIt's line (such as `git lfs pre-push`) leaves it no input, so `init` prints the line
+  instead of adding it, and the line must go before that reader.
+- A branch not named `slice/*` skips the size cap and the setup comparison in CI. That is intended, for teams where not everyone
+  uses ShipIt; the summary says `mode: plain` and a warning shows it, and the owner's review is the guard.
+- A pull request can edit `.github/workflows/*` or `action.yml` itself (drop the recheck, change the pin). Recheck prints
+  `CI job: CHANGED` and a warning, but it cannot judge the change: the owner reads workflow changes in the diff.
+
 ## Develop
 
 ```

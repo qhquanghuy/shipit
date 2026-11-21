@@ -1,0 +1,45 @@
+name: ShipIt recheck
+description: Rechecks a pull request with ShipIt. The full rules apply on slice/* branches; on any other branch only the base branch's check commands run.
+
+inputs:
+  base:
+    description: The branch the change is compared with.
+    default: ${{ github.base_ref || github.ref_name }}
+  branch:
+    description: The branch the change is on (the pull request's head branch, or the pushed branch).
+    default: ${{ github.head_ref || github.ref_name }}
+
+runs:
+  using: composite
+  steps:
+    - name: Fetch the history ShipIt compares with
+      shell: bash
+      env:
+        BASE: ${{ inputs.base }}
+      run: |
+        if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
+          git fetch --no-tags --quiet --unshallow origin
+        fi
+        git fetch --no-tags --quiet origin "+refs/heads/$BASE:refs/remotes/origin/$BASE"
+
+    # The runner's own cargo, so no other tool is installed. A newer compiler's new warning must
+    # not break every project's recheck, and the build stays outside the work tree so that
+    # `shipit check` sees a clean tree.
+    - name: Build ShipIt
+      shell: bash
+      env:
+        RUSTFLAGS: --cap-lints=warn
+        CARGO_PROFILE_RELEASE_LTO: "off"
+        CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+        CARGO_TARGET_DIR: ${{ runner.temp }}/shipit
+      run: cargo build --release --locked --manifest-path "$GITHUB_ACTION_PATH/Cargo.toml"
+
+    # CI checks out a detached commit, so the branch name comes from the event.
+    - name: Recheck
+      shell: bash
+      env:
+        BASE: ${{ inputs.base }}
+        BRANCH: ${{ inputs.branch }}
+        SHIPIT_BRANCH: ${{ inputs.branch }}
+      run: |
+        "$RUNNER_TEMP/shipit/release/shipit" recheck --base "$BASE" --branch "$BRANCH" --summary "$GITHUB_STEP_SUMMARY"

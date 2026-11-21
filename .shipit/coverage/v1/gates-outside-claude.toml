@@ -1,0 +1,22 @@
+DW3 = [
+  "init in a new repository with no commits writes the starting setup and the hook",
+  "no setup file at HEAD: exit 2 and the summary ends check: failed (exit 2)",
+  "a branch whose commit has no setup file passes with the notice",
+  "an invalid setup at the pushed commit: exit 2",
+  "outside a repository and without a setup, doctor exits 0 and says so",
+]
+DW8 = [
+  "end to end: a slice push is blocked without a receipt and passes after check",
+  "targets_skip_deletes_tags_and_the_base",
+  "a branch not named slice/* passes without a receipt, with the notice",
+  "a tag, the base branch and a delete push without a receipt",
+  "a tag push from a branch without a setup file passes",
+]
+DW10 = [
+  "61 files on slice/x with a receipt for HEAD: exit 1, check: failed (exit 1)",
+  "a branch that raises the cap is refused: exit 1, no command, no receipt",
+  "mode_is_slice_exactly_for_the_slice_prefix",
+  "61 files on fix/x: plain mode runs the checks and passes",
+  "plain mode: a failing setup check fails the run",
+  "a_changed_ci_job_is_loud",
+]
