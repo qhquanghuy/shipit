@@ -61,13 +61,31 @@ impl Serialize for Version {
 #[serde(transparent)]
 pub(crate) struct NonEmpty(String);
 
+impl NonEmpty {
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 #[derive(Debug, PartialEq, Eq, Serialize)]
 #[serde(transparent)]
 pub(crate) struct CheckCommand(String);
 
-#[derive(Debug, PartialEq, Eq, Serialize)]
+impl CheckCommand {
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(transparent)]
 pub(crate) struct Cap(u64);
+
+impl Cap {
+    pub(crate) const fn get(self) -> u64 {
+        self.0
+    }
+}
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
 #[serde(transparent)]

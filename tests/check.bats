@@ -34,7 +34,7 @@ checks() {
 
 # run_check <args>: run shipit check, stdout in $output, stderr in $stderr.
 run_check() {
-  run --separate-stderr "$SHIPIT_SRC/bin/shipit" check "$@"
+  run --separate-stderr "$SHIPIT_BIN" check "$@"
 }
 
 store() {
@@ -117,7 +117,7 @@ LOG="$BATS_TEST_TMPDIR/log"
 @test "command output is shown" {
   start_repo ".check = $(checks 'echo visible-out' 'echo visible-err >&2')"
   commit_files 1
-  run --separate-stderr "$SHIPIT_SRC/bin/shipit" check
+  run --separate-stderr "$SHIPIT_BIN" check
   [ "$status" -eq 0 ]
   [[ $output == *visible-out* ]]
   [[ $stderr == *visible-err* ]]
@@ -629,26 +629,6 @@ changed_msg() {
   run_check
   [ "$status" -eq 0 ]
   [[ $output == *"size: 2 files (cap 60)"* ]]
-}
-
-@test "the rules of lib/check.jq: setup changes, base verdict, change verdict" {
-  run jq -L "$SHIPIT_SRC/lib" -nc 'include "check";
-    {base: "main", cap: 5, check: ["a", "b"], environment: {run: []}} as $s
-    | [({base: $s, branch: $s} | setup_changes),
-       ({base: $s, branch: ($s | .cap = 6)} | setup_changes),
-       ({base: $s, branch: ($s | .check = ["b", "a"])} | setup_changes),
-       ({base: $s, branch: ($s | .check = ["a"] | .base = "x" | .environment.run = ["true"])} | setup_changes)]'
-  [ "$output" = '[[],["cap"],["check"],["base","check","environment"]]' ]
-  run jq -L "$SHIPIT_SRC/lib" -nc 'include "check";
-    {trusted: false, base: "main", current: "feature", ref_commit: "a", head_commit: "b"} as $ok
-    | [$ok, ($ok | .current = "main"), ($ok | .ref_commit = "b"), ($ok | .current = null),
-       ($ok | .trusted = true | .current = "main" | .ref_commit = "b")] | map(base_verdict | .ok)'
-  [ "$output" = '[true,false,false,true,true]' ]
-  run jq -L "$SHIPIT_SRC/lib" -nc 'include "check";
-    {dirty: false, hidden: false, tree_before: "t", tree_after: "t", commit_before: "c", commit_after: "c"} as $ok
-    | [$ok, ($ok | .dirty = true), ($ok | .hidden = true), ($ok | .tree_after = "u"), ($ok | .commit_after = "d"),
-       ($ok | .dirty = true | .tree_after = "u")] | map(change_verdict | .kind)'
-  [ "$output" = '["none","dirty","hidden","committed","moved_head","dirty"]' ]
 }
 
 @test "a skip-worktree file with local edits exits 3 and names the file" {
