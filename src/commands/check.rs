@@ -11,9 +11,9 @@ use crate::pure::baseline::{
     ALL_FIELDS, Flow, FlowField, SetupVerdict, parse_baseline, setup_only, setup_verdict,
 };
 use crate::pure::failure::Failure;
-use crate::pure::json::invalid;
 use crate::pure::receipt::{BaseUsed, CheckReceipt, Oid};
-use crate::pure::setup::{CheckCommand, HEAD, SETUP_PATH, Setup, json_values, setup_label};
+use crate::pure::rules::invalid;
+use crate::pure::setup::{CheckCommand, HEAD, SETUP_PATH, Setup, setup_label, toml_table};
 use crate::pure::size::size_verdict;
 use crate::pure::text::comma_list;
 use crate::pure::work::{
@@ -109,9 +109,9 @@ fn read_flow(git: &Git, rev: &OsStr, label: &str) -> Result<Option<Flow>, Failur
     let bytes = git
         .show_file(rev, SETUP_PATH)
         .ok_or_else(|| Failure::usage(format!("no setup file at {label} (see docs/setup.md)")))?;
-    let docs =
-        json_values(&bytes).map_err(|_why| Failure::usage(format!("{label} is not valid JSON")))?;
-    parse_baseline(&docs)
+    let table =
+        toml_table(&bytes).map_err(|_why| Failure::usage(format!("{label} is not valid TOML")))?;
+    parse_baseline(&table)
         .map(Some)
         .map_err(|problems| Failure::usage(invalid(label, &problems)))
 }

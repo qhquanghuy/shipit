@@ -1,6 +1,6 @@
 use std::fmt;
 
-use serde_json::{Map, Value};
+use toml::{Table, Value};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Problem {
@@ -62,41 +62,24 @@ impl Problems {
     }
 }
 
-// jq's `. == floor`, for a non-negative value that fits a u64.
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "fract() == 0.0 and the range are checked first"
-)]
+// TOML integers are i64: a float is the wrong kind, and so is a negative number.
 pub(crate) fn whole(value: &Value) -> Option<u64> {
-    if let Some(n) = value.as_u64() {
-        return Some(n);
-    }
-    let x = value.as_f64()?;
-    // 2^64 is not a u64 and `as` would saturate it: the bound is exclusive.
-    let limit = 18_446_744_073_709_551_616.0_f64;
-    (x.fract() == 0.0 && (0.0..limit).contains(&x)).then_some(x as u64)
+    u64::try_from(value.as_integer()?).ok()
 }
 
 pub(crate) fn non_empty(value: &Value) -> Option<&str> {
     value.as_str().filter(|text| !text.is_empty())
 }
 
-// jq's `is_int` and `<=` for the rule "then.tier must be above scout.tier": any sign counts.
+// For the rule "then.tier must be above scout.tier": any sign counts.
 pub(crate) fn integer_at_most(value: &Value, bound: &Value) -> bool {
-    fn integer(value: &Value) -> Option<f64> {
-        value.as_f64().filter(|x| x.fract() == 0.0)
-    }
-    match (integer(value), integer(bound)) {
-        (Some(a), Some(b)) => a <= b,
-        _ => false,
-    }
+    matches!((value.as_integer(), bound.as_integer()), (Some(a), Some(b)) if a <= b)
 }
 
 // Unknown keys in file order, then missing keys in schema order.
 pub(crate) fn shape(
     path: &str,
-    object: &Map<String, Value>,
+    object: &Table,
     required: &[&str],
     optional: &[&str],
 ) -> Vec<Problem> {
@@ -111,15 +94,15 @@ pub(crate) fn shape(
     unknown.chain(missing).collect()
 }
 
-pub(crate) fn object_at<'a>(value: &'a Value, path: &str) -> Parsed<&'a Map<String, Value>> {
+pub(crate) fn object_at<'a>(value: &'a Value, path: &str) -> Parsed<&'a Table> {
     value
-        .as_object()
+        .as_table()
         .ok_or_else(|| vec![Problem::new(path, "must be an object")])
 }
 
 // The key `key` of `object`, which `rule` must accept.
 pub(crate) fn at<T>(
-    object: &Map<String, Value>,
+    object: &Table,
     key: &str,
     path: &str,
     rule: impl FnOnce(&Value) -> Option<T>,
@@ -134,7 +117,7 @@ pub(crate) fn at<T>(
 }
 
 pub(crate) fn present<T>(
-    object: &Map<String, Value>,
+    object: &Table,
     key: &str,
     parse: impl FnOnce(&Value) -> Parsed<T>,
 ) -> Parsed<T> {
@@ -151,7 +134,7 @@ pub(crate) fn invalid(label: &str, problems: &[Problem]) -> String {
 }
 
 pub(crate) fn optional<T>(
-    object: &Map<String, Value>,
+    object: &Table,
     key: &str,
     parse: impl FnOnce(&Value) -> Parsed<T>,
 ) -> Parsed<Option<T>> {

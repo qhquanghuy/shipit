@@ -3,17 +3,15 @@
 bats_require_minimum_version 1.5.0
 load helpers
 
-FIXTURE="$SHIPIT_SRC/tests/fixtures/setup-valid.json"
-
-# start_repo [jq filter]: a repo as the current directory. The setup file (the
-# fixture changed by the filter, default: no check commands) is committed on
+# start_repo [path=value]...: a repo as the current directory. The setup file (the
+# fixture with those values replaced, default: no check commands) is committed on
 # main first, then the work happens on branch feature, so the setup is not a
 # changed file.
 start_repo() {
   local repo
   repo=$(make_repo)
   cd "$repo"
-  write_setup "$(jq -c "${1:-.check = []}" "$FIXTURE")"
+  write_setup "$(fixture_with "${@:-check=[]}")"
   git checkout -q -b feature
 }
 
@@ -27,7 +25,7 @@ commit_files() {
   git commit -q -m "add files"
 }
 
-# checks <command>...: a jq filter that sets the check commands.
+# checks <command>...: a TOML array of these commands.
 checks() {
   jq -cn '$ARGS.positional' --args "$@"
 }
@@ -67,7 +65,7 @@ LOG="$BATS_TEST_TMPDIR/log"
 }
 
 @test "61 changed files with cap 60 exits 1, runs no command, writes no receipt" {
-  start_repo ".check = $(checks "echo ran >> '$LOG'")"
+  start_repo "check=$(checks "echo ran >> '$LOG'")"
   commit_files 61
   run_check
   [ "$status" -eq 1 ]
@@ -77,7 +75,7 @@ LOG="$BATS_TEST_TMPDIR/log"
 }
 
 @test "a file named with spaces and one with a newline count one each" {
-  start_repo ".check = [] | .cap = 2"
+  start_repo 'check=[]' 'cap=2'
   printf 'a\n' >"a file with spaces"
   printf 'b\n' >$'a\nnewline'
   git add -A
@@ -89,7 +87,7 @@ LOG="$BATS_TEST_TMPDIR/log"
 }
 
 @test "commands run in order" {
-  start_repo ".check = $(checks "echo one >> '$LOG'" "echo two >> '$LOG'" "echo three >> '$LOG'")"
+  start_repo "check=$(checks "echo one >> '$LOG'" "echo two >> '$LOG'" "echo three >> '$LOG'")"
   commit_files 1
   run_check
   [ "$status" -eq 0 ]
@@ -97,7 +95,7 @@ LOG="$BATS_TEST_TMPDIR/log"
 }
 
 @test "the first failing command stops the run: exit 1, named, no receipt" {
-  start_repo ".check = $(checks true false 'touch ran-after')"
+  start_repo "check=$(checks true false 'touch ran-after')"
   commit_files 1
   run_check
   [ "$status" -eq 1 ]
@@ -107,7 +105,7 @@ LOG="$BATS_TEST_TMPDIR/log"
 }
 
 @test "command output is shown" {
-  start_repo ".check = $(checks 'echo visible-out' 'echo visible-err >&2')"
+  start_repo "check=$(checks 'echo visible-out' 'echo visible-err >&2')"
   commit_files 1
   run --separate-stderr "$SHIPIT_BIN" check
   [ "$status" -eq 0 ]
@@ -116,7 +114,7 @@ LOG="$BATS_TEST_TMPDIR/log"
 }
 
 @test "a pass writes a receipt that matches the commit and tree" {
-  start_repo ".check = $(checks true 'echo hi')"
+  start_repo "check=$(checks true 'echo hi')"
   commit_files 3
   local tree commit file
   tree=$(git rev-parse 'HEAD^{tree}')
@@ -139,7 +137,7 @@ LOG="$BATS_TEST_TMPDIR/log"
   local up
   up=$(make_repo)
   cd "$up"
-  write_setup "$(jq -c '.check = []' "$FIXTURE")"
+  write_setup "$(fixture_with 'check=[]')"
   git clone -q "$up" "$BATS_TEST_TMPDIR/clone"
   cd "$BATS_TEST_TMPDIR/clone"
   git config user.name t
@@ -154,7 +152,7 @@ LOG="$BATS_TEST_TMPDIR/log"
   jq -e --arg c "$(git rev-parse refs/remotes/origin/main)" '.base_ref == "refs/remotes/origin/main" and .base_commit == $c' "$(store)"/receipts/check/*.json
 }
 
-# clone_of_main <setup json>: an upstream repo whose main holds the setup, and
+# clone_of_main <setup toml>: an upstream repo whose main holds the setup, and
 # its clone as the current directory (identity configured, on main).
 clone_of_main() {
   local up
@@ -169,7 +167,7 @@ clone_of_main() {
 }
 
 @test "local main ahead of origin/main: local main is used" {
-  clone_of_main "$(jq -c '.check = [] | .cap = 6' "$FIXTURE")"
+  clone_of_main "$(fixture_with 'check=[]' 'cap=6')"
   commit_files 5 m
   git checkout -q -b feature
   commit_files 3 f
@@ -183,7 +181,7 @@ clone_of_main() {
   local up
   up=$(make_repo)
   cd "$up"
-  write_setup "$(jq -c '.check = [] | .cap = 6' "$FIXTURE")"
+  write_setup "$(fixture_with 'check=[]' 'cap=6')"
   git clone -q "$up" "$BATS_TEST_TMPDIR/clone"
   commit_files 5 m
   cd "$BATS_TEST_TMPDIR/clone"
@@ -200,8 +198,8 @@ clone_of_main() {
 }
 
 @test "an unpushed setup change on the local base is the baseline" {
-  clone_of_main "$(jq -c '.check = []' "$FIXTURE")"
-  write_setup "$(jq -c '.check = [] | .cap = 40' "$FIXTURE")"
+  clone_of_main "$(fixture_with 'check=[]')"
+  write_setup "$(fixture_with 'check=[]' 'cap=40')"
   git checkout -q -b feature
   commit_files 2
   run_check
@@ -230,7 +228,7 @@ clone_of_main() {
 }
 
 @test "from a subfolder, commands run at the top" {
-  start_repo ".check = $(checks "pwd > '$LOG'")"
+  start_repo "check=$(checks "pwd > '$LOG'")"
   mkdir sub
   echo x >sub/x
   git add -A
@@ -245,11 +243,11 @@ clone_of_main() {
 
 @test "a missing setup file exits 2 with exactly one message" {
   start_repo
-  git rm -q .config/shipit.json
+  git rm -q .config/shipit.toml
   git commit -q -m "drop setup"
   run_check
   [ "$status" -eq 2 ]
-  [ "$stderr" = "shipit: no setup file at .config/shipit.json (see docs/setup.md)" ]
+  [ "$stderr" = "shipit: no setup file at .config/shipit.toml (see docs/setup.md)" ]
 }
 
 @test "an argument the command does not know exits 2 with the usage" {
@@ -283,8 +281,8 @@ changed_msg() {
 }
 
 @test "a branch that raises the cap is refused: exit 1, no command, no receipt" {
-  start_repo ".check = $(checks "echo ran >> '$LOG'")"
-  write_setup "$(jq -c ".check = $(checks "echo ran >> '$LOG'") | .cap = 100" "$FIXTURE")"
+  start_repo "check=$(checks "echo ran >> '$LOG'")"
+  write_setup "$(fixture_with "check=$(checks "echo ran >> '$LOG'")" 'cap=100')"
   commit_files 1
   run_check
   [ "$status" -eq 1 ]
@@ -294,8 +292,8 @@ changed_msg() {
 }
 
 @test "every changed field is named, in the order base, cap, check, environment" {
-  start_repo ".check = $(checks 'echo one')"
-  write_setup "$(jq -c '.check = [] | .cap = 61 | .environment.run = ["env"]' "$FIXTURE")"
+  start_repo "check=$(checks 'echo one')"
+  write_setup "$(fixture_with 'check=[]' 'cap=61' 'environment.run=["env"]')"
   commit_files 1
   run_check
   [ "$status" -eq 1 ]
@@ -305,19 +303,19 @@ changed_msg() {
 @test "a base setup with a bad base, cap, check or environment is refused: exit 2" {
   start_repo
   git checkout -q main
-  write_setup '{"base": 1, "cap": "60", "check": [1], "environment": {"run": [2]}}'
+  write_setup $'base = 1\ncap = "60"\ncheck = [1]\n[environment]\nrun = [2]'
   git checkout -q feature
   git merge -q --ff-only main
-  write_setup "$(jq -c '.check = []' "$FIXTURE")"
+  write_setup "$(fixture_with 'check=[]')"
   run_check
   [ "$status" -eq 2 ]
-  [[ $stderr == "shipit: main:.config/shipit.json is invalid:"$'\n'".base: must be a non-empty string"$'\n'".cap: must be an integer of at least 1"$'\n'".check: must be an array of strings"$'\n'".environment.run: must be an array of strings" ]]
+  [[ $stderr == "shipit: main:.config/shipit.toml is invalid:"$'\n'".base: must be a non-empty string"$'\n'".cap: must be an integer of at least 1"$'\n'".check: must be an array of strings"$'\n'".environment.run: must be an array of strings" ]]
   git checkout -q main
-  write_setup '{"cap": 60'
+  write_setup 'cap ='
   git checkout -q feature
   run_check
   [ "$status" -eq 2 ]
-  [[ $stderr == "shipit: main:.config/shipit.json is not valid JSON" ]]
+  [[ $stderr == "shipit: main:.config/shipit.toml is not valid TOML" ]]
 }
 
 @test "a base without a setup file: a notice on stderr, then a setup-only slice goes on" {
@@ -332,7 +330,7 @@ changed_msg() {
   git add README
   git commit -q -m "first"
   git checkout -q -b feature
-  write_setup "$(jq -c '.check = []' "$FIXTURE")"
+  write_setup "$(fixture_with 'check=[]')"
   run_check
   [ "$status" -eq 0 ]
   [ "$stderr" = "shipit: no setup file on main; nothing to compare" ]
@@ -351,9 +349,9 @@ changed_msg() {
   git add README
   git commit -q -m "first"
   git branch old
-  write_setup "$(jq -c ".check = $(checks 'false')" "$FIXTURE")"
+  write_setup "$(fixture_with "check=$(checks 'false')")"
   git checkout -q -b feature
-  write_setup "$(jq -c ".check = $(checks "echo ran >> '$LOG'") | .base = \"old\"" "$FIXTURE")"
+  write_setup "$(fixture_with "check=$(checks "echo ran >> '$LOG'")" 'base="old"')"
   commit_files 1
   run_check
   [ "$status" -eq 1 ]
@@ -367,9 +365,9 @@ $(changed_msg 'base, cap, check, environment' old)" ]
   local up
   up=$(make_repo)
   cd "$up"
-  write_setup "$(jq -c '.check = []' "$FIXTURE")"
+  write_setup "$(fixture_with 'check=[]')"
   git clone -q "$up" "$BATS_TEST_TMPDIR/clone"
-  write_setup "$(jq -c '.check = [] | .cap = 20' "$FIXTURE")"
+  write_setup "$(fixture_with 'check=[]' 'cap=20')"
   cd "$BATS_TEST_TMPDIR/clone"
   git config user.name t
   git config user.email t@example.invalid
@@ -401,7 +399,7 @@ $(changed_msg 'base, cap, check, environment' old)" ]
 @test "--base: the setup is compared with the one on that base" {
   start_repo
   git checkout -q -b release main
-  write_setup "$(jq -c '.check = [] | .cap = 10' "$FIXTURE")"
+  write_setup "$(fixture_with 'check=[]' 'cap=10')"
   git checkout -q feature
   commit_files 1
   run_check --base release
@@ -412,7 +410,7 @@ $(changed_msg 'base, cap, check, environment' old)" ]
 @test "--base: the setup's own base field must match the base's setup" {
   start_repo
   git checkout -q -b release main
-  write_setup "$(jq -c '.check = [] | .base = "release"' "$FIXTURE")"
+  write_setup "$(fixture_with 'check=[]' 'base="release"')"
   git checkout -q feature
   commit_files 1
   run_check --base release
@@ -429,8 +427,8 @@ $(changed_msg 'base, cap, check, environment' old)" ]
 }
 
 @test "a setup whose base is the branch being checked is refused: exit 2, no command, no receipt" {
-  start_repo ".check = $(checks "echo ran >> '$LOG'")"
-  write_setup "$(jq -c ".check = $(checks "echo ran >> '$LOG'") | .base = \"feature\"" "$FIXTURE")"
+  start_repo "check=$(checks "echo ran >> '$LOG'")"
+  write_setup "$(fixture_with "check=$(checks "echo ran >> '$LOG'")" 'base="feature"')"
   run_check
   [ "$status" -eq 2 ]
   [[ $stderr == 'shipit: base "feature" is the branch being checked'*"pass --base <name>"* ]]
@@ -449,7 +447,7 @@ $(changed_msg 'base, cap, check, environment' old)" ]
 }
 
 @test "on the base branch itself with --base: size is 0 and the checks run" {
-  start_repo ".check = $(checks "echo ran >> '$LOG'")"
+  start_repo "check=$(checks "echo ran >> '$LOG'")"
   git checkout -q main
   run_check --base main
   [ "$status" -eq 0 ]
@@ -492,8 +490,8 @@ $(changed_msg 'base, cap, check, environment' old)" ]
 @test "a skip-worktree setup file cannot change what check reads" {
   start_repo
   commit_files 1
-  git update-index --skip-worktree .config/shipit.json
-  jq '.check = ["touch ran"] | .cap = 1000' "$FIXTURE" >.config/shipit.json
+  git update-index --skip-worktree .config/shipit.toml
+  fixture_with 'check=["touch ran"]' 'cap=1000' >.config/shipit.toml
   run_check
   [ "$status" -eq 3 ]
   [ ! -e ran ]
@@ -516,7 +514,7 @@ $(changed_msg 'base, cap, check, environment' old)" ]
   mkdir -p "${wrap%/*}"
   printf '#!%s\nprintf "%%s\\n" "wrapped: $*" >>"%s"\nexec "${@:2}"\n' "$BASH" "$LOG" >"$wrap"
   chmod +x "$wrap"
-  start_repo ".check = $(checks 'echo one' 'echo two') | .environment.run = $(checks "$wrap" skipme)"
+  start_repo "check=$(checks 'echo one' 'echo two')" "environment.run=$(checks "$wrap" skipme)"
   commit_files 1
   run_check
   [ "$status" -eq 0 ]
@@ -525,7 +523,7 @@ $(changed_msg 'base, cap, check, environment' old)" ]
 }
 
 @test "a failing prefix fails the check and writes no receipt" {
-  start_repo ".check = $(checks 'echo one') | .environment.run = $(checks false)"
+  start_repo "check=$(checks 'echo one')" "environment.run=$(checks false)"
   commit_files 1
   run_check
   [ "$status" -eq 1 ]
@@ -534,7 +532,7 @@ $(changed_msg 'base, cap, check, environment' old)" ]
 }
 
 @test "an empty environment.run runs the command as plain bash -c" {
-  start_repo ".check = $(checks "echo \"\$0 \$#\" >> '$LOG'") | .environment.run = []"
+  start_repo "check=$(checks "echo \"\$0 \$#\" >> '$LOG'")" 'environment.run=[]'
   commit_files 1
   run_check
   [ "$status" -eq 0 ]
@@ -578,7 +576,7 @@ rename_files() {
 }
 
 @test "a check that moves HEAD without changing the content is named" {
-  start_repo ".check = $(checks 'git commit -q --allow-empty -m sneaky')"
+  start_repo "check=$(checks 'git commit -q --allow-empty -m sneaky')"
   commit_files 1
   run_check
   [ "$status" -eq 1 ]
@@ -587,7 +585,7 @@ rename_files() {
 }
 
 @test "a check that undoes an earlier check's edit is caught at the earlier check" {
-  start_repo ".check = $(checks 'echo changed >> f1' 'git checkout -- f1' "echo third >> '$LOG'")"
+  start_repo "check=$(checks 'echo changed >> f1' 'git checkout -- f1' "echo third >> '$LOG'")"
   commit_files 1
   run_check
   [ "$status" -eq 1 ]
@@ -597,7 +595,7 @@ rename_files() {
 }
 
 @test "a check that creates a file and a later one that deletes it is caught too" {
-  start_repo ".check = $(checks 'touch junk' 'rm junk')"
+  start_repo "check=$(checks 'touch junk' 'rm junk')"
   commit_files 1
   run_check
   [ "$status" -eq 1 ]
@@ -606,7 +604,7 @@ rename_files() {
 }
 
 @test "a check that sets the assume-unchanged flag is caught, even with no edit" {
-  start_repo ".check = $(checks 'git update-index --assume-unchanged f1')"
+  start_repo "check=$(checks 'git update-index --assume-unchanged f1')"
   commit_files 1
   run_check
   [ "$status" -eq 1 ]
@@ -615,7 +613,7 @@ rename_files() {
 }
 
 @test "a check that sets the skip-worktree flag is caught, even with no edit" {
-  start_repo ".check = $(checks 'git update-index --skip-worktree f1')"
+  start_repo "check=$(checks 'git update-index --skip-worktree f1')"
   commit_files 1
   run_check
   [ "$status" -eq 1 ]
@@ -624,7 +622,7 @@ rename_files() {
 }
 
 @test "a check that commits is named with the changed paths and the command" {
-  start_repo ".check = $(checks 'echo more > new1 && git add new1 && git commit -q -m c')"
+  start_repo "check=$(checks 'echo more > new1 && git add new1 && git commit -q -m c')"
   commit_files 1
   run_check
   [ "$status" -eq 1 ]
@@ -633,7 +631,7 @@ rename_files() {
 }
 
 @test "a check that renames a file lists both paths plainly" {
-  start_repo ".check = $(checks 'git mv f1 g1')"
+  start_repo "check=$(checks 'git mv f1 g1')"
   commit_files 1
   run_check
   [ "$status" -eq 1 ]
@@ -641,7 +639,7 @@ rename_files() {
 }
 
 @test "paths with spaces are listed unquoted" {
-  start_repo ".check = $(checks "touch 'a b' $'tab\there'")"
+  start_repo "check=$(checks "touch 'a b' $'tab\there'")"
   commit_files 1
   run_check
   [ "$status" -eq 1 ]
@@ -667,8 +665,8 @@ rename_files() {
 }
 
 @test "a slice that edits only the setup file may change the checks: a notice, a marked receipt, verify says so" {
-  start_repo ".check = $(checks 'echo one')"
-  write_setup "$(jq -c ".check = $(checks 'echo one' "echo two >> '$LOG'")" "$FIXTURE")"
+  start_repo "check=$(checks 'echo one')"
+  write_setup "$(fixture_with "check=$(checks 'echo one' "echo two >> '$LOG'")")"
   run_check
   [ "$status" -eq 0 ]
   [ "$stderr" = "shipit: this slice changes the checks (check); setup change: the owner approves it by merging" ]
@@ -683,7 +681,7 @@ rename_files() {
 
 @test "a setup-only change that raises the cap runs with the new cap and is marked" {
   start_repo
-  write_setup "$(jq -c '.check = [] | .cap = 100' "$FIXTURE")"
+  write_setup "$(fixture_with 'check=[]' 'cap=100')"
   run_check
   [ "$status" -eq 0 ]
   [ "$stderr" = "shipit: this slice changes the checks (cap); setup change: the owner approves it by merging" ]
@@ -693,14 +691,14 @@ rename_files() {
 }
 
 @test "a setup change together with a deleted file is refused" {
-  start_repo ".check = $(checks "echo ran >> '$LOG'")"
+  start_repo "check=$(checks "echo ran >> '$LOG'")"
   git checkout -q main
   printf 'x\n' >code
   git add code
   git commit -q -m "a file"
   git checkout -q feature
   git merge -q --ff-only main
-  write_setup "$(jq -c ".check = $(checks "echo ran >> '$LOG'" 'echo two') | .cap = 61" "$FIXTURE")"
+  write_setup "$(fixture_with "check=$(checks "echo ran >> '$LOG'" 'echo two')" 'cap=61')"
   git rm -q code
   git commit -q -m "drop the file"
   run_check
@@ -816,10 +814,10 @@ rename_files() {
 }
 
 @test "a slice cannot name a branch that holds its own code to judge itself by" {
-  start_repo ".check = $(checks 'echo ran')"
+  start_repo "check=$(checks 'echo ran')"
   commit_files 1
   git branch feat-code
-  write_setup "$(jq -c ".check = $(checks "echo ran >> '$LOG'") | .base = \"feat-code\"" "$FIXTURE")"
+  write_setup "$(fixture_with "check=$(checks "echo ran >> '$LOG'")" 'base="feat-code"')"
   run_check
   [ "$status" -eq 1 ]
   [ "$stderr" = "$(changed_msg 'base, check' main)" ]
@@ -828,10 +826,10 @@ rename_files() {
 }
 
 @test "a base that moved on is not mistaken for the slice's change: refused, not marked" {
-  start_repo ".check = $(checks 'true')"
-  write_setup "$(jq -c '.check = ["true"] | .roles.reader.tier = 2' "$FIXTURE")"
+  start_repo "check=$(checks 'true')"
+  write_setup "$(fixture_with 'check=["true"]' 'roles.reader.tier=2')"
   git checkout -q main
-  write_setup "$(jq -c '.check = ["true", "test -f a"]' "$FIXTURE")"
+  write_setup "$(fixture_with 'check=["true", "test -f a"]')"
   git checkout -q feature
   run_check
   [ "$status" -eq 1 ]
@@ -840,7 +838,7 @@ rename_files() {
 }
 
 @test "a submodule that .gitmodules says to ignore still counts as a changed file" {
-  start_repo ".check = $(checks 'true')"
+  start_repo "check=$(checks 'true')"
   local sub="$BATS_TEST_TMPDIR/sub"
   git init -q -b main "$sub"
   git -C "$sub" config user.name t
@@ -861,7 +859,7 @@ rename_files() {
   git -C vendor config commit.gpgsign false
   git -C vendor commit -q --allow-empty -m inside
   git add --force vendor
-  write_setup "$(jq -c '.check = ["true", "echo two"]' "$FIXTURE")"
+  write_setup "$(fixture_with 'check=["true", "echo two"]')"
   run_check
   [ "$status" -eq 1 ]
   [ "$stderr" = "$(changed_msg check)" ]
@@ -869,7 +867,7 @@ rename_files() {
 }
 
 @test "a base written as the remote branch says to name the branch" {
-  start_repo ".base = \"origin/main\" | .check = []"
+  start_repo 'base="origin/main"' 'check=[]'
   commit_files 1
   run_check
   [ "$status" -eq 2 ]

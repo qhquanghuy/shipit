@@ -5,6 +5,14 @@ use serde_json::Value;
 
 use crate::pure::setup::Cap;
 
+// The documents of a receipt file: more or fewer than one make it invalid, so all are read.
+pub(crate) fn json_values(bytes: &[u8]) -> Option<Vec<Value>> {
+    serde_json::Deserializer::from_slice(bytes)
+        .into_iter::<Value>()
+        .collect::<Result<Vec<_>, _>>()
+        .ok()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(transparent)]
 pub(crate) struct Oid(String);
@@ -121,7 +129,6 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
-    use crate::pure::setup::json_values;
     use crate::pure::testing::{cap, oid};
 
     proptest! {

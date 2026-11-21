@@ -14,9 +14,9 @@ load helpers
   [ "$(git -C "$repo" config user.name)" != "" ]
   [ "$(git -C "$repo" config user.email)" != "" ]
   [ "$(git -C "$repo" rev-list --count HEAD)" -eq 1 ]
-  [ "$(git -C "$repo" ls-tree -r --name-only HEAD)" = ".config/shipit.json" ]
+  [ "$(git -C "$repo" ls-tree -r --name-only HEAD)" = ".config/shipit.toml" ]
   [ -z "$(git -C "$repo" status --porcelain --untracked-files=normal)" ]
-  jq -e '.version == 1 and .base == "main" and (.tiers | length) == 4' "$repo/.config/shipit.json"
+  diff <(valid_setup) "$repo/.config/shipit.toml"
 }
 
 @test "write_setup writes the setup file at the top and commits it" {
@@ -24,9 +24,23 @@ load helpers
   repo=$(make_repo)
   mkdir -p "$repo/sub"
   cd "$repo/sub"
-  write_setup '{"version": 1}'
-  [ "$(jq -c . "$repo/.config/shipit.json")" = '{"version":1}' ]
+  write_setup "version = 1"
+  [ "$(cat "$repo/.config/shipit.toml")" = "version = 1" ]
   [ "$(git -C "$repo" rev-list --count HEAD)" -eq 2 ]
   [ -z "$(git -C "$repo" status --porcelain --untracked-files=normal)" ]
 }
 
+@test "fixture_with replaces a top-level key and a key in a table, and nothing else" {
+  run fixture_with 'cap=100' 'environment.run=["env"]' 'roles.reader.tier=2'
+  [ "$status" -eq 0 ]
+  diff <(printf '%s\n' "$output") <(sed \
+    -e 's/^cap = 60$/cap = 100/' \
+    -e 's/^run = \[\]$/run = ["env"]/' \
+    -e '/^\[roles.reader\]$/{n;s/.*/tier = 2/;}' "$FIXTURE")
+}
+
+@test "fixture_with fails on a path the fixture has no line for" {
+  run fixture_with 'nonesuch=1'
+  [ "$status" -eq 1 ]
+  [[ $output == *"no line for nonesuch=1"* ]]
+}

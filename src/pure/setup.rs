@@ -1,13 +1,13 @@
 use serde::{Serialize, Serializer};
-use serde_json::{Map, Value};
+use toml::{Table, Value};
 
 use crate::pure::base::BranchName;
-use crate::pure::json::{
+use crate::pure::rules::{
     Parsed, Problem, Problems, at, fail, integer_at_most, non_empty, object_at, optional, present,
     shape, whole,
 };
 
-pub(crate) const SETUP_PATH: &str = ".config/shipit.json";
+pub(crate) const SETUP_PATH: &str = ".config/shipit.toml";
 pub(crate) const HEAD: &str = "HEAD";
 
 const ONE_OF: &str = "must be one of low, medium, high, xhigh, max";
@@ -190,11 +190,9 @@ pub(crate) fn setup_label(rev: &str) -> String {
     }
 }
 
-pub(crate) fn json_values(bytes: &[u8]) -> Result<Vec<Value>, String> {
-    serde_json::Deserializer::from_slice(bytes)
-        .into_iter::<Value>()
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|why| why.to_string())
+pub(crate) fn toml_table(bytes: &[u8]) -> Result<Table, String> {
+    let text = std::str::from_utf8(bytes).map_err(|why| why.to_string())?;
+    toml::from_str(text).map_err(|why| why.to_string())
 }
 
 fn non_empty_value(value: &Value) -> Option<NonEmpty> {
@@ -230,11 +228,7 @@ fn effort_value(value: &Value, path: &str, cap: Option<Effort>) -> Parsed<Effort
     }
 }
 
-fn effort_at(
-    object: &Map<String, Value>,
-    path: &str,
-    cap: Option<Effort>,
-) -> Parsed<Option<Effort>> {
+fn effort_at(object: &Table, path: &str, cap: Option<Effort>) -> Parsed<Option<Effort>> {
     optional(object, "effort", |value| {
         effort_value(value, &format!("{path}.effort"), cap)
     })
@@ -246,7 +240,7 @@ fn tier_ref(value: &Value, count: Option<u64>) -> Option<TierNumber> {
         .map(TierNumber)
 }
 
-fn tier_at(object: &Map<String, Value>, path: &str, context: Context) -> Parsed<TierNumber> {
+fn tier_at(object: &Table, path: &str, context: Context) -> Parsed<TierNumber> {
     at(
         object,
         "tier",
@@ -468,16 +462,7 @@ fn parse_messages(value: &Value) -> Parsed<MessagesToOwner> {
     })
 }
 
-pub(crate) fn parse_setup(docs: &[Value]) -> Parsed<Setup> {
-    let [doc] = docs else {
-        return fail(
-            ".",
-            &format!("must hold exactly one JSON document, found {}", docs.len()),
-        );
-    };
-    let Some(object) = doc.as_object() else {
-        return fail(".", "must be a JSON object");
-    };
+pub(crate) fn parse_setup(object: &Table) -> Parsed<Setup> {
     let context = Context {
         cap: object
             .get("effort_cap")
@@ -557,25 +542,24 @@ pub(crate) fn parse_setup(docs: &[Value]) -> Parsed<Setup> {
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;
-    use serde_json::json;
 
     use super::*;
 
-    const FIXTURE: &str = include_str!("../../tests/fixtures/setup-valid.json");
+    const FIXTURE: &str = include_str!("../../tests/fixtures/setup-valid.toml");
 
     fn fixture() -> Value {
-        serde_json::from_str(FIXTURE).unwrap()
+        toml::from_str(FIXTURE).unwrap()
     }
 
-    fn lines_of_docs(docs: &[Value]) -> Vec<String> {
-        match parse_setup(docs) {
-            Ok(_setup) => Vec::new(),
-            Err(problems) => problems.iter().map(ToString::to_string).collect(),
+    fn lines_of(value: &Value) -> Vec<String> {
+        match value.as_table().map(parse_setup) {
+            Some(Err(problems)) => problems.iter().map(ToString::to_string).collect(),
+            Some(Ok(_)) | None => Vec::new(),
         }
     }
 
-    fn lines_of(value: Value) -> Vec<String> {
-        lines_of_docs(&[value])
+    fn lines_of_text(text: &str) -> Vec<String> {
+        lines_of(&Value::Table(toml_table(text.as_bytes()).unwrap()))
     }
 
     fn config() -> ProptestConfig {
@@ -585,12 +569,70 @@ mod tests {
         }
     }
 
-    // Every value of the fixture below the top: its path as the problems write it, and its JSON
+    fn int(n: i64) -> Value {
+        Value::Integer(n)
+    }
+
+    fn text(s: &str) -> Value {
+        Value::String(s.to_owned())
+    }
+
+    // One value of every kind TOML has; a test picks the ones that differ from the current one.
+    fn kinds() -> Vec<Value> {
+        vec![
+            Value::Boolean(true),
+            int(5),
+            text("7"),
+            Value::Float(1.5),
+            Value::Datetime("1979-05-27T07:32:00Z".parse().unwrap()),
+            Value::Array(Vec::new()),
+            Value::Table(Table::new()),
+        ]
+    }
+
+    // The value at a pointer: "" is the document, "/a/0/b" is a key, an index, a key.
+    fn look<'a>(value: &'a Value, pointer: &str) -> Option<&'a Value> {
+        pointer
+            .split('/')
+            .skip(1)
+            .try_fold(value, |here, key| match here {
+                Value::Table(table) => table.get(key),
+                Value::Array(items) => {
+                    let index = key.parse::<usize>().ok()?;
+                    items.get(index)
+                }
+                Value::String(_)
+                | Value::Integer(_)
+                | Value::Float(_)
+                | Value::Boolean(_)
+                | Value::Datetime(_) => None,
+            })
+    }
+
+    fn look_mut<'a>(value: &'a mut Value, pointer: &str) -> Option<&'a mut Value> {
+        pointer
+            .split('/')
+            .skip(1)
+            .try_fold(value, |here, key| match here {
+                Value::Table(table) => table.get_mut(key),
+                Value::Array(items) => {
+                    let index = key.parse::<usize>().ok()?;
+                    items.get_mut(index)
+                }
+                Value::String(_)
+                | Value::Integer(_)
+                | Value::Float(_)
+                | Value::Boolean(_)
+                | Value::Datetime(_) => None,
+            })
+    }
+
+    // Every value of the fixture below the top: its path as the problems write it, and its
     // pointer.
     fn places() -> Vec<(String, String)> {
         fn walk(value: &Value, path: &str, pointer: &str, found: &mut Vec<(String, String)>) {
             let children: Vec<(String, String, &Value)> = match value {
-                Value::Object(map) => map
+                Value::Table(table) => table
                     .iter()
                     .map(|(key, inner)| {
                         (format!("{path}.{key}"), format!("{pointer}/{key}"), inner)
@@ -607,7 +649,11 @@ mod tests {
                         )
                     })
                     .collect(),
-                Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => Vec::new(),
+                Value::String(_)
+                | Value::Integer(_)
+                | Value::Float(_)
+                | Value::Boolean(_)
+                | Value::Datetime(_) => Vec::new(),
             };
             for (child_path, child_pointer, inner) in children {
                 found.push((child_path.clone(), child_pointer.clone()));
@@ -623,44 +669,40 @@ mod tests {
         let value = fixture();
         places()
             .into_iter()
-            .filter(|(path, pointer)| value.pointer(pointer).is_some_and(|v| keep(path, v)))
+            .filter(|(path, pointer)| look(&value, pointer).is_some_and(|v| keep(path, v)))
             .collect()
     }
 
     fn put(value: &mut Value, pointer: &str, new: Value) {
-        if let Some(slot) = value.pointer_mut(pointer) {
+        if let Some(slot) = look_mut(value, pointer) {
             *slot = new;
         } else if let Some((parent, key)) = pointer.rsplit_once('/')
-            && let Some(object) = value.pointer_mut(parent).and_then(Value::as_object_mut)
+            && let Some(Value::Table(table)) = look_mut(value, parent)
         {
-            object.insert(key.to_owned(), new);
+            table.insert(key.to_owned(), new);
         }
     }
 
     fn remove(value: &mut Value, pointer: &str) {
         if let Some((parent, key)) = pointer.rsplit_once('/')
-            && let Some(object) = value.pointer_mut(parent).and_then(Value::as_object_mut)
+            && let Some(Value::Table(table)) = look_mut(value, parent)
         {
-            object.shift_remove(key);
+            table.remove(key);
         }
     }
 
-    fn json_integer() -> impl Strategy<Value = Value> {
-        prop_oneof![
-            (-3_i64..0).prop_map(|n| json!(n)),
-            (0_u64..4).prop_map(|n| json!(n)),
-            any::<u64>().prop_map(|n| json!(n)),
-        ]
+    fn integer() -> impl Strategy<Value = i64> {
+        prop_oneof![-3_i64..4, any::<i64>()]
     }
 
     const SCALE: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 
     #[test]
     fn the_fixture_parses_and_serializes_back_to_itself() {
-        let setup = parse_setup(&[fixture()]).unwrap();
+        let setup = parse_setup(fixture().as_table().unwrap()).unwrap();
         assert_eq!(
-            serde_json::to_string(&setup).unwrap(),
-            serde_json::to_string(&fixture()).unwrap()
+            serde_json::to_value(&setup).unwrap(),
+            serde_json::to_value(fixture()).unwrap()
         );
     }
 
@@ -683,31 +725,12 @@ mod tests {
         assert!(Effort::Xhigh < Effort::Max);
     }
 
-    // A value the proptest found: without serde_json's float_roundtrip the parser reads this as
-    // a nearby non-integer.
-    #[test]
-    fn a_large_integer_written_with_a_zero_fraction_reads_back_exactly() {
-        let value: Value = serde_json::from_str("2215942996861907.0").unwrap();
-        assert_eq!(whole(&value), Some(2_215_942_996_861_907));
-    }
-
-    #[test]
-    fn the_upper_bound_of_a_whole_number_is_exclusive() {
-        let two_to_the_64: Value = serde_json::from_str("18446744073709551616").unwrap();
-        assert_eq!(whole(&two_to_the_64), None);
-        let as_float: Value = serde_json::from_str("1.8446744073709552e19").unwrap();
-        assert_eq!(whole(&as_float), None);
-        assert_eq!(whole(&json!(u64::MAX)), Some(u64::MAX));
-        let largest_float: Value = serde_json::from_str("18446744073709549568.0").unwrap();
-        assert_eq!(whole(&largest_float), Some(18_446_744_073_709_549_568));
-    }
-
     #[test]
     fn no_tiers_is_reported_with_every_role_that_names_one() {
         let mut value = fixture();
-        value["tiers"] = json!([]);
+        put(&mut value, "/tiers", Value::Array(Vec::new()));
         assert_eq!(
-            lines_of(value),
+            lines_of(&value),
             [
                 ".tiers: must be a non-empty array of objects",
                 ".roles.scout.tier: must be the number of an existing tier",
@@ -720,13 +743,13 @@ mod tests {
     }
 
     #[test]
-    fn every_value_null() {
+    fn every_top_level_value_of_the_wrong_kind() {
         let mut value = fixture();
-        for (_key, slot) in value.as_object_mut().unwrap() {
-            *slot = Value::Null;
+        for (_key, slot) in value.as_table_mut().unwrap() {
+            *slot = Value::Boolean(false);
         }
         assert_eq!(
-            lines_of(value),
+            lines_of(&value),
             [
                 ".version: must be the integer 1",
                 ".base: must be a branch name (see git check-ref-format --branch)",
@@ -746,12 +769,12 @@ mod tests {
     #[test]
     fn several_broken_rules() {
         let mut value = fixture();
-        value["cap"] = json!(0);
-        value["base"] = json!("");
-        value["roles"]["maker"]["effort"] = json!("max");
-        value["packs"]["model"] = json!(3);
+        put(&mut value, "/cap", int(0));
+        put(&mut value, "/base", text(""));
+        put(&mut value, "/roles/maker/effort", text("max"));
+        put(&mut value, "/packs/model", int(3));
         assert_eq!(
-            lines_of(value),
+            lines_of(&value),
             [
                 ".base: must be a branch name (see git check-ref-format --branch)",
                 ".cap: must be an integer of at least 1",
@@ -764,15 +787,15 @@ mod tests {
     #[test]
     fn the_reader_is_required_and_has_the_role_shape() {
         let mut value = fixture();
-        value["roles"]
-            .as_object_mut()
-            .unwrap()
-            .shift_remove("reader");
-        assert_eq!(lines_of(value), [".roles.reader: missing"]);
+        remove(&mut value, "/roles/reader");
+        assert_eq!(lines_of(&value), [".roles.reader: missing"]);
         let mut value = fixture();
-        value["roles"]["reader"] = json!({"tier": 5, "extra": 1});
+        let mut reader = Table::new();
+        reader.insert("tier".to_owned(), int(5));
+        reader.insert("extra".to_owned(), int(1));
+        put(&mut value, "/roles/reader", Value::Table(reader));
         assert_eq!(
-            lines_of(value),
+            lines_of(&value),
             [
                 ".roles.reader.extra: unknown key",
                 ".roles.reader.tier: must be the number of an existing tier"
@@ -780,16 +803,29 @@ mod tests {
         );
     }
 
+    // An empty file is an empty table: the schema's own rules report what is missing.
     #[test]
-    fn a_text_that_is_not_json_is_an_error_and_an_empty_one_has_no_documents() {
-        assert_eq!(json_values(b"").unwrap(), Vec::<Value>::new());
-        assert!(json_values(b"{\"a\":").is_err());
+    fn an_empty_file_lists_every_key_as_missing() {
+        assert_eq!(
+            lines_of_text(""),
+            TOP_KEYS.map(|key| format!(".{key}: missing"))
+        );
+    }
+
+    // A float is the wrong kind even when it is whole: TOML tells integers from floats.
+    #[test]
+    fn a_whole_float_is_not_an_integer() {
+        let written = FIXTURE.replace("cap = 60", "cap = 60.0");
+        assert_eq!(
+            lines_of_text(&written),
+            [".cap: must be an integer of at least 1"]
+        );
     }
 
     #[test]
     fn the_label_names_the_ref_unless_it_is_head() {
-        assert_eq!(setup_label("HEAD"), ".config/shipit.json");
-        assert_eq!(setup_label("main"), "main:.config/shipit.json");
+        assert_eq!(setup_label("HEAD"), ".config/shipit.toml");
+        assert_eq!(setup_label("main"), "main:.config/shipit.toml");
     }
 
     fn arb_effort() -> impl Strategy<Value = Effort> {
@@ -827,10 +863,11 @@ mod tests {
         })
     }
 
+    // TOML integers stop at i64::MAX, so a cap never goes above it.
     fn arb_setup() -> impl Strategy<Value = Setup> {
         let scalars = (
             arb_text(),
-            prop_oneof![1_u64..1000, 1_u64..=u64::MAX],
+            prop_oneof![1_u64..1000, 1_u64..=i64::MAX.unsigned_abs()],
             0_u64..10,
             proptest::collection::vec(arb_text(), 0..3),
             proptest::collection::vec(arb_text(), 0..3),
@@ -927,69 +964,60 @@ mod tests {
         #![proptest_config(config())]
 
         #[test]
-        fn whole_accepts_every_u64_as_an_integer(n in any::<u64>()) {
-            prop_assert_eq!(whole(&json!(n)), Some(n));
+        fn whole_accepts_every_non_negative_integer(n in 0_i64..=i64::MAX) {
+            prop_assert_eq!(whole(&int(n)), u64::try_from(n).ok());
         }
 
         #[test]
-        fn whole_accepts_a_u64_written_with_a_zero_fraction(n in any::<u64>()) {
-            let value: Value = serde_json::from_str(&format!("{n}.0")).unwrap();
-            // Within 1024 of 2^64 the text rounds up to 2^64, which is refused.
-            prop_assert_eq!(whole(&value).is_some(), n < u64::MAX - 1024);
-            if n < 1 << 53 {
-                prop_assert_eq!(whole(&value), Some(n));
-            }
+        fn whole_refuses_a_negative_integer(n in i64::MIN..0) {
+            prop_assert_eq!(whole(&int(n)), None);
         }
 
         #[test]
-        fn whole_refuses_a_number_with_a_fraction_part(i in any::<i32>(), step in 1_u32..1000) {
-            let x = f64::from(i) + f64::from(step) / 1024.0;
-            prop_assert_eq!(whole(&json!(x)), None);
+        fn a_text_off_the_scale_is_not_an_effort(word in "[a-zA-Z ]{0,7}") {
+            prop_assume!(!SCALE.contains(&word.as_str()));
+            prop_assert_eq!(Effort::parse(&word), None);
         }
 
         #[test]
-        fn a_text_off_the_scale_is_not_an_effort(text in "[a-zA-Z ]{0,7}") {
-            prop_assume!(!SCALE.contains(&text.as_str()));
-            prop_assert_eq!(Effort::parse(&text), None);
-        }
-
-        #[test]
-        fn a_file_of_any_other_count_than_one_document_is_refused_with_the_count(
-            count in prop_oneof![Just(0_usize), 2_usize..6],
-        ) {
-            let docs = vec![json!({}); count];
-            prop_assert_eq!(
-                lines_of_docs(&docs),
-                vec![format!(".: must hold exactly one JSON document, found {count}")]
-            );
-        }
-
-        #[test]
-        fn a_document_that_is_not_an_object_is_refused(
-            doc in proptest::sample::select(vec![
-                json!(null), json!(true), json!(5), json!("x"), json!([]), json!([{}]),
+        fn a_text_that_is_not_toml_is_an_error(
+            bad in proptest::sample::select(vec![
+                "{\"version\": 1}",
+                "cap =",
+                "cap = 1\ncap = 2",
+                "[a",
+                "a = 'b",
+                "a = 1 b = 2",
             ]),
         ) {
-            prop_assert_eq!(lines_of_docs(&[doc]), vec![".: must be a JSON object".to_owned()]);
+            prop_assert!(toml_table(bad.as_bytes()).is_err());
         }
 
         #[test]
-        fn json_values_counts_the_documents(numbers in proptest::collection::vec(any::<u8>(), 0..6)) {
-            let text = numbers.iter().map(ToString::to_string).collect::<Vec<_>>().join(" ");
-            prop_assert_eq!(json_values(text.as_bytes()).map(|docs| docs.len()), Ok(numbers.len()));
+        fn bytes_that_are_not_utf8_are_an_error(
+            mut bytes in proptest::collection::vec(any::<u8>(), 0..8),
+        ) {
+            bytes.push(0xff);
+            prop_assert!(toml_table(&bytes).is_err());
+        }
+
+        // The integers of the file are i64: a bigger one is not a TOML value at all.
+        #[test]
+        fn an_integer_above_i64_is_not_toml(n in (i64::MAX.unsigned_abs() + 1)..=u64::MAX) {
+            let written = format!("cap = {n}");
+            prop_assert!(toml_table(written.as_bytes()).is_err());
         }
 
         #[test]
         fn a_value_of_the_wrong_kind_is_reported_at_its_place(
             (path, pointer) in proptest::sample::select(places()),
-            wrong in proptest::sample::select(vec![json!(true), json!(null), json!(5), json!("7")]),
+            wrong in proptest::sample::select(kinds()),
         ) {
             let mut value = fixture();
-            let current = value.pointer(&pointer).cloned().unwrap_or(Value::Null);
-            prop_assume!(!(wrong.is_number() && current.is_number()));
-            prop_assume!(!(wrong.is_string() && current.is_string()));
+            let current = look(&value, &pointer).map(Value::type_str);
+            prop_assume!(current != Some(wrong.type_str()));
             put(&mut value, &pointer, wrong);
-            let lines = lines_of(value);
+            let lines = lines_of(&value);
             let prefix = format!("{path}: ");
             prop_assert!(lines.iter().any(|line| line.starts_with(&prefix)), "{:?}", lines);
         }
@@ -1002,7 +1030,7 @@ mod tests {
             let Some((parent, key)) = pointer.rsplit_once('/') else {
                 return Err(TestCaseError::fail("a pointer below the top"));
             };
-            prop_assume!(value.pointer(parent).is_some_and(Value::is_object));
+            prop_assume!(look(&value, parent).is_some_and(Value::is_table));
             remove(&mut value, &pointer);
             let optional = key == "stand_in" || (key == "effort" && !path.contains("stand_in"));
             let expected = if optional {
@@ -1010,40 +1038,40 @@ mod tests {
             } else {
                 vec![format!("{path}: missing")]
             };
-            prop_assert_eq!(lines_of(value), expected);
+            prop_assert_eq!(lines_of(&value), expected);
         }
 
         #[test]
-        fn an_unknown_key_is_the_only_problem_in_any_object(
+        fn an_unknown_key_is_the_only_problem_in_any_table(
             (path, pointer) in proptest::sample::select(
                 [(String::new(), String::new())]
                     .into_iter()
-                    .chain(places_where(|_, v| v.is_object()))
+                    .chain(places_where(|_, v| v.is_table()))
                     .collect::<Vec<_>>()
             ),
             key in "[a-z_]{1,10}",
         ) {
             prop_assume!(!["effort", "stand_in"].contains(&key.as_str()));
             let mut value = fixture();
-            prop_assume!(value.pointer(&pointer).and_then(Value::as_object)
-                .is_some_and(|object| !object.contains_key(&key)));
-            put(&mut value, &format!("{pointer}/{key}"), json!(1));
-            prop_assert_eq!(lines_of(value), vec![format!("{path}.{key}: unknown key")]);
+            prop_assume!(look(&value, &pointer).and_then(Value::as_table)
+                .is_some_and(|table| !table.contains_key(&key)));
+            put(&mut value, &format!("{pointer}/{key}"), int(1));
+            prop_assert_eq!(lines_of(&value), vec![format!("{path}.{key}: unknown key")]);
         }
 
         #[test]
         fn an_empty_text_is_refused_where_a_non_empty_one_is_needed(
             (path, pointer) in proptest::sample::select(places_where(|path, v| {
-                v.is_string()
+                v.is_str()
                     && path != ".base"
                     && path != ".effort_cap"
                     && !path.ends_with(".effort")
             })),
         ) {
             let mut value = fixture();
-            put(&mut value, &pointer, json!(""));
+            put(&mut value, &pointer, text(""));
             prop_assert_eq!(
-                lines_of(value),
+                lines_of(&value),
                 vec![format!("{path}: must be a non-empty string")]
             );
         }
@@ -1056,9 +1084,9 @@ mod tests {
             ]),
             entries in proptest::collection::vec(
                 prop_oneof![
-                    Just(json!("")),
-                    Just(json!(3)),
-                    "[a-z]{1,4}".prop_map(|text| json!(text)),
+                    Just(text("")),
+                    Just(int(3)),
+                    "[a-z]{1,4}".prop_map(|word| text(&word)),
                 ],
                 0..5,
             ),
@@ -1071,37 +1099,37 @@ mod tests {
                 .collect();
             let mut value = fixture();
             put(&mut value, pointer, Value::Array(entries));
-            prop_assert_eq!(lines_of(value), expected);
+            prop_assert_eq!(lines_of(&value), expected);
         }
 
         #[test]
-        fn the_base_is_a_branch_name(text in prop_oneof!["\\PC{0,12}", "[a-z.~^/ -]{0,6}"]) {
+        fn the_base_is_a_branch_name(word in prop_oneof!["\\PC{0,12}", "[a-z.~^/ -]{0,6}"]) {
             let mut value = fixture();
-            put(&mut value, "/base", json!(text));
-            let expected = if BranchName::parse(&text).is_some() {
+            put(&mut value, "/base", text(&word));
+            let expected = if BranchName::parse(&word).is_some() {
                 Vec::new()
             } else {
                 vec![".base: must be a branch name (see git check-ref-format --branch)".to_owned()]
             };
-            prop_assert_eq!(lines_of(value), expected);
+            prop_assert_eq!(lines_of(&value), expected);
         }
 
         #[test]
-        fn the_version_is_the_integer_1(n in prop_oneof![-2_i64..4, any::<i64>()]) {
+        fn the_version_is_the_integer_1(n in integer()) {
             let mut value = fixture();
-            put(&mut value, "/version", json!(n));
+            put(&mut value, "/version", int(n));
             let expected = if n == 1 {
                 Vec::new()
             } else {
                 vec![".version: must be the integer 1".to_owned()]
             };
-            prop_assert_eq!(lines_of(value), expected);
+            prop_assert_eq!(lines_of(&value), expected);
         }
 
         #[test]
         fn a_count_is_accepted_from_its_minimum(
             (path, pointer, min) in proptest::sample::select(vec![
-                (".cap", "/cap", 1_u64),
+                (".cap", "/cap", 1_i64),
                 (".fix_rounds", "/fix_rounds", 0),
                 (".roles.scout.retries", "/roles/scout/retries", 0),
                 (".messages_to_owner.max_lines", "/messages_to_owner/max_lines", 1),
@@ -1111,52 +1139,25 @@ mod tests {
                     1,
                 ),
             ]),
-            n in json_integer(),
+            n in integer(),
         ) {
             let mut value = fixture();
-            put(&mut value, "/messages_to_owner/max_lines", json!(u64::MAX));
-            put(&mut value, "/messages_to_owner/status_update_max_lines", json!(1));
-            let expected = if n.as_u64().is_some_and(|n| n >= min) {
+            put(&mut value, "/messages_to_owner/max_lines", int(i64::MAX));
+            put(&mut value, "/messages_to_owner/status_update_max_lines", int(1));
+            let expected = if n >= min {
                 Vec::new()
             } else {
                 vec![format!("{path}: must be an integer of at least {min}")]
             };
-            put(&mut value, pointer, n);
-            prop_assert_eq!(lines_of(value), expected);
+            put(&mut value, pointer, int(n));
+            prop_assert_eq!(lines_of(&value), expected);
         }
 
         #[test]
-        fn a_number_with_a_fraction_part_is_refused_where_an_integer_is_needed(
-            (path, pointer) in proptest::sample::select(vec![
-                (".version", "/version"),
-                (".cap", "/cap"),
-                (".fix_rounds", "/fix_rounds"),
-                (".tiers[0].tier", "/tiers/0/tier"),
-                (".roles.scout.tier", "/roles/scout/tier"),
-                (".roles.scout.retries", "/roles/scout/retries"),
-                (".roles.scout.then.tier", "/roles/scout/then/tier"),
-                (".roles.maker.tier", "/roles/maker/tier"),
-                (".messages_to_owner.max_lines", "/messages_to_owner/max_lines"),
-                (
-                    ".messages_to_owner.status_update_max_lines",
-                    "/messages_to_owner/status_update_max_lines",
-                ),
-            ]),
-            i in 0_u32..3,
-            step in 1_u32..1000,
-        ) {
+        fn the_status_limit_is_not_above_the_max_lines(max in 1_i64..40, status in 1_i64..40) {
             let mut value = fixture();
-            put(&mut value, pointer, json!(f64::from(i) + f64::from(step) / 1024.0));
-            let lines = lines_of(value);
-            let prefix = format!("{path}: ");
-            prop_assert!(lines.iter().any(|line| line.starts_with(&prefix)), "{:?}", lines);
-        }
-
-        #[test]
-        fn the_status_limit_is_not_above_the_max_lines(max in 1_u64..40, status in 1_u64..40) {
-            let mut value = fixture();
-            put(&mut value, "/messages_to_owner/max_lines", json!(max));
-            put(&mut value, "/messages_to_owner/status_update_max_lines", json!(status));
+            put(&mut value, "/messages_to_owner/max_lines", int(max));
+            put(&mut value, "/messages_to_owner/status_update_max_lines", int(status));
             let expected = if status <= max {
                 Vec::new()
             } else {
@@ -1165,7 +1166,7 @@ mod tests {
                         .to_owned(),
                 ]
             };
-            prop_assert_eq!(lines_of(value), expected);
+            prop_assert_eq!(lines_of(&value), expected);
         }
 
         #[test]
@@ -1178,13 +1179,13 @@ mod tests {
                 (".roles.tester.effort", "/roles/tester/effort"),
                 (".roles.reader.effort", "/roles/reader/effort"),
             ]),
-            text in "[a-zA-Z ]{0,7}",
+            word in "[a-zA-Z ]{0,7}",
         ) {
-            prop_assume!(!SCALE.contains(&text.as_str()));
+            prop_assume!(!SCALE.contains(&word.as_str()));
             let mut value = fixture();
-            put(&mut value, pointer, json!(text));
+            put(&mut value, pointer, text(&word));
             prop_assert_eq!(
-                lines_of(value),
+                lines_of(&value),
                 vec![format!("{path}: must be one of low, medium, high, xhigh, max")]
             );
         }
@@ -1202,17 +1203,17 @@ mod tests {
             cap in arb_effort(),
         ) {
             let mut value = fixture();
-            put(&mut value, "/effort_cap", serde_json::to_value(cap).unwrap());
-            put(&mut value, "/tiers/3/stand_in/effort", json!("low"));
+            put(&mut value, "/effort_cap", Value::try_from(cap).unwrap());
+            put(&mut value, "/tiers/3/stand_in/effort", text("low"));
             remove(&mut value, "/roles/maker/effort");
             remove(&mut value, "/roles/tester/effort");
-            put(&mut value, pointer, serde_json::to_value(effort).unwrap());
+            put(&mut value, pointer, Value::try_from(effort).unwrap());
             let expected = if effort <= cap {
                 Vec::new()
             } else {
                 vec![format!("{path}: must not be above effort_cap")]
             };
-            prop_assert_eq!(lines_of(value), expected);
+            prop_assert_eq!(lines_of(&value), expected);
         }
 
         #[test]
@@ -1225,13 +1226,13 @@ mod tests {
             n in -1_i64..8,
         ) {
             let mut value = fixture();
-            put(&mut value, pointer, json!(n));
+            put(&mut value, pointer, int(n));
             let expected = if (1..=4).contains(&n) {
                 Vec::new()
             } else {
                 vec![format!("{path}: must be the number of an existing tier")]
             };
-            prop_assert_eq!(lines_of(value), expected);
+            prop_assert_eq!(lines_of(&value), expected);
         }
 
         #[test]
@@ -1240,8 +1241,8 @@ mod tests {
             then in -1_i64..8,
         ) {
             let mut value = fixture();
-            put(&mut value, "/roles/scout/tier", json!(scout));
-            put(&mut value, "/roles/scout/then/tier", json!(then));
+            put(&mut value, "/roles/scout/tier", int(scout));
+            put(&mut value, "/roles/scout/then/tier", int(then));
             let exists = |n: i64| (1..=4).contains(&n);
             let mut expected = Vec::new();
             if !exists(scout) {
@@ -1253,30 +1254,31 @@ mod tests {
             if then <= scout {
                 expected.push(".roles.scout.then.tier: must be above roles.scout.tier");
             }
-            prop_assert_eq!(lines_of(value), expected);
+            prop_assert_eq!(lines_of(&value), expected);
         }
 
         #[test]
         fn the_tiers_are_numbered_one_to_n_in_order(
-            numbers in proptest::collection::vec(0_u64..7, 4),
+            numbers in proptest::collection::vec(0_i64..7, 4),
         ) {
             let mut value = fixture();
             let mut expected = Vec::new();
-            for (index, (number, want)) in numbers.iter().zip(1_u64..).enumerate() {
-                put(&mut value, &format!("/tiers/{index}/tier"), json!(number));
+            for (index, (number, want)) in numbers.iter().zip(1_i64..).enumerate() {
+                put(&mut value, &format!("/tiers/{index}/tier"), int(*number));
                 if *number != want {
                     expected.push(format!(
                         ".tiers[{index}].tier: must be {want} (tiers are numbered 1..n in order)"
                     ));
                 }
             }
-            prop_assert_eq!(lines_of(value), expected);
+            prop_assert_eq!(lines_of(&value), expected);
         }
 
         #[test]
-        fn a_valid_setup_survives_serializing_and_parsing(setup in arb_setup()) {
-            let value = serde_json::to_value(&setup).unwrap();
-            prop_assert_eq!(parse_setup(&[value]), Ok(setup));
+        fn a_valid_setup_survives_being_written_as_toml_and_parsed(setup in arb_setup()) {
+            let written = toml::to_string(&setup).unwrap();
+            let table = toml_table(written.as_bytes()).unwrap();
+            prop_assert_eq!(parse_setup(&table), Ok(setup));
         }
     }
 }

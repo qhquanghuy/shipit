@@ -1,0 +1,59 @@
+version = 1
+base = "main"
+# A change this size is still reviewable in one sitting; a bigger one is split.
+cap = 60
+# The gate CI runs: clippy, tests, docs, format, bats and the shell lint.
+check = ["nix flake check --print-build-logs"]
+fix_rounds = 2
+effort_cap = "high"
+
+# Nix is the tool environment of this repository; the check command enters it itself.
+[environment]
+run = []
+
+[[tiers]]
+tier = 1
+model = "haiku"
+
+[[tiers]]
+tier = 2
+model = "sonnet"
+
+[[tiers]]
+tier = 3
+model = "opus"
+
+[[tiers]]
+tier = 4
+model = "fable"
+
+[tiers.stand_in]
+model = "opus"
+effort = "high"
+
+[roles.scout]
+tier = 1
+retries = 1
+
+[roles.scout.then]
+tier = 2
+
+[roles.maker]
+tier = 2
+effort = "high"
+
+[roles.tester]
+tier = 3
+effort = "medium"
+
+[roles.reader]
+tier = 1
+
+[packs]
+skill = "superpowers"
+domain = "coding"
+model = "claude"
+
+[messages_to_owner]
+max_lines = 30
+status_update_max_lines = 10

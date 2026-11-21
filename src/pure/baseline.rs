@@ -1,8 +1,8 @@
 use std::fmt;
 
-use serde_json::Value;
+use toml::{Table, Value};
 
-use crate::pure::json::{Parsed, Problem, whole};
+use crate::pure::rules::{Parsed, Problem, whole};
 use crate::pure::setup::{SETUP_PATH, Setup};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -10,7 +10,7 @@ pub(crate) struct Flow {
     base: String,
     cap: u64,
     check: Vec<String>,
-    // The whole object, as jq compared it: a base file may carry keys the schema does not know.
+    // The whole table: a base file may carry keys the schema does not know.
     environment: Value,
 }
 
@@ -26,7 +26,7 @@ impl Flow {
             .iter()
             .map(|command| Value::String(command.as_str().to_owned()))
             .collect();
-        let mut environment = serde_json::Map::new();
+        let mut environment = Table::new();
         environment.insert("run".to_owned(), Value::Array(run));
         Self {
             base: setup.base.as_str().to_owned(),
@@ -36,7 +36,7 @@ impl Flow {
                 .iter()
                 .map(|command| command.as_str().to_owned())
                 .collect(),
-            environment: Value::Object(environment),
+            environment: Value::Table(environment),
         }
     }
 }
@@ -131,16 +131,7 @@ fn all_strings(value: &Value) -> Option<Vec<String>> {
 
 // Only the four fields the comparison reads, and only their types: growing the schema never
 // breaks a base branch's file.
-pub(crate) fn parse_baseline(docs: &[Value]) -> Parsed<Flow> {
-    let [doc] = docs else {
-        return Err(vec![Problem::new(
-            ".",
-            format!("must hold exactly one JSON document, found {}", docs.len()),
-        )]);
-    };
-    let Some(object) = doc.as_object() else {
-        return Err(vec![Problem::new(".", "must be a JSON object")]);
-    };
+pub(crate) fn parse_baseline(object: &Table) -> Parsed<Flow> {
     let base = object
         .get("base")
         .and_then(Value::as_str)
@@ -180,17 +171,30 @@ pub(crate) fn parse_baseline(docs: &[Value]) -> Parsed<Flow> {
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;
-    use serde_json::json;
 
     use super::*;
     use crate::pure::setup::parse_setup;
+
+    fn strings(items: &[String]) -> Value {
+        Value::Array(items.iter().cloned().map(Value::String).collect())
+    }
+
+    fn environment(run: &[String]) -> Value {
+        let mut table = Table::new();
+        table.insert("run".to_owned(), strings(run));
+        Value::Table(table)
+    }
+
+    fn table(text: &str) -> Table {
+        toml::from_str(text).unwrap()
+    }
 
     fn flow() -> Flow {
         Flow {
             base: "main".to_owned(),
             cap: 5,
             check: vec!["a".to_owned(), "b".to_owned()],
-            environment: json!({"run": []}),
+            environment: environment(&[]),
         }
     }
 
@@ -202,7 +206,8 @@ mod tests {
         assert!(!setup_only(&[b"src/main.rs".to_vec()]));
         assert!(!setup_only(&[setup.clone(), b"a".to_vec()]));
         assert!(!setup_only(&[b"a".to_vec(), setup]));
-        assert!(!setup_only(&[b".config/shipit.json.bak".to_vec()]));
+        assert!(!setup_only(&[b".config/shipit.toml.bak".to_vec()]));
+        assert!(!setup_only(&[b".config/shipit.json".to_vec()]));
     }
 
     fn names(changes: &[FlowField]) -> Vec<String> {
@@ -210,16 +215,19 @@ mod tests {
     }
 
     #[test]
-    fn the_whole_environment_object_is_compared() {
+    fn the_whole_environment_table_is_compared() {
+        let mut with_extra = Table::new();
+        with_extra.insert("run".to_owned(), strings(&[]));
+        with_extra.insert("extra".to_owned(), Value::Integer(1));
         let extra = Flow {
-            environment: json!({"run": [], "extra": 1}),
+            environment: Value::Table(with_extra),
             ..flow()
         };
         assert_eq!(names(&setup_changes(&extra, &flow())), ["environment"]);
     }
 
-    fn problems(doc: &Value) -> Vec<String> {
-        parse_baseline(std::slice::from_ref(doc))
+    fn problems(doc: &Table) -> Vec<String> {
+        parse_baseline(doc)
             .err()
             .unwrap_or_default()
             .iter()
@@ -229,12 +237,12 @@ mod tests {
 
     #[test]
     fn a_base_file_of_another_schema_is_read_for_its_four_fields() {
-        let doc = json!({
-            "base": "main", "cap": 60, "check": [], "environment": {"run": []},
-            "from_the_future": {"a": 1}
-        });
+        let doc = table(
+            "base = \"main\"\ncap = 60\ncheck = []\n\
+             [environment]\nrun = []\n[from_the_future]\na = 1\n",
+        );
         assert_eq!(
-            parse_baseline(&[doc]),
+            parse_baseline(&doc),
             Ok(Flow {
                 cap: 60,
                 check: Vec::new(),
@@ -245,7 +253,7 @@ mod tests {
 
     #[test]
     fn every_wrong_field_is_listed_in_order() {
-        let doc = json!({"base": 1, "cap": "60", "check": [1], "environment": {"run": [2]}});
+        let doc = table("base = 1\ncap = \"60\"\ncheck = [1]\n[environment]\nrun = [2]\n");
         assert_eq!(
             problems(&doc),
             [
@@ -255,44 +263,15 @@ mod tests {
                 ".environment.run: must be an array of strings",
             ]
         );
-        assert_eq!(problems(&json!({})).len(), 4);
+        assert_eq!(problems(&Table::new()).len(), 4);
+        let doc = table("base = \"\"\ncap = 0\ncheck = []\nenvironment = \"x\"\n");
         assert_eq!(
-            problems(&json!({"base": "", "cap": 0, "check": [], "environment": "x"})),
+            problems(&doc),
             [
                 ".base: must be a non-empty string",
                 ".cap: must be an integer of at least 1",
                 ".environment.run: must be an array of strings",
             ]
-        );
-    }
-
-    #[test]
-    fn a_whole_cap_written_with_a_fraction_part_is_accepted() {
-        let doc = json!({"base": "m", "cap": 60.0, "check": [], "environment": {"run": []}});
-        assert_eq!(parse_baseline(&[doc]).map(|f| f.cap), Ok(60));
-        let bad = json!({"base": "m", "cap": 1.5, "check": [], "environment": {"run": []}});
-        assert_eq!(problems(&bad), [".cap: must be an integer of at least 1"]);
-    }
-
-    #[test]
-    fn the_documents_of_a_file_are_counted() {
-        assert_eq!(
-            parse_baseline(&[]),
-            Err(vec![Problem::new(
-                ".",
-                "must hold exactly one JSON document, found 0"
-            )])
-        );
-        assert_eq!(
-            parse_baseline(&[json!({}), json!({})]),
-            Err(vec![Problem::new(
-                ".",
-                "must hold exactly one JSON document, found 2"
-            )])
-        );
-        assert_eq!(
-            parse_baseline(&[json!([1])]),
-            Err(vec![Problem::new(".", "must be a JSON object")])
         );
     }
 
@@ -307,7 +286,7 @@ mod tests {
                 base,
                 cap,
                 check,
-                environment: json!({ "run": run }),
+                environment: environment(&run),
             })
     }
 
@@ -316,6 +295,14 @@ mod tests {
             failure_persistence: None,
             ..ProptestConfig::default()
         })]
+
+        // TOML tells floats from integers: a whole float is not a cap either.
+        #[test]
+        fn a_float_is_never_a_cap(x in proptest::num::f64::NORMAL | proptest::num::f64::ZERO) {
+            let mut doc = table("base = \"m\"\ncheck = []\n[environment]\nrun = []\n");
+            doc.insert("cap".to_owned(), Value::Float(x));
+            prop_assert_eq!(problems(&doc), [".cap: must be an integer of at least 1"]);
+        }
 
         #[test]
         fn the_verdict_follows_the_merge_base_not_the_tip(
@@ -364,21 +351,20 @@ mod tests {
         #[test]
         fn a_setup_and_its_own_file_read_as_the_same_flow(
             base in "[a-z]{1,6}",
-            cap in 1_u64..1000,
+            cap in 1_i64..1000,
             check in proptest::collection::vec("[a-z ]{1,4}", 0..3),
             run in proptest::collection::vec("[a-z]{1,4}", 0..3),
-            fix_rounds in 0_u64..9,
+            fix_rounds in 0_i64..9,
         ) {
-            let mut value: Value = serde_json::from_str(include_str!("../../tests/fixtures/setup-valid.json"))
-                .map_err(|why| TestCaseError::fail(why.to_string()))?;
-            value["base"] = json!(base);
-            value["cap"] = json!(cap);
-            value["check"] = json!(check);
-            value["environment"] = json!({ "run": run });
-            value["fix_rounds"] = json!(fix_rounds);
-            let setup = parse_setup(std::slice::from_ref(&value))
+            let mut doc = table(include_str!("../../tests/fixtures/setup-valid.toml"));
+            doc.insert("base".to_owned(), Value::String(base));
+            doc.insert("cap".to_owned(), Value::Integer(cap));
+            doc.insert("check".to_owned(), strings(&check));
+            doc.insert("environment".to_owned(), environment(&run));
+            doc.insert("fix_rounds".to_owned(), Value::Integer(fix_rounds));
+            let setup = parse_setup(&doc)
                 .map_err(|_why| TestCaseError::fail("the changed fixture parses"))?;
-            prop_assert_eq!(Some(Flow::of(&setup)), parse_baseline(&[value]).ok());
+            prop_assert_eq!(Some(Flow::of(&setup)), parse_baseline(&doc).ok());
         }
 
         #[test]
