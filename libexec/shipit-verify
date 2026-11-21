@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# shipit verify [commit]: say whether a check receipt exists for the content of
+# a commit. With no argument: HEAD, and the working tree must be clean. Exit 0
+# valid receipt, 1 no valid receipt or uncommitted changes, 2 usage or setup
+# error. Writes and creates nothing.
+
+# shellcheck source=../lib/common.sh
+source "$SHIPIT_ROOT/lib/common.sh"
+# shellcheck source=../lib/setup.sh
+source "$SHIPIT_ROOT/lib/setup.sh"
+# shellcheck source=../lib/store.sh
+source "$SHIPIT_ROOT/lib/store.sh"
+
+readonly USAGE='usage: shipit verify [commit]'
+
+# read_receipt <path>: print the receipt as compact JSON, or null when the file
+# is missing, unreadable, empty, not JSON, or holds more than one value.
+read_receipt() {
+  local out
+  if [[ -f $1 && -r $1 ]] &&
+    out=$(jq -c -s 'if length == 1 then .[0] else null end' "$1" 2>/dev/null); then
+    printf '%s\n' "$out"
+  else
+    printf 'null\n'
+  fi
+}
+
+main() {
+  local commit=
+  case $# in
+    0) ;;
+    1) commit=$1 ;;
+    *) die 2 "too many arguments; $USAGE" ;;
+  esac
+
+  local top
+  top=$(repo_top)
+  cd "$top"
+  load_setup >/dev/null
+
+  local target=HEAD
+  if [[ -n $commit ]]; then
+    target=$commit
+  fi
+  git rev-parse --verify --quiet --end-of-options "$target^{commit}" >/dev/null ||
+    die 2 "'$target' is not a commit; give a branch, tag or commit"
+
+  if [[ -z $commit ]]; then
+    local dirty
+    dirty=$(git status --porcelain --untracked-files=normal)
+    [[ -z $dirty ]] ||
+      die 1 "uncommitted changes: commit first, a receipt is per commit content"
+  fi
+
+  local tree receipt_path receipt verdict
+  tree=$(git rev-parse --verify "$target^{tree}")
+  receipt_path=$(store_path "receipts/check/$tree.json")
+  receipt=$(read_receipt "$receipt_path")
+  # shellcheck disable=SC2016 # $tree is a jq variable, bound by --arg
+  verdict=$(printf '%s\n' "$receipt" |
+    jq_lib -c --arg tree "$tree" 'include "receipt"; receipt_valid($tree)')
+  if [[ $(printf '%s\n' "$verdict" | jq -r '.ok') == true ]]; then
+    printf 'valid receipt for %s\n' "$(git rev-parse --short "$tree")"
+  else
+    die 1 "$(printf '%s\n' "$verdict" | jq -r '.reason')"
+  fi
+}
+
+main "$@"
