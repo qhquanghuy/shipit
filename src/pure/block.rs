@@ -133,7 +133,7 @@ mod tests {
         );
         assert_eq!(
             toml_block("## Slices\n<!--\n```toml\nx = 1\n```\n-->\n", HEADING),
-            Err("an HTML comment opens at line 2, which hides text from the reader".to_owned())
+            Err("raw HTML opens at line 2, which hides text from the reader".to_owned())
         );
     }
 
@@ -142,7 +142,7 @@ mod tests {
         let hidden = "# Roadmap\n<!--\n## Slices\n```toml\ngoal = \"evil\"\n```\n-->\n## Slices \n```toml\ngoal = \"real\"\n```\n";
         assert_eq!(
             toml_block(hidden, HEADING),
-            Err("an HTML comment opens at line 2, which hides text from the reader".to_owned())
+            Err("raw HTML opens at line 2, which hides text from the reader".to_owned())
         );
         let inside_a_fence = "## Slices\n```toml\nnote = \"<!--\"\n```\n";
         assert_eq!(

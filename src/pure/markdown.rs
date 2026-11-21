@@ -1,4 +1,4 @@
-use crate::pure::messages::{FENCE_UNCLOSED, HEADING_TWICE, HTML_COMMENT, say};
+use crate::pure::messages::{FENCE_UNCLOSED, HEADING_TWICE, HTML, say};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Kind<'a> {
@@ -44,6 +44,15 @@ fn closes(line: &str, fence: &Fence) -> bool {
     })
 }
 
+fn raw_html(line: &str) -> bool {
+    let opens = line
+        .trim_start()
+        .strip_prefix('<')
+        .and_then(|rest| rest.chars().next())
+        .is_some_and(|next| next.is_ascii_alphabetic() || matches!(next, '/' | '!' | '?'));
+    opens || line.contains("<!--")
+}
+
 // A fence that never closes would swallow the rest of the file: that is an error, not a guess.
 pub(crate) fn lines(text: &str) -> Result<Vec<Line<'_>>, String> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
@@ -63,9 +72,9 @@ pub(crate) fn lines(text: &str) -> Result<Vec<Line<'_>>, String> {
         } else if let Some((fence, info)) = opening(body) {
             open = Some((fence, index + 1));
             Kind::Open { info }
-        } else if body.contains("<!--") {
-            // Anywhere in the file, so no heading or block can be hidden from the rendered page.
-            return Err(say(HTML_COMMENT, &[("line", &(index + 1))]));
+        } else if raw_html(body) {
+            // Every raw HTML block starts so, and the rendered page shows none of it: anywhere in the file.
+            return Err(say(HTML, &[("line", &(index + 1))]));
         } else {
             Kind::Prose
         };
@@ -224,13 +233,60 @@ mod tests {
             prop_assert_eq!(
                 lines(&text).map(|found| found.len()),
                 Err(format!(
-                    "an HTML comment opens at line {}, which hides text from the reader",
+                    "raw HTML opens at line {}, which hides text from the reader",
                     before.len() + 1
                 ))
             );
             let fenced = format!("```\n{comment}\n```\n");
             prop_assert!(lines(&fenced).is_ok());
         }
+
+        // Every CommonMark HTML block starts with `<` and one of these, so none is let through.
+        #[test]
+        fn a_line_that_starts_like_raw_html_is_refused_and_a_less_than_sign_elsewhere_is_not(
+            before in proptest::collection::vec("[a-z ]{0,8}", 0..4),
+            indent in 0_usize..8,
+            next in prop::sample::select(vec!['a', 'Z', 'd', '/', '!', '?']),
+            tail in "[a-z =\"]{0,8}",
+            spaced in "[a-z][a-z ]{0,3}",
+            digit in 0_u8..10,
+        ) {
+            let opener = format!("{}<{next}{tail}", " ".repeat(indent));
+            let mut text: String = before.iter().flat_map(|line| [line.as_str(), "\n"]).collect();
+            text.extend([opener.as_str(), "\n"]);
+            prop_assert_eq!(
+                lines(&text).map(|found| found.len()),
+                Err(format!(
+                    "raw HTML opens at line {}, which hides text from the reader",
+                    before.len() + 1
+                ))
+            );
+            let allowed = format!(
+                "{spaced} < {spaced}\n<{digit}\n< x\n<\n{spaced}<b\na <b> c\n```\n{opener}\n```\n"
+            );
+            prop_assert!(lines(&allowed).is_ok());
+        }
+    }
+
+    #[test]
+    fn the_attacks_that_hide_text_without_a_comment_are_refused() {
+        for (hidden, line) in [
+            (
+                "<div title=\"\n## Slices\n```toml\ngoal = \"evil\"\n```\n\">\n",
+                1,
+            ),
+            ("x\n<![CDATA[\n## Slices\n]]>\n", 2),
+            ("x\ny\n<?hide\n## Slices\n?>\n", 3),
+            ("## Slices\n</div>\n", 2),
+        ] {
+            assert_eq!(
+                lines(hidden).map(|found| found.len()),
+                Err(format!(
+                    "raw HTML opens at line {line}, which hides text from the reader"
+                ))
+            );
+        }
+        assert!(lines("a < b and c<d\n```html\n<div>\n```\n").is_ok());
     }
 
     #[test]

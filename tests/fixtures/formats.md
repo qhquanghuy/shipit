@@ -37,7 +37,7 @@ the section has no block, there is no block. These are errors, never guesses, in
 | `a fence opened at line <line> is never closed` | a fence anywhere in the file has no closing line |
 | `"<heading>" appears twice` | the heading is there twice outside a fence |
 | `more than one toml block under "<heading>"` | the section has two `toml` fences |
-| `an HTML comment opens at line <line>, which hides text from the reader` | a line outside a fence, anywhere in the file, holds `<!--` |
+| `raw HTML opens at line <line>, which hides text from the reader` | a line outside a fence, anywhere in the file, starts (after spaces) with `<` and a letter, `/`, `!` or `?`, or holds `<!--` |
 
 TOML errors give line numbers that count from the first line of the block, not of the file.
 

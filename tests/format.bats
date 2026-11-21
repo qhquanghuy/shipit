@@ -72,7 +72,7 @@ DW3: no slice' ]
   printf '<!--\n## Slices\n```toml\ngoal = "x"\n```\n-->\n' >comment.md
   run --separate-stderr "$SHIPIT_BIN" format roadmap comment.md
   [ "$status" -eq 2 ]
-  [ "$stderr" = 'shipit: comment.md: an HTML comment opens at line 1, which hides text from the reader' ]
+  [ "$stderr" = 'shipit: comment.md: raw HTML opens at line 1, which hides text from the reader' ]
 
   run --separate-stderr "$SHIPIT_BIN" format roadmap missing.md
   [ "$status" -eq 2 ]

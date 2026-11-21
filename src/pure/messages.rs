@@ -18,7 +18,7 @@ messages! {
     FENCE_UNCLOSED = "a fence opened at line <line> is never closed";
     HEADING_TWICE = "\"<heading>\" appears twice";
     BLOCK_TWICE = "more than one toml block under \"<heading>\"";
-    HTML_COMMENT = "an HTML comment opens at line <line>, which hides text from the reader";
+    HTML = "raw HTML opens at line <line>, which hides text from the reader";
     NO_BLOCK = "<file> has no toml block under \"<heading>\"";
     FILE_PROBLEM = "<file>: <why>";
     NOT_TOML = "<file> is not valid TOML: <why>";

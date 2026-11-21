@@ -290,10 +290,7 @@ mod tests {
         let text = "<!--\n## Done-when\n1. a\n2. b\n-->\n## Done-when \n1. a\n2. b\n3. c\n";
         assert_eq!(
             goal_items(text),
-            Err(
-                "goal: an HTML comment opens at line 1, which hides text from the reader"
-                    .to_owned()
-            )
+            Err("goal: raw HTML opens at line 1, which hides text from the reader".to_owned())
         );
     }
 
