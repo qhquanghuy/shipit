@@ -10,7 +10,7 @@ flow, the roles and the rules; packs decide how each phase is carried out.
 goal → roadmap → build plan → make → check → informed review + second opinion + test drive → recheck → ship
 ```
 
-Status: early. Two commands exist, `shipit check` and `shipit verify`.
+Status: early. Two commands exist, `shipit check` and `shipit verify`. The command list is in [docs/commands.md](docs/commands.md).
 
 ## Run it
 
@@ -91,12 +91,7 @@ and no file system monitor (`core.fsmonitor=false`); the counts and lists of cha
 (a `.gitmodules` entry with `ignore = all` hides nothing). What git itself does not see is outside the check: ignored files,
 `.git/info/exclude`, clean filters and `core.autocrlf` (git compares the converted content, not the bytes on disk).
 
-Exit codes:
-
-| Command | 0 | 1 | 2 | 3 |
-|---|---|---|---|---|
-| `shipit check [--base <name>]` | receipt written (marked `setup_change` when the slice only changes the setup file) | a check failed, a check changed the work, the change is over the cap, or the slice changes the checks together with other files | usage or setup error (bad arguments, a base that is not a branch name, missing or invalid setup file, base branch not found, no shared history with it, a base that is the branch itself, sparse checkout, git failed, the receipt could not be written) | uncommitted changes, or a tracked file hidden from git |
-| `shipit verify [commit]` | valid receipt | no valid receipt, or (no argument only) uncommitted changes or a tracked file hidden from git | usage error (bad arguments, not a commit) | not used |
+The exit codes of each command are in [docs/commands.md](docs/commands.md#exit-codes).
 
 ## Develop
 

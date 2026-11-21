@@ -76,6 +76,10 @@ The human reviewer reads the change, so the code must be simple to read:
 A **reader** (a low-rank model) explains the change without seeing the build plan. The informed
 reviewer compares that explanation with the goal. It is a signal, not a gate.
 
+## Keep a file only if a tool reads it or a test checks it against the code
+
+Keep a file only if a tool reads it or a test checks it against the code. Prose that restates code drifts and misleads agents.
+
 ## Talking to the owner
 
 Everything the owner reads must be simple and easy to understand: plain words, short sentences,
@@ -106,14 +110,8 @@ The decision-point template enforces this form: label, What, Context, Recommenda
 One command, a Rust program, kept in this repo. It runs git as a process and needs only git, and
 bash to run the check commands, at run time. Hooks and CI call the same tool.
 
-| Command | What it does |
-|---|---|
-| `shipit init` | Writes a starting setup file in a project, prints the CI job to add, and installs the `pre-push` hook in this clone. |
-| `shipit check` | Refuses a dirty tree. Measures the size against the cap. Runs the setup's check commands in order. On a full pass, writes a check receipt for this exact version of the work. |
-| `shipit verify [commit]` | Says whether a valid check receipt exists for the current version, or for the given commit. Fast: it only reads files and asks git. |
-| `shipit receipt` | Records a review or test-drive receipt: who, which model and tier, which exact input, the result. |
-| `shipit status` | Computes each slice's state from the roadmap, the receipts and the logbook, and names the next step. It can also print a short summary of a slice (receipts and known issues) for the pull request. |
-| `shipit log` | Appends one entry to a slice's logbook. |
+The current command reference, with the exit codes and the commands that run without a setup, is in
+[commands.md](commands.md).
 
 - **A receipt is keyed by the exact input of what it records.**
   - A check and a test drive judge the whole work, so their key is the git tree hash. An amended
