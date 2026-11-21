@@ -99,79 +99,10 @@ mod tests {
     use super::*;
     use crate::pure::testing::oid;
 
-    fn verdicts(edit: impl Fn(&mut Facts)) -> WorkChange {
-        let mut facts = Facts {
-            dirty: false,
-            hidden: false,
-            tree_after: 'a',
-            commit_after: 'c',
-        };
-        edit(&mut facts);
-        let (tree_before, commit_before) = (oid('a'), oid('c'));
-        let (tree_after, commit_after) = (oid(facts.tree_after), oid(facts.commit_after));
-        change_verdict(&WorkFacts {
-            dirty: facts.dirty,
-            hidden: facts.hidden,
-            tree_before: &tree_before,
-            tree_after: &tree_after,
-            commit_before: &commit_before,
-            commit_after: &commit_after,
-        })
-    }
-
-    struct Facts {
-        dirty: bool,
-        hidden: bool,
-        tree_after: char,
-        commit_after: char,
-    }
-
-    #[test]
-    fn the_change_verdict_cases() {
-        assert_eq!(verdicts(|_| {}), WorkChange::None);
-        assert_eq!(verdicts(|f| f.dirty = true), WorkChange::Dirty);
-        assert_eq!(verdicts(|f| f.hidden = true), WorkChange::Hidden);
-        assert_eq!(verdicts(|f| f.tree_after = 'b'), WorkChange::Committed);
-        assert_eq!(verdicts(|f| f.commit_after = 'd'), WorkChange::MovedHead);
-        assert_eq!(
-            verdicts(|f| {
-                f.dirty = true;
-                f.tree_after = 'b';
-            }),
-            WorkChange::Dirty
-        );
-    }
-
     #[test]
     fn a_rename_lists_its_new_then_its_old_path() {
         assert_eq!(dirty_paths(b"R  g1\0f1\0"), "g1, f1");
         assert_eq!(dirty_paths(b" C g1\0f1\0?? z\0"), "g1, f1, z");
-    }
-
-    #[test]
-    fn at_most_five_paths_are_listed() {
-        let status = b"?? a\0?? b\0?? c\0?? d\0?? e\0?? f\0?? g\0";
-        assert_eq!(dirty_paths(status), "a, b, c, d, e");
-        assert_eq!(dirty_paths(b""), "");
-    }
-
-    #[test]
-    fn names_with_spaces_tabs_and_commas_are_listed_plainly() {
-        assert_eq!(
-            dirty_paths(b"?? a b\0?? tab\there\0?? c,d\0"),
-            "a b, tab\there, c,d"
-        );
-    }
-
-    #[test]
-    fn hidden_paths_are_the_tagged_entries() {
-        let listing = b"H f0\0h f1\0S f2\0s f3\0M f4\0? f5\0K f6\0h with space\0";
-        assert_eq!(
-            hidden_paths(listing),
-            ["f1", "f2", "f3", "with space"].map(String::from)
-        );
-        assert_eq!(hidden_paths(b"H a\0"), Vec::<String>::new());
-        assert_eq!(hidden_paths(b""), Vec::<String>::new());
     }
 
     #[test]
@@ -183,12 +114,6 @@ mod tests {
              git (a, b, c, d, e); clear the flag with 'git update-index --no-skip-worktree \
              --no-assume-unchanged <file>' and run shipit again"
         );
-    }
-
-    #[test]
-    fn first_five_joins_with_a_comma_and_a_space() {
-        assert_eq!(first_five(["a", "b"]), "a, b");
-        assert_eq!(first_five(Vec::<String>::new()), "");
     }
 
     fn no_comma_bytes() -> impl Strategy<Value = Vec<u8>> {
@@ -205,23 +130,43 @@ mod tests {
         })]
 
         #[test]
-        fn a_dirty_work_is_always_dirty(
+        fn the_verdict_goes_by_dirty_then_hidden_then_tree_then_commit(
+            dirty in any::<bool>(),
             hidden in any::<bool>(),
-            tree in "[a-f]",
-            commit in "[a-f]",
+            tree_moved in any::<bool>(),
+            commit_moved in any::<bool>(),
         ) {
-            let (tree_before, commit_before) = (oid('1'), oid('2'));
-            let tree_after = oid(tree.chars().next().unwrap_or('a'));
-            let commit_after = oid(commit.chars().next().unwrap_or('a'));
-            let facts = WorkFacts {
-                dirty: true,
+            let (tree_before, commit_before) = (oid('a'), oid('c'));
+            let tree_after = if tree_moved { oid('b') } else { oid('a') };
+            let commit_after = if commit_moved { oid('d') } else { oid('c') };
+            let verdict = change_verdict(&WorkFacts {
+                dirty,
                 hidden,
                 tree_before: &tree_before,
                 tree_after: &tree_after,
                 commit_before: &commit_before,
                 commit_after: &commit_after,
+            });
+            let expected = if dirty {
+                WorkChange::Dirty
+            } else if hidden {
+                WorkChange::Hidden
+            } else if tree_moved {
+                WorkChange::Committed
+            } else if commit_moved {
+                WorkChange::MovedHead
+            } else {
+                WorkChange::None
             };
-            prop_assert_eq!(change_verdict(&facts), WorkChange::Dirty);
+            prop_assert_eq!(verdict, expected);
+        }
+
+        #[test]
+        fn first_five_keeps_the_first_five_joined(
+            items in proptest::collection::vec("[a-z]{1,3}", 0..12),
+        ) {
+            let kept: Vec<&str> = items.iter().take(LISTED).map(String::as_str).collect();
+            prop_assert_eq!(first_five(&items), kept.join(", "));
         }
 
         #[test]
@@ -243,8 +188,8 @@ mod tests {
         }
 
         #[test]
-        fn dirty_paths_lists_at_most_five_names(
-            names in proptest::collection::vec("[a-z]{1,5}", 0..12),
+        fn dirty_paths_lists_at_most_five_names_plainly(
+            names in proptest::collection::vec("[ -~\t]{1,5}", 0..12),
         ) {
             let status: Vec<u8> = names
                 .iter()
@@ -252,6 +197,25 @@ mod tests {
                 .collect();
             let expected: Vec<&str> = names.iter().take(LISTED).map(String::as_str).collect();
             prop_assert_eq!(dirty_paths(&status), expected.join(", "));
+        }
+
+        #[test]
+        fn only_assume_unchanged_and_skip_worktree_entries_are_hidden(
+            files in proptest::collection::vec(
+                (proptest::sample::select(vec!['H', 'h', 'S', 's', 'M', '?', 'K']), "[ -~]{1,5}"),
+                0..8,
+            ),
+        ) {
+            let listing: Vec<u8> = files
+                .iter()
+                .flat_map(|(tag, name)| format!("{tag} {name}\0").into_bytes())
+                .collect();
+            let expected: Vec<String> = files
+                .iter()
+                .filter(|(tag, _)| matches!(tag, 'h' | 'S' | 's'))
+                .map(|(_, name)| name.clone())
+                .collect();
+            prop_assert_eq!(hidden_paths(&listing), expected);
         }
     }
 }

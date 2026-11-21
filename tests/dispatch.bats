@@ -15,15 +15,6 @@ load helpers
   [[ $output == *"shipit help"* ]]
 }
 
-@test "command names with a slash or .. exit 2" {
-  local name
-  for name in ../bin/shipit "a/b" ".." "../x" "/etc/passwd" "UPPER" "1abc" "-x" ""; do
-    run_shipit "$name"
-    [ "$status" -eq 2 ] || { echo "name '$name' gave status $status"; return 1; }
-    [[ $output == *"shipit help"* ]]
-  done
-}
-
 @test "help and no arguments list check and verify, not the hidden setup" {
   run_shipit help
   [ "$status" -eq 0 ]

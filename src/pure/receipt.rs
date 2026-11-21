@@ -138,12 +138,30 @@ mod tests {
             prop_assume!(a != b);
             let (a, b) = (Oid::parse(&a).expect("hex"), Oid::parse(&b).expect("hex"));
             let docs = [receipt_for(a.clone())];
-            prop_assert!(receipt_validity(Some(&docs), &a).is_some());
-            prop_assert!(receipt_validity(Some(&docs), &b).is_none());
+            prop_assert_eq!(receipt_validity(Some(&docs), &a), Some(Validity::Plain));
+            prop_assert_eq!(receipt_validity(Some(&docs), &b), None);
         }
 
         #[test]
-        fn an_oid_is_exactly_40_or_64_hex_digits(text in "[0-9a-fA-Fg ]{0,70}") {
+        fn a_kind_other_than_check_is_invalid(kind in "[a-z]{0,8}") {
+            prop_assume!(kind != "check");
+            let key = "a".repeat(40);
+            let text = format!("{{\"kind\":\"{kind}\",\"version\":1,\"key\":\"{key}\"}}");
+            prop_assert!(!valid(&parsed(&text), &oid('a')));
+        }
+
+        #[test]
+        fn a_version_other_than_1_is_invalid(version in any::<i64>()) {
+            prop_assume!(version != 1);
+            let key = "a".repeat(40);
+            let text = format!("{{\"kind\":\"check\",\"version\":{version},\"key\":\"{key}\"}}");
+            prop_assert!(!valid(&parsed(&text), &oid('a')));
+        }
+
+        #[test]
+        fn an_oid_is_exactly_40_or_64_hex_digits(
+            text in prop_oneof!["[0-9a-fA-Fg ]{0,70}", "\\PC{0,80}"],
+        ) {
             let expected = matches!(text.len(), 40 | 64)
                 && text.bytes().all(|byte| byte.is_ascii_hexdigit());
             prop_assert_eq!(Oid::parse(&text).is_some(), expected);
@@ -156,12 +174,6 @@ mod tests {
             prop_assert_eq!(Oid::parse(&text).map(|oid| oid.to_string()), Some(text));
         }
 
-        #[test]
-        fn any_other_text_is_not_an_oid(text in "\\PC{0,80}") {
-            prop_assume!(!(matches!(text.len(), 40 | 64)
-                && text.bytes().all(|byte| byte.is_ascii_hexdigit())));
-            prop_assert_eq!(Oid::parse(&text), None);
-        }
     }
 
     fn base() -> BaseUsed {
@@ -196,16 +208,6 @@ mod tests {
     }
 
     #[test]
-    fn a_receipt_is_valid_for_its_own_tree() {
-        let docs = [receipt_for(oid('a'))];
-        assert_eq!(
-            receipt_validity(Some(&docs), &oid('a')),
-            Some(Validity::Plain)
-        );
-        assert!(!valid(&docs, &oid('c')));
-    }
-
-    #[test]
     fn no_file_is_no_receipt() {
         assert_eq!(receipt_validity(None, &oid('a')), None);
     }
@@ -219,8 +221,6 @@ mod tests {
             "\"text\"".to_owned(),
             "42".to_owned(),
             String::new(),
-            format!("{{\"kind\":\"review\",\"version\":1,\"key\":\"{key}\"}}"),
-            format!("{{\"kind\":\"check\",\"version\":2,\"key\":\"{key}\"}}"),
             format!("{{\"kind\":\"check\",\"version\":\"1\",\"key\":\"{key}\"}}"),
             "{\"kind\":\"check\",\"version\":1}".to_owned(),
             format!("{{\"version\":1,\"key\":\"{key}\"}}"),

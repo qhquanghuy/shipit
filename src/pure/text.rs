@@ -8,12 +8,27 @@ pub(crate) fn comma_list<T: ToString>(items: impl IntoIterator<Item = T>) -> Str
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
 
     #[test]
-    fn items_are_joined_with_a_comma_and_a_space() {
+    fn no_items_make_the_empty_text() {
         assert_eq!(comma_list(Vec::<String>::new()), "");
-        assert_eq!(comma_list(["a"]), "a");
-        assert_eq!(comma_list(["a", "b", "c"]), "a, b, c");
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            failure_persistence: None,
+            ..ProptestConfig::default()
+        })]
+
+        #[test]
+        fn items_are_joined_with_a_comma_and_a_space(
+            items in proptest::collection::vec("[a-z ]{1,4}", 1..6),
+        ) {
+            let text = comma_list(&items);
+            prop_assert_eq!(text.split(", ").map(str::to_owned).collect::<Vec<_>>(), items);
+        }
     }
 }

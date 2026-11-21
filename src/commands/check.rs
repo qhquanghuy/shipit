@@ -382,15 +382,6 @@ mod tests {
     }
 
     #[test]
-    fn base_takes_the_next_argument_as_a_branch_name() {
-        assert_eq!(parse_args(&os(&["--base", "main"])), Ok(Some(name("main"))));
-        assert_eq!(
-            parse_args(&os(&["--base", "feature/x"])),
-            Ok(Some(name("feature/x")))
-        );
-    }
-
-    #[test]
     fn a_base_that_is_not_a_branch_name_is_refused_whatever_git_would_make_of_it() {
         for text in ["-x", "--base", "HEAD~1", "HEAD", "v1^", "a..b", "a b"] {
             assert_eq!(

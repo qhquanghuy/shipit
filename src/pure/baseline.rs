@@ -183,6 +183,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::pure::setup::parse_setup;
 
     fn flow() -> Flow {
         Flow {
@@ -206,29 +207,6 @@ mod tests {
 
     fn names(changes: &[FlowField]) -> Vec<String> {
         changes.iter().map(ToString::to_string).collect()
-    }
-
-    #[test]
-    fn setup_changes_names_the_fields_in_order() {
-        let same = flow();
-        assert_eq!(names(&setup_changes(&same, &same)), Vec::<String>::new());
-        let cap = Flow { cap: 6, ..flow() };
-        assert_eq!(names(&setup_changes(&same, &cap)), ["cap"]);
-        let reordered = Flow {
-            check: vec!["b".to_owned(), "a".to_owned()],
-            ..flow()
-        };
-        assert_eq!(names(&setup_changes(&same, &reordered)), ["check"]);
-        let several = Flow {
-            base: "x".to_owned(),
-            check: vec!["a".to_owned()],
-            environment: json!({"run": ["true"]}),
-            ..flow()
-        };
-        assert_eq!(
-            names(&setup_changes(&same, &several)),
-            ["base", "check", "environment"]
-        );
     }
 
     #[test]
@@ -381,6 +359,26 @@ mod tests {
             } else {
                 prop_assert_eq!(verdict, SetupVerdict::Moved(expected));
             }
+        }
+
+        #[test]
+        fn a_setup_and_its_own_file_read_as_the_same_flow(
+            base in "[a-z]{1,6}",
+            cap in 1_u64..1000,
+            check in proptest::collection::vec("[a-z ]{1,4}", 0..3),
+            run in proptest::collection::vec("[a-z]{1,4}", 0..3),
+            fix_rounds in 0_u64..9,
+        ) {
+            let mut value: Value = serde_json::from_str(include_str!("../../tests/fixtures/setup-valid.json"))
+                .map_err(|why| TestCaseError::fail(why.to_string()))?;
+            value["base"] = json!(base);
+            value["cap"] = json!(cap);
+            value["check"] = json!(check);
+            value["environment"] = json!({ "run": run });
+            value["fix_rounds"] = json!(fix_rounds);
+            let setup = parse_setup(std::slice::from_ref(&value))
+                .map_err(|_why| TestCaseError::fail("the changed fixture parses"))?;
+            prop_assert_eq!(Some(Flow::of(&setup)), parse_baseline(&[value]).ok());
         }
 
         #[test]

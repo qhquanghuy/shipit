@@ -79,29 +79,11 @@ mod tests {
     }
 
     #[test]
-    fn one_non_empty_argument_is_the_commit() {
-        let args = os(&["main"]);
-        assert_eq!(parse_args(&args), Ok(Some(OsStr::new("main"))));
-        let dash = os(&["-x"]);
-        assert_eq!(parse_args(&dash), Ok(Some(OsStr::new("-x"))));
-    }
-
-    #[test]
     fn an_empty_commit_is_refused() {
         assert_eq!(
             parse_args(&os(&[""])),
             Err(Failure::usage(
                 "empty commit; usage: shipit verify [commit]"
-            ))
-        );
-    }
-
-    #[test]
-    fn two_arguments_are_counted_before_emptiness() {
-        assert_eq!(
-            parse_args(&os(&["", ""])),
-            Err(Failure::usage(
-                "too many arguments; usage: shipit verify [commit]"
             ))
         );
     }

@@ -97,18 +97,6 @@ mod tests {
     }
 
     #[test]
-    fn a_listed_name_runs_with_the_rest_of_the_arguments() {
-        let args = os(&["check", "--base", "main"]);
-        assert_eq!(
-            dispatch(&args, &["check", "verify"]),
-            Ok(Invocation::Run {
-                name: "check",
-                args: args.get(1..).unwrap_or_default(),
-            })
-        );
-    }
-
-    #[test]
     fn an_unlisted_name_is_unknown() {
         let args = os(&["nosuchcommand"]);
         assert_eq!(
@@ -117,28 +105,6 @@ mod tests {
                 "unknown command 'nosuchcommand'; run 'shipit help' to list the commands"
             ))
         );
-    }
-
-    #[test]
-    fn bad_names_are_refused_before_the_list_is_read() {
-        for name in [
-            "../bin/shipit",
-            "a/b",
-            "..",
-            "../x",
-            "/etc/passwd",
-            "UPPER",
-            "1abc",
-            "-x",
-            "",
-        ] {
-            let args = os(&[name]);
-            assert_eq!(
-                dispatch(&args, &[name]),
-                Err(not_a_name(name)),
-                "name '{name}'"
-            );
-        }
     }
 
     #[cfg(unix)]
@@ -180,7 +146,11 @@ mod tests {
 
         #[test]
         fn a_text_that_is_not_a_command_name_is_refused(
-            name in prop_oneof![any::<String>(), "[a-z][a-z-]{0,6}[^a-z-][a-z-]{0,3}"],
+            name in prop_oneof![
+                any::<String>(),
+                "[a-z][a-z-]{0,6}[^a-z-][a-z-]{0,3}",
+                "[A-Z0-9/.-][a-z/.-]{0,6}",
+            ],
         ) {
             prop_assume!(!SPECIAL.contains(&name.as_str()));
             prop_assume!(
@@ -192,12 +162,16 @@ mod tests {
         }
 
         #[test]
-        fn a_listed_name_runs(name in "[a-z][a-z-]{0,12}") {
+        fn a_listed_name_runs_with_the_rest_of_the_arguments(
+            name in "[a-z][a-z-]{0,12}",
+            rest in proptest::collection::vec(".{0,6}", 0..4),
+        ) {
             prop_assume!(!SPECIAL.contains(&name.as_str()));
-            let args = vec![OsString::from(&name)];
+            let mut args = vec![OsString::from(&name)];
+            args.extend(rest.iter().map(OsString::from));
             prop_assert_eq!(
                 dispatch(&args, &[name.as_str()]),
-                Ok(Invocation::Run { name: &name, args: &[] })
+                Ok(Invocation::Run { name: &name, args: args.get(1..).unwrap_or_default() })
             );
         }
     }

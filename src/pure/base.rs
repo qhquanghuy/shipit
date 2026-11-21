@@ -128,89 +128,33 @@ mod tests {
     use super::*;
     use crate::pure::testing::{name, oid};
 
+    fn config() -> ProptestConfig {
+        ProptestConfig {
+            failure_persistence: None,
+            ..ProptestConfig::default()
+        }
+    }
+
+    // Names git accepts, with the odd ones (`@`, `@x`, a dot inside, non-ASCII) in the alphabet.
+    fn valid_name() -> impl Strategy<Value = String> {
+        let part = "[a-zA-Z0-9é@_-]{1,4}(\\.[0-9]{1,2})?";
+        ("[a-zA-Z0-9é@_]", proptest::collection::vec(part, 0..3)).prop_map(|(first, rest)| {
+            let mut text = first;
+            text.push_str(&rest.join("/"));
+            text
+        })
+    }
+
     #[test]
-    fn the_base_ref_truth_table() {
+    fn a_base_ref_names_a_branch_never_a_tag_and_is_shown_as_git_shows_it() {
         let main = name("main");
-        let local = Some(BaseRef::Local(name("main")));
-        let origin = Some(BaseRef::Origin(name("main")));
-        assert_eq!(choose_base_ref(&main, true, true, true), local);
-        assert_eq!(choose_base_ref(&main, true, true, false), origin);
-        assert_eq!(choose_base_ref(&main, true, false, false), origin);
-        assert_eq!(choose_base_ref(&main, false, true, false), local);
-        assert_eq!(choose_base_ref(&main, false, false, false), None);
-    }
-
-    #[test]
-    fn a_base_ref_is_shown_as_git_names_it() {
-        assert_eq!(BaseRef::Local(name("main")).to_string(), "main");
-        assert_eq!(BaseRef::Origin(name("main")).to_string(), "origin/main");
-    }
-
-    #[test]
-    fn the_full_ref_names_a_branch_never_a_tag() {
-        assert_eq!(BaseRef::Local(name("main")).full(), "refs/heads/main");
+        assert_eq!(BaseRef::Local(main.clone()).full(), "refs/heads/main");
+        assert_eq!(BaseRef::Local(main.clone()).to_string(), "main");
         assert_eq!(
             BaseRef::Origin(name("a/b")).full(),
             "refs/remotes/origin/a/b"
         );
-    }
-
-    #[test]
-    fn names_git_accepts_as_branches_parse() {
-        for text in ["main", "a/b", "@", "@x", "a@b", "é", "release-1.0", "x.y/z"] {
-            assert_eq!(BranchName::parse(text), Some(name(text)), "{text}");
-        }
-    }
-
-    #[test]
-    fn revisions_and_malformed_names_are_not_branches() {
-        let bad = [
-            "",
-            "-x",
-            "HEAD",
-            "HEAD~1",
-            "HEAD^",
-            "main~2",
-            "a..b",
-            "a//b",
-            "/a",
-            "a/",
-            "a.",
-            ".a",
-            "a/.b",
-            "a.lock",
-            "a/b.lock/c",
-            "a b",
-            "a:b",
-            "a?",
-            "a*",
-            "a[",
-            "a\\b",
-            "a@{b",
-            "@{-1}",
-            "a\tb",
-            "a\u{7f}b",
-        ];
-        for text in bad {
-            assert_eq!(BranchName::parse(text), None, "{text:?}");
-        }
-    }
-
-    #[test]
-    fn the_base_verdict_cases() {
-        let main = name("main");
-        let (a, b) = (oid('a'), oid('b'));
-        assert_eq!(base_verdict(false, &main, Some("feature"), &a, &b), Ok(()));
-        assert_eq!(
-            base_verdict(false, &main, Some("main"), &a, &b),
-            Err(SelfBase::TheBranch)
-        );
-        assert_eq!(
-            base_verdict(false, &main, Some("feature"), &b, &b),
-            Err(SelfBase::TheCommit)
-        );
-        assert_eq!(base_verdict(false, &main, None, &a, &b), Ok(()));
-        assert_eq!(base_verdict(true, &main, Some("main"), &b, &b), Ok(()));
+        assert_eq!(BaseRef::Origin(main).to_string(), "origin/main");
     }
 
     #[test]
@@ -226,10 +170,58 @@ mod tests {
     }
 
     proptest! {
-        #![proptest_config(ProptestConfig {
-            failure_persistence: None,
-            ..ProptestConfig::default()
-        })]
+        #![proptest_config(config())]
+
+        #[test]
+        fn names_git_accepts_as_branches_parse(text in valid_name()) {
+            prop_assert_eq!(BranchName::parse(&text), Some(name(&text)));
+        }
+
+        #[test]
+        fn a_forbidden_character_or_sequence_is_never_a_branch(
+            before in "[a-z]{0,4}",
+            bad in proptest::sample::select(vec![
+                " ", "~", "^", ":", "?", "*", "[", "\\", "..", "@{", "\t", "\u{7f}",
+            ]),
+            after in "[a-z]{0,4}",
+        ) {
+            prop_assert_eq!(BranchName::parse(&format!("{before}{bad}{after}")), None);
+        }
+
+        #[test]
+        fn a_malformed_shape_is_never_a_branch(
+            x in "[a-z]{1,4}",
+            shape in proptest::sample::select(vec![
+                "", "HEAD", "-X", "/X", "X/", "X.", ".X", "X.lock", "X/.X", "X//X", "X/X.lock/X",
+            ]),
+        ) {
+            prop_assert_eq!(BranchName::parse(&shape.replace('X', &x)), None);
+        }
+
+        #[test]
+        fn the_ref_is_chosen_from_what_exists(
+            origin in any::<bool>(),
+            local in any::<bool>(),
+            local_has_origin in any::<bool>(),
+        ) {
+            let main = name("main");
+            let chosen = choose_base_ref(&main, origin, local, local_has_origin);
+            prop_assert_eq!(chosen.is_none(), !origin && !local);
+            if !local {
+                prop_assert_eq!(&chosen, &origin.then(|| BaseRef::Origin(main.clone())));
+            }
+            if !origin {
+                prop_assert_eq!(&chosen, &local.then(|| BaseRef::Local(main.clone())));
+            }
+            if origin && local {
+                let expected = if local_has_origin {
+                    BaseRef::Local(main)
+                } else {
+                    BaseRef::Origin(main)
+                };
+                prop_assert_eq!(chosen, Some(expected));
+            }
+        }
 
         #[test]
         fn a_trusted_base_is_always_ok(
@@ -242,6 +234,42 @@ mod tests {
             let ref_commit = if same { oid('b') } else { oid('a') };
             prop_assert_eq!(
                 base_verdict(true, &base, current.as_deref(), &ref_commit, &head),
+                Ok(())
+            );
+        }
+
+        #[test]
+        fn the_branch_being_checked_is_refused_whatever_the_commits_are(
+            base in "[a-z]{1,8}",
+            same in any::<bool>(),
+        ) {
+            let head = oid('b');
+            let ref_commit = if same { oid('b') } else { oid('a') };
+            prop_assert_eq!(
+                base_verdict(false, &name(&base), Some(&base), &ref_commit, &head),
+                Err(SelfBase::TheBranch)
+            );
+        }
+
+        #[test]
+        fn another_branch_at_the_commit_being_checked_is_refused(
+            base in "[a-z]{1,8}",
+            current in proptest::option::of("[A-Z]{1,8}"),
+        ) {
+            let head = oid('b');
+            prop_assert_eq!(
+                base_verdict(false, &name(&base), current.as_deref(), &head, &head),
+                Err(SelfBase::TheCommit)
+            );
+        }
+
+        #[test]
+        fn another_branch_at_another_commit_is_ok(
+            base in "[a-z]{1,8}",
+            current in proptest::option::of("[A-Z]{1,8}"),
+        ) {
+            prop_assert_eq!(
+                base_verdict(false, &name(&base), current.as_deref(), &oid('a'), &oid('b')),
                 Ok(())
             );
         }
