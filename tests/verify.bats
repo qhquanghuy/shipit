@@ -173,3 +173,12 @@ receipt_file() {
   [ "$status" -eq 1 ]
   [ ! -e "$(git rev-parse --path-format=absolute --git-common-dir)/shipit" ]
 }
+
+@test "an untracked file exits 1" {
+  start_repo
+  do_check
+  echo new >untracked
+  run_verify
+  [ "$status" -eq 1 ]
+  [[ $stderr == "shipit: uncommitted changes"* ]]
+}
