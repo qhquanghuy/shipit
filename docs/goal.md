@@ -58,7 +58,16 @@ Every question to the owner, and every decision point, has the same three parts:
 3. **Recommendation**: the options when there are several, each with its trade-off, and which one
    the lead recommends and why.
 
-The decision-point template enforces this form.
+**Every question stands on its own.** The owner may be working on several things at once. A
+question or decision point starts with a short label of where it belongs (project, slice, phase),
+for example `[firectl · slice A · review]`, and its context gives what the owner needs to decide
+without remembering earlier messages.
+
+**Always say what is next.** Every message to the owner ends with a short "Next" part: what
+happens next, who does it, and what the owner must do, or "nothing until …". `shipit status` names
+the next step for each slice, and every skill's outcomes say what follows.
+
+The decision-point template enforces this form: label, What, Context, Recommendation, Next.
 
 ## What gets built (version 1)
 
