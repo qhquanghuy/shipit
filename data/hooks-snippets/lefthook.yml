@@ -1,0 +1,5 @@
+pre-push:
+  commands:
+    shipit:
+      use_stdin: true
+      run: if command -v shipit >/dev/null 2>&1; then exec shipit pre-push {1} {2}; fi

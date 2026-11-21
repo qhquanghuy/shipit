@@ -7,13 +7,17 @@ use crate::commands::setup::load_setup_table;
 use crate::edge::files::read_text;
 use crate::edge::git::Git;
 use crate::edge::machine::probe;
-use crate::edge::write::{append_line, write_new};
+use crate::edge::projectfiles::{config_names, inside_project};
+use crate::edge::write::{append_block, append_line, write_new};
 use crate::pure::base::BranchName;
 use crate::pure::failure::Failure;
-use crate::pure::hooks::{HookFile, HookStep, plain_hook_plan};
+use crate::pure::hooks::{
+    ALREADY_INSTALLED, HookFacts, HookFile, HookStep, Manager, ManagerFacts, Texts, follow_up,
+    hook_plan, hooks_file, is_lefthook_local, manager,
+};
 use crate::pure::init::{
-    CI_FILE, CI_KEY, HOOK_KEY, HookMode, InitFacts, PACK_KEY, Start, choose_base, ci_job, embedded,
-    init_plan, next_lines, starting_setup, tools_line,
+    CI_FILE, CI_KEY, HOOK_KEY, HookMode, InitFacts, LEFTHOOK_KEY, PACK_KEY, PRE_COMMIT_KEY, Start,
+    choose_base, ci_job, embedded, init_plan, next_lines, starting_setup, tools_line,
 };
 use crate::pure::rules::invalid;
 use crate::pure::setup::{HEAD, SETUP_PATH, parse_setup, toml_table};
@@ -154,8 +158,26 @@ fn checked_setup(base: &BranchName) -> Result<String, Failure> {
     Ok(text)
 }
 
-fn hook_step(git: &Git) -> Result<(String, HookStep), Failure> {
-    let path = git_text(
+fn git_succeeds(git: &Git, args: &[&str]) -> bool {
+    let args: Vec<&OsStr> = args.iter().map(OsStr::new).collect();
+    git.output(&args).is_ok()
+}
+
+fn hook_facts<'a>(git: &Git, roots: &[&Path], file: &'a str) -> HookFacts<'a> {
+    let path = Path::new(file);
+    HookFacts {
+        file,
+        inside_project: inside_project(path, roots),
+        tracked: git_succeeds(git, &["ls-files", "--error-unmatch", "--", file]),
+        hook: read_text(path).map_or(HookFile::Missing, HookFile::Present),
+    }
+}
+
+// Every fact is read here, before the first file is written.
+fn plan_hook(git: &Git) -> Result<(Manager, HookStep), Failure> {
+    let common = git.common_dir()?;
+    let roots = [git.top(), common.as_path()];
+    let plain_file = git_text(
         git,
         &[
             "rev-parse",
@@ -165,39 +187,94 @@ fn hook_step(git: &Git) -> Result<(String, HookStep), Failure> {
         ],
     )
     .ok_or_else(|| Failure::usage("cannot find the pre-push hook of this repository"))?;
-    let here = Path::new(&path);
-    let inside = here.starts_with(git.top()) || here.starts_with(git.common_dir()?);
-    let hook = read_text(here).map_or(HookFile::Missing, HookFile::Present);
-    let step = plain_hook_plan(&path, inside, false, &hook, embedded_file(HOOK_KEY)?);
-    Ok((path, step))
+    let hooks_file_path = git_text(git, &["config", "--type=path", "--get", "core.hooksPath"])
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            git.top()
+                .join(hooks_file(&value))
+                .to_string_lossy()
+                .into_owned()
+        });
+    let top_files = config_names(git.top());
+    let locals: Vec<(String, HookFile)> = top_files
+        .iter()
+        .filter(|name| is_lefthook_local(name))
+        .map(|name| {
+            let hook =
+                read_text(&git.top().join(name)).map_or(HookFile::Missing, HookFile::Present);
+            (name.clone(), hook)
+        })
+        .collect();
+    let ignored: Vec<String> = ["lefthook-local.yml", ".lefthook-local.yml"]
+        .iter()
+        .filter(|name| git_succeeds(git, &["check-ignore", "--quiet", "--", name]))
+        .map(|name| (*name).to_owned())
+        .collect();
+    let found = manager(&ManagerFacts {
+        hooks_path: hooks_file_path
+            .as_deref()
+            .map(|file| hook_facts(git, &roots, file)),
+        plain: hook_facts(git, &roots, &plain_file),
+        top_files: &top_files,
+        lefthook_locals: &locals,
+        ignored: &ignored,
+    });
+    let texts = Texts {
+        hook: embedded_file(HOOK_KEY)?,
+        lefthook: embedded_file(LEFTHOOK_KEY)?,
+        pre_commit: embedded_file(PRE_COMMIT_KEY)?,
+    };
+    let step = hook_plan(&found, &texts);
+    Ok((found, step))
 }
 
-fn apply_hook(path: &str, step: &HookStep, out: &mut dyn Write) -> Result<(), Failure> {
+fn print_text(path: &str, reason: &str, text: &str, out: &mut dyn Write) {
+    if text.contains('\n') {
+        writeln!(out, "not added to {path} ({reason}); add it yourself:").ok();
+        for line in text.lines() {
+            writeln!(out, "  {line}").ok();
+        }
+    } else {
+        writeln!(
+            out,
+            "not added to {path} ({reason}); add this line yourself, before anything reads git's input: {text}"
+        )
+        .ok();
+    }
+}
+
+fn apply_hook(
+    git: &Git,
+    (found, step): &(Manager, HookStep),
+    out: &mut dyn Write,
+) -> Result<(), Failure> {
+    let executable = matches!(found, Manager::HooksPath { .. } | Manager::Plain { .. });
     match step {
         HookStep::Write { path, text } => {
             let exists = format!(
                 "a pre-push hook already exists at {path} and could not be read; init never overwrites it"
             );
-            write_new(Path::new(path), text, true, &exists)?;
+            write_new(&git.top().join(path), text, executable, &exists)?;
             writeln!(out, "wrote {path}").ok();
         }
+        HookStep::Append { path, line } if line.contains('\n') => {
+            append_block(&git.top().join(path), line)?;
+            writeln!(out, "added the pre-push entry to {path}").ok();
+        }
         HookStep::Append { path, line } => {
-            if append_line(Path::new(path), line)? {
+            if append_line(&git.top().join(path), line)? {
                 writeln!(out, "added to {path}: {line}").ok();
             } else {
-                writeln!(out, "pre-push hook: already installed").ok();
+                writeln!(out, "{ALREADY_INSTALLED}").ok();
             }
         }
-        HookStep::Print { reason, text } => {
-            writeln!(
-                out,
-                "not added to {path} ({reason}); add this line yourself, before anything reads git's input: {text}"
-            )
-            .ok();
-        }
+        HookStep::Print { path, reason, text } => print_text(path, reason, text, out),
         HookStep::Nothing(text) => {
             writeln!(out, "{text}").ok();
         }
+    }
+    for line in follow_up(found, step) {
+        writeln!(out, "{line}").ok();
     }
     Ok(())
 }
@@ -225,7 +302,7 @@ pub(crate) fn run(
         None
     };
     let hook = if steps.hook {
-        Some(hook_step(&git)?)
+        Some(plan_hook(&git)?)
     } else {
         None
     };
@@ -234,8 +311,8 @@ pub(crate) fn run(
         write_new(&setup_path, text, false, SETUP_EXISTS)?;
         writeln!(out, "wrote {SETUP_PATH} (base {base})").ok();
     }
-    if let Some((path, step)) = &hook {
-        apply_hook(path, step, out)?;
+    if let Some(planned) = &hook {
+        apply_hook(&git, planned, out)?;
     }
     // The setup is the start of an adoption; the tools and the next steps belong to it.
     if let Some((_text, base)) = &setup {

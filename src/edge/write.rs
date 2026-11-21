@@ -57,26 +57,35 @@ pub(crate) fn write_new(
     Ok(())
 }
 
-// A line is added only when no line of the file equals it; the last line is ended first.
-pub(crate) fn append_line(path: &Path, line: &str) -> Result<bool, Failure> {
-    let existing = match fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(why) if why.kind() == ErrorKind::NotFound => Vec::new(),
-        Err(_why) => return Err(cannot_write(path)),
+fn existing(path: &Path) -> Result<Vec<u8>, Failure> {
+    match fs::read(path) {
+        Ok(bytes) => Ok(bytes),
+        Err(why) if why.kind() == ErrorKind::NotFound => Ok(Vec::new()),
+        Err(_why) => Err(cannot_write(path)),
+    }
+}
+
+// Whatever the file holds is kept; the last line is ended first, so the block starts on its own.
+pub(crate) fn append_block(path: &Path, block: &str) -> Result<(), Failure> {
+    let before = existing(path)?;
+    let ended = before.is_empty() || before.ends_with(b"\n");
+    let text = if ended {
+        block.to_owned()
+    } else {
+        format!("\n{block}")
     };
-    if existing
+    append_text(path, &text)
+}
+
+// A line is added only when no line of the file equals it.
+pub(crate) fn append_line(path: &Path, line: &str) -> Result<bool, Failure> {
+    let present = existing(path)?
         .split(|byte| *byte == b'\n')
-        .any(|have| have == line.as_bytes())
-    {
+        .any(|have| have == line.as_bytes());
+    if present {
         return Ok(false);
     }
-    let ended = existing.is_empty() || existing.ends_with(b"\n");
-    let text = if ended {
-        format!("{line}\n")
-    } else {
-        format!("\n{line}\n")
-    };
-    append_text(path, &text)?;
+    append_block(path, &format!("{line}\n"))?;
     Ok(true)
 }
 

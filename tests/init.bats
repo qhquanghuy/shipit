@@ -189,14 +189,6 @@ foreign_hook() {
   [ -x "$BATS_TEST_TMPDIR"/work.*/.git/hooks/pre-push ]
 }
 
-@test "--no-hook writes the setup only" {
-  new_project
-  run "$SHIPIT_BIN" init --no-hook
-  [ "$status" -eq 0 ]
-  [ -f .config/shipit.toml ]
-  [ ! -e "$(hook_file)" ]
-}
-
 @test "two-PR adoption: the setup file alone on a branch checks and pushes" {
   new_project
   on_path
@@ -319,4 +311,170 @@ refuses() {
 
 @test "a hook that reads stdin: printed" {
   refuses stdin $'#!/bin/sh\nwhile read a b c d; do echo "$a"; done' "it uses git lfs or reads git's input, which ShipIt's line needs too"
+}
+
+# sums: a checksum of every file of the working tree except .git, one per line.
+sums() {
+  find . -path ./.git -prune -o -type f -print0 | sort -z | xargs -0 sha256sum
+}
+
+# same_except [<file>]: the working tree is as `before=$(sums)` found it, but for that file.
+same_except() {
+  local file=${1:-/nonexistent}
+  diff <(grep -vF -- "  ./$file" <<<"$before") <(grep -vF -- "  ./$file" <<<"$(sums)")
+}
+
+@test "core.hooksPath hook: the guarded line is appended once" {
+  new_project
+  mkdir hooks
+  printf '#!/bin/sh\necho hi\n' >hooks/pre-push
+  chmod +x hooks/pre-push
+  git add hooks
+  git commit -q -m "add hooks"
+  git config core.hooksPath hooks
+  before=$(sums)
+  run "$SHIPIT_BIN" init --hook-only
+  [ "$status" -eq 0 ]
+  [[ ${lines[0]} == "added to $PWD/hooks/pre-push: $GUARDED" ]]
+  [[ ${lines[1]} == "commit it: $PWD/hooks/pre-push is tracked" ]]
+  [ "$(grep -cxF "$GUARDED" hooks/pre-push)" -eq 1 ]
+  [ -x hooks/pre-push ]
+  same_except hooks/pre-push
+  run "$SHIPIT_BIN" init --hook-only
+  [[ $output == "pre-push hook: already installed" ]]
+  [ "$(grep -cxF "$GUARDED" hooks/pre-push)" -eq 1 ]
+}
+
+@test "core.hooksPath outside the project: printed, nothing written" {
+  new_project
+  mkdir "$BATS_TEST_TMPDIR/global-hooks"
+  printf '#!/bin/sh\necho hi\n' >"$BATS_TEST_TMPDIR/global-hooks/pre-push"
+  cp "$BATS_TEST_TMPDIR/global-hooks/pre-push" "$BATS_TEST_TMPDIR/global-before"
+  git config core.hooksPath "$BATS_TEST_TMPDIR/global-hooks"
+  before=$(sums)
+  run "$SHIPIT_BIN" init --hook-only
+  [ "$status" -eq 0 ]
+  [[ $output == "not added to $BATS_TEST_TMPDIR/global-hooks/pre-push (it is outside this project); add this line yourself, before anything reads git's input: $GUARDED" ]]
+  cmp "$BATS_TEST_TMPDIR/global-hooks/pre-push" "$BATS_TEST_TMPDIR/global-before"
+  same_except
+  rm "$BATS_TEST_TMPDIR/global-hooks/pre-push"
+  run "$SHIPIT_BIN" init --hook-only
+  [[ $output == *"(it is outside this project)"* ]]
+  [ ! -e "$BATS_TEST_TMPDIR/global-hooks/pre-push" ]
+}
+
+@test "core.hooksPath inside the project through a link that leaves it: printed" {
+  new_project
+  mkdir "$BATS_TEST_TMPDIR/elsewhere"
+  ln -s "$BATS_TEST_TMPDIR/elsewhere" linked-hooks
+  git config core.hooksPath linked-hooks
+  run "$SHIPIT_BIN" init --hook-only
+  [ "$status" -eq 0 ]
+  [[ $output == *"(it is outside this project)"* ]]
+  [ ! -e "$BATS_TEST_TMPDIR/elsewhere/pre-push" ]
+}
+
+@test "husky: .husky/pre-push gets the guarded line" {
+  new_project
+  mkdir -p .husky/_
+  printf 'npm test\n' >.husky/pre-push
+  git config core.hooksPath .husky/_
+  before=$(sums)
+  run "$SHIPIT_BIN" init --hook-only
+  [ "$status" -eq 0 ]
+  [[ ${lines[0]} == "added to $PWD/.husky/pre-push: $GUARDED" ]]
+  [ "$(head -n 1 .husky/pre-push)" = "npm test" ]
+  [ "$(tail -n 1 .husky/pre-push)" = "$GUARDED" ]
+  same_except .husky/pre-push
+}
+
+@test "lefthook: lefthook-local.yml is created and lefthook install is printed" {
+  new_project
+  printf 'pre-commit:\n  commands: {}\n' >lefthook.yml
+  before=$(sums)
+  run "$SHIPIT_BIN" init --hook-only
+  [ "$status" -eq 0 ]
+  [[ ${lines[0]} == "wrote lefthook-local.yml" ]]
+  [[ $output == *"run lefthook install"* ]]
+  [[ $output == *"add lefthook-local.yml to .gitignore (it is per person)"* ]]
+  grep -qF "shipit pre-push {1} {2}" lefthook-local.yml
+  grep -qF "use_stdin: true" lefthook-local.yml
+  same_except lefthook-local.yml
+  printf 'lefthook-local.yml\n' >.gitignore
+  run "$SHIPIT_BIN" init --hook-only
+  [[ $output == "pre-push hook: already installed" ]]
+}
+
+@test "lefthook with .lefthook.yml: .lefthook-local.yml is created" {
+  new_project
+  printf 'pre-commit:\n  commands: {}\n' >.lefthook.yml
+  before=$(sums)
+  run "$SHIPIT_BIN" init --hook-only
+  [ "$status" -eq 0 ]
+  [[ ${lines[0]} == "wrote .lefthook-local.yml" ]]
+  [ ! -e lefthook-local.yml ]
+  same_except .lefthook-local.yml
+}
+
+@test "lefthook with a pre-push key in the local file: printed, unchanged" {
+  new_project
+  printf 'pre-commit:\n  commands: {}\n' >lefthook.yml
+  printf 'pre-push:\n  commands:\n    mine:\n      run: echo mine\n' >lefthook-local.yml
+  before=$(sums)
+  run "$SHIPIT_BIN" init --hook-only
+  [ "$status" -eq 0 ]
+  [[ ${lines[0]} == "not added to lefthook-local.yml (lefthook-local.yml already has a pre-push entry); add it yourself:" ]]
+  [[ $output == *"  # only one command receives git's input when several use use_stdin"* ]]
+  same_except
+}
+
+@test "lefthook-local.yml without pre-push: the entry is appended" {
+  new_project
+  printf 'pre-commit:\n  commands: {}\n' >lefthook.yml
+  printf 'output:\n  - success' >lefthook-local.yml
+  before=$(sums)
+  run "$SHIPIT_BIN" init --hook-only
+  [ "$status" -eq 0 ]
+  [[ ${lines[0]} == "added the pre-push entry to lefthook-local.yml" ]]
+  [ "$(head -n 2 lefthook-local.yml)" = $'output:\n  - success' ]
+  [ "$(sed -n 3p lefthook-local.yml)" = "pre-push:" ]
+  same_except lefthook-local.yml
+  cp lefthook-local.yml "$BATS_TEST_TMPDIR/before-local"
+  run "$SHIPIT_BIN" init --hook-only
+  [[ $output == *"pre-push hook: already installed"* ]]
+  cmp lefthook-local.yml "$BATS_TEST_TMPDIR/before-local"
+}
+
+@test "lefthook.toml: printed, nothing written" {
+  new_project
+  printf '[pre-commit]\n' >lefthook.toml
+  before=$(sums)
+  run "$SHIPIT_BIN" init --hook-only
+  [ "$status" -eq 0 ]
+  [[ ${lines[0]} == "not added to lefthook.toml (init writes lefthook-local.yml only next to lefthook.yml or .lefthook.yml); add it yourself:" ]]
+  same_except
+}
+
+@test "pre-commit: the snippet is printed, nothing written" {
+  new_project
+  printf 'repos: []\n' >.pre-commit-config.yaml
+  before=$(sums)
+  run "$SHIPIT_BIN" init --hook-only
+  [ "$status" -eq 0 ]
+  [[ ${lines[0]} == "not added to .pre-commit-config.yaml ("*"add this entry under repos:); add it yourself:" ]]
+  [[ $output == *"id: shipit"* ]]
+  [[ $output == *"# pre-commit runs it once per push, for one ref"* ]]
+  same_except
+  [ ! -e "$(hook_file)" ]
+}
+
+@test "--no-hook writes the setup only, whatever the manager" {
+  new_project
+  printf 'pre-commit:\n  commands: {}\n' >lefthook.yml
+  before=$(sums)
+  run "$SHIPIT_BIN" init --no-hook
+  [ "$status" -eq 0 ]
+  [ ! -e lefthook-local.yml ]
+  [ ! -e "$(hook_file)" ]
+  same_except .config/shipit.toml
 }

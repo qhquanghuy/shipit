@@ -8,6 +8,8 @@ use crate::pure::text::comma_list;
 pub(crate) const PACK_KEY: &str = "packs/model/claude/starting-setup.toml";
 pub(crate) const CI_KEY: &str = "ci/shipit.yml";
 pub(crate) const HOOK_KEY: &str = "git-hooks/pre-push";
+pub(crate) const LEFTHOOK_KEY: &str = "hooks-snippets/lefthook.yml";
+pub(crate) const PRE_COMMIT_KEY: &str = "hooks-snippets/pre-commit.yml";
 
 pub(crate) const CI_FILE: &str = ".github/workflows/shipit.yml";
 
@@ -282,7 +284,7 @@ mod tests {
 
     #[test]
     fn the_embedded_files_are_there_and_the_hook_is_the_owner_line() {
-        for key in [PACK_KEY, CI_KEY, HOOK_KEY] {
+        for key in [PACK_KEY, CI_KEY, HOOK_KEY, LEFTHOOK_KEY, PRE_COMMIT_KEY] {
             assert!(embedded(key).is_some_and(|text| !text.is_empty()), "{key}");
         }
         assert_eq!(embedded("nope"), None);
