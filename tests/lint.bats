@@ -28,7 +28,7 @@ lint_repo() {
   [ "$stderr" = 'data/b.md:3: bare plan: plan
 data/b.md:4: rejected term: release
 skills/a/SKILL.md:2: rejected term: tasks
-shipit: lint found 3 problems; put names of tools in a code span or reword' ]
+shipit: lint found 3 problems; reword; only a rejected term or a harness name may go in a code span, and a model name is exempt only in a file of data/packs/model' ]
 }
 
 @test "lint: a clean tree says how many files it read" {
@@ -106,7 +106,7 @@ shipit: lint found 3 problems; put names of tools in a code span or reword' ]
   [ "$status" -eq 1 ]
   [ "$stderr" = 'skills/a/SKILL.md:1: rejected term: task
 skills/a/SKILL.md:1: harness name: claude code
-shipit: lint found 2 problems; put names of tools in a code span or reword' ]
+shipit: lint found 2 problems; reword; only a rejected term or a harness name may go in a code span, and a model name is exempt only in a file of data/packs/model' ]
 }
 
 @test "lint: harness/claude-code.txt skips blank and # lines, and * stays inside one folder" {
@@ -120,5 +120,5 @@ shipit: lint found 2 problems; put names of tools in a code span or reword' ]
   run --separate-stderr "$SHIPIT_BIN" lint
   [ "$status" -eq 1 ]
   [ "$stderr" = 'skills/a/deep/SKILL.md:1: harness name: claude code
-shipit: lint found 1 problems; put names of tools in a code span or reword' ]
+shipit: lint found 1 problems; reword; only a rejected term or a harness name may go in a code span, and a model name is exempt only in a file of data/packs/model' ]
 }

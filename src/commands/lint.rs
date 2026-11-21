@@ -85,7 +85,7 @@ pub(crate) fn run(
         .ok();
     }
     Err(Failure::no(format!(
-        "lint found {} problems; put names of tools in a code span or reword",
+        "lint found {} problems; reword; only a rejected term or a harness name may go in a code span, and a model name is exempt only in a file of data/packs/model",
         found.len()
     )))
 }
