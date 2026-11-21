@@ -152,7 +152,7 @@ the work changes: the receipts no longer match, so the computed state drops.
 
 ### 2. The setup file
 
-One committed file per project, `.config/shipit.json`. It holds the cap, the check commands, the
+One committed file per project, `.config/shipit.toml`. It holds the cap, the check commands, the
 fix-round limit, the effort cap, the packs in use, and the tiers with their models and stand-ins.
 
 - There is no environment override. Changing a value means changing the committed file, so the
@@ -362,8 +362,8 @@ ShipIt has failed, even if it works, when any of these is true.
 
 ## The lead's calls (the owner may overrule)
 
-- The setup file is JSON, not TOML: chosen when the tool used `jq`, and kept; receipts and the
-  logbook are JSON too.
+- The setup file is TOML, not JSON (the owner's call, 2026-11-21): it takes comments; receipts and the
+  logbook stay JSON.
 - Receipts and the logbook are JSON files; the logbook is one JSON entry per line.
 - Roadmaps, build plans and logbooks stay out of git history, in one place that every working
   copy of the project shares. Receipts sit beside them.

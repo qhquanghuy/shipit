@@ -27,7 +27,7 @@ Needs git 2.31 or newer, and bash (only to run the check commands) on the `PATH`
 
 ## Check and verify
 
-`shipit check` runs the commands in `.config/shipit.json` on a clean commit, counts the changed files against the size cap, and writes a receipt.
+`shipit check` runs the commands in `.config/shipit.toml` on a clean commit, counts the changed files against the size cap, and writes a receipt.
 The receipt is a JSON file in the git common directory, keyed by the commit's tree, so every working copy sees it.
 After each command the work must be as it was (commit, tree, `git status`, no hidden-edit flags); a command that changes it fails the check, naming the command, and no receipt is written.
 A change over the cap also fails and writes no receipt.
@@ -75,7 +75,7 @@ receipt shows it. CI's `--base` is the real gate.
 `base`, `cap`, `check` and `environment` in the setup are compared with the base branch's setup as it was where the slice
 forked from it. If the base branch's setup has changed since the fork, the check is refused with "merge or rebase" (a
 stale base is never mistaken for the slice's own change; a slice whose four fields already equal the base tip's, as after a squash merge of its parent, is not refused). The slice's own change is refused, with one exception. If the
-slice's diff against the base touches only `.config/shipit.json`, `check` runs the slice's new checks with its new cap and
+slice's diff against the base touches only `.config/shipit.toml`, `check` runs the slice's new checks with its new cap and
 environment, prints `shipit: this slice changes the checks (<fields>); setup change: the owner approves it by merging` on
 stderr, and writes the receipt with `"setup_change": true` and `"setup_fields"` (the changed fields). `shipit verify` then
 prints `valid receipt for <tree> (setup change)`. The owner's merge is the approval, and CI rechecks.

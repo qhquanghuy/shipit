@@ -1,35 +1,69 @@
 # The setup file
 
-ShipIt reads one file per project: `.config/shipit.json` at the top of the repository. No
+ShipIt reads one file per project: `.config/shipit.toml` at the top of the repository, written in
+[TOML](https://toml.io). Comments are allowed in it. No
 environment variable changes any value in it. The schema is checked in full
 whenever a command reads the file.
 
 ## Example
 
-```json
-{
-  "version": 1,
-  "base": "main",
-  "cap": 60,
-  "check": ["nix flake check --print-build-logs"],
-  "environment": {"run": []},
-  "fix_rounds": 2,
-  "effort_cap": "high",
-  "tiers": [
-    {"tier": 1, "model": "haiku"},
-    {"tier": 2, "model": "sonnet"},
-    {"tier": 3, "model": "opus"},
-    {"tier": 4, "model": "fable", "stand_in": {"model": "opus", "effort": "high"}}
-  ],
-  "roles": {
-    "scout":  {"tier": 1, "retries": 1, "then": {"tier": 2}},
-    "maker":  {"tier": 2, "effort": "high"},
-    "tester": {"tier": 3, "effort": "medium"},
-    "reader": {"tier": 1}
-  },
-  "packs": {"skill": "superpowers", "domain": "coding", "model": "claude"},
-  "messages_to_owner": {"max_lines": 30, "status_update_max_lines": 10}
-}
+```toml
+version = 1
+base = "main"
+cap = 60
+check = ["nix flake check --print-build-logs"]
+fix_rounds = 2
+effort_cap = "high"
+
+[environment]
+run = []
+
+[[tiers]]
+tier = 1
+model = "haiku"
+
+[[tiers]]
+tier = 2
+model = "sonnet"
+
+[[tiers]]
+tier = 3
+model = "opus"
+
+[[tiers]]
+tier = 4
+model = "fable"
+
+[tiers.stand_in]
+model = "opus"
+effort = "high"
+
+[roles.scout]
+tier = 1
+retries = 1
+
+[roles.scout.then]
+tier = 2
+
+[roles.maker]
+tier = 2
+effort = "high"
+
+[roles.tester]
+tier = 3
+effort = "medium"
+
+[roles.reader]
+tier = 1
+
+[packs]
+skill = "superpowers"
+domain = "coding"
+model = "claude"
+
+[messages_to_owner]
+max_lines = 30
+status_update_max_lines = 10
 ```
 
 A tier is a model. Effort belongs to a role or a stand-in. A worker's rank is its tier,
@@ -37,13 +71,15 @@ then its effort.
 
 ## Rules
 
-The file holds exactly one JSON object. Every object in it refuses keys that this page does
+The file is one TOML document, which is a table of keys (the messages say "object" for a table). Every table in it refuses keys that this page does
 not list. Every problem is reported at once, each with its path (for example
-`.roles.maker.effort`). A value of the wrong type is a reported problem.
+`.roles.maker.effort`). A value of the wrong type is a reported problem. TOML tells integers from
+floats: a float, even `60.0`, is the wrong type where an integer is needed. A TOML integer is at most
+9223372036854775807 (2^63 - 1); a larger one, or a key written twice, makes the file not valid TOML.
 
 | Path | Rule |
 |---|---|
-| top level | An object with exactly the keys above; all are required. |
+| top level | A table with exactly the keys above; all are required. |
 | `version` | The integer `1`. |
 | `base` | A branch name, as `git check-ref-format --branch` accepts it: the base branch. Not a revision (`HEAD~1`), not a tag. |
 | `cap` | An integer, 1 or more: the size cap for one change. |
@@ -65,13 +101,15 @@ limits on messages to the owner).
 
 ## Loading
 
-Every command that reads the setup reads it as committed at a ref (default `HEAD`), never from the working tree. A missing file, a file that is not JSON and a file
-that breaks a rule above each stop the command with exit 2 and a message that says what to fix.
+Every command that reads the setup reads it as committed at a ref (default `HEAD`), never from the working tree. A missing file, a file that is not TOML and a file
+that breaks a rule above each stop the command with exit 2 and a message that says what to fix. The message for
+a file that is not TOML is `shipit: .config/shipit.toml is not valid TOML: <the parser's message>` (the path takes a `<ref>:` prefix for a ref other than HEAD; for the base branch's file, there is no
+parser message). A setup file named `.config/shipit.json` is not read: there is no fallback.
 
 `check` also reads the base branch's setup, but only `base`, `cap`,
 `check` and `environment` (validated for their type only). Those four fields are compared with the setup of the slice's merge base with that branch: the base branch's tip must
 not differ from it (else: merge or rebase; a slice whose fields equal the tip's own is never refused for that), and the slice's fields must be identical to it, with one
-exception: when the slice's diff against the base touches only `.config/shipit.json`, a change is allowed. `check` then
+exception: when the slice's diff against the base touches only `.config/shipit.toml`, a change is allowed. `check` then
 runs the slice's new checks with its new cap and environment, prints `shipit: this slice changes the checks (<fields>);
 setup change: the owner approves it by merging` on stderr, and marks the receipt (`"setup_change": true`,
 `"setup_fields"`); `shipit verify` prints `valid receipt for <tree> (setup change)`. The owner's merge is the approval.
