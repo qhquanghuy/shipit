@@ -176,7 +176,39 @@ fn roadmap_reviewed(git: &Git, common: &Path, policy: &Setup, goal: &GoalName) -
     })
 }
 
-fn unknown_branches(git: &Git, known: &[(GoalName, Roadmap)]) -> Result<Vec<Unknown>, Failure> {
+// Every goal of the store, judged; the cap counts across all of them.
+pub(crate) fn judge_goals(
+    git: &Git,
+    common: &Path,
+    (policy, base_ref): (&Setup, &BaseRef),
+    loaded: &[(GoalName, Roadmap)],
+) -> Result<Vec<GoalView>, Failure> {
+    let mut goals = Vec::new();
+    for (goal, roadmap) in loaded {
+        let facts = collect(git, common, base_ref, (goal, roadmap))?;
+        let shipped: Vec<_> = facts
+            .iter()
+            .filter(|fact| is_shipped(&fact.entries))
+            .map(|fact| fact.name.clone())
+            .collect();
+        let context = Policy {
+            setup: policy,
+            shipped: &shipped,
+        };
+        let views = facts.iter().map(|fact| view(fact, &context)).collect();
+        goals.push(GoalView {
+            goal: goal.clone(),
+            reviewed: roadmap_reviewed(git, common, policy, goal),
+            views,
+        });
+    }
+    Ok(goals)
+}
+
+pub(crate) fn unknown_branches(
+    git: &Git,
+    known: &[(GoalName, Roadmap)],
+) -> Result<Vec<Unknown>, Failure> {
     let mut unknown = Vec::new();
     for branch in slice_branches(git)? {
         let Some((goal, slice)) = parse_slice_branch(&branch) else {
@@ -247,25 +279,7 @@ pub(crate) fn run(
             "no goal named \"{goal}\" in the store"
         )));
     }
-    let mut goals = Vec::new();
-    for (goal, roadmap) in &loaded {
-        let facts = collect(&git, &common, &base_ref, (goal, roadmap))?;
-        let shipped: Vec<_> = facts
-            .iter()
-            .filter(|fact| is_shipped(&fact.entries))
-            .map(|fact| fact.name.clone())
-            .collect();
-        let context = Policy {
-            setup: &policy,
-            shipped: &shipped,
-        };
-        let views = facts.iter().map(|fact| view(fact, &context)).collect();
-        goals.push(GoalView {
-            goal: goal.clone(),
-            reviewed: roadmap_reviewed(&git, &common, &policy, goal),
-            views,
-        });
-    }
+    let goals = judge_goals(&git, &common, (&policy, &base_ref), &loaded)?;
     let unknown = unknown_branches(&git, &loaded)?;
     let all_views: Vec<_> = goals.iter().flat_map(|goal| goal.views.iter()).collect();
     let started = started_count(&all_views, unknown.len());

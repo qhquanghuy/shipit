@@ -172,6 +172,34 @@ pub(crate) fn slice_branches(git: &Git) -> Result<Vec<String>, Failure> {
     Ok(names)
 }
 
+// The branch starts at the base's tip with no upstream, so a push never lands on the base.
+pub(crate) fn create_branch(git: &Git, branch: &str, base: &BaseRef) -> Result<(), Failure> {
+    git.output(&[
+        OsStr::new("branch"),
+        OsStr::new("--no-track"),
+        OsStr::new("--end-of-options"),
+        OsStr::new(branch),
+        OsStr::new(&base.full()),
+    ])
+    .map(|_bytes| ())
+    .map_err(|_why| Failure::usage(format!("cannot create the branch {branch} at {base}")))
+}
+
+// A remote-tracking branch of the goal (no network: the last fetch decides), if there is one.
+pub(crate) fn origin_branch_of(git: &Git, goal: &GoalName) -> Result<Option<String>, Failure> {
+    let prefix = format!("refs/remotes/origin/slice/{goal}/");
+    let bytes = git
+        .output(&[
+            OsStr::new("for-each-ref"),
+            OsStr::new("--count=1"),
+            OsStr::new("--format=%(refname:short)"),
+            OsStr::new(&prefix),
+        ])
+        .map_err(|_why| Failure::usage("cannot list the remote branches"))?;
+    let name = String::from_utf8_lossy(&bytes).trim().to_owned();
+    Ok((!name.is_empty()).then_some(name))
+}
+
 // What `shipit check` judged: the base it used (its short name), the commit where the work left
 // it, and the id of the change since.
 #[derive(Debug, PartialEq, Eq)]

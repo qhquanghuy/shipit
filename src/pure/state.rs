@@ -395,6 +395,51 @@ fn checked_step(
     )
 }
 
+pub(crate) struct StartFacts<'a> {
+    pub(crate) view: &'a View,
+    pub(crate) waiting: &'a [&'a SliceName],
+    // One goal name for each slice started and not shipped, in every goal.
+    pub(crate) started_goals: &'a [GoalName],
+    pub(crate) cap: u64,
+}
+
+// The first rule that stops `shipit start`, in this order.
+pub(crate) fn start_refusal(facts: &StartFacts<'_>) -> Option<String> {
+    let view = facts.view;
+    if view.state == State::Shipped {
+        return Some(format!("{} is shipped", view.name));
+    }
+    if view.state == State::Planned {
+        return Some(format!(
+            "{} is {}: its build plan needs a counting review first",
+            view.name, view.state
+        ));
+    }
+    if !facts.waiting.is_empty() {
+        return Some(format!(
+            "wait for {} to ship",
+            comma_list(facts.waiting.iter().copied())
+        ));
+    }
+    if view.started {
+        let branch = view.branch.as_deref().unwrap_or_default();
+        return Some(format!("{branch} already exists: the slice is started"));
+    }
+    let started = u64::try_from(facts.started_goals.len()).unwrap_or(u64::MAX);
+    if started >= facts.cap {
+        let mut goals = facts.started_goals.to_vec();
+        goals.sort();
+        goals.dedup();
+        return Some(format!(
+            "{started} slices are started and not shipped, in {} ([agents.parallel] slices = \
+             {}): ship one first",
+            comma_list(goals),
+            facts.cap
+        ));
+    }
+    None
+}
+
 pub(crate) fn started_count(views: &[&View], unknown: usize) -> u64 {
     let started = views.iter().filter(|view| view.started).count() + unknown;
     u64::try_from(started).unwrap_or(u64::MAX)
@@ -779,6 +824,60 @@ mod tests {
             let lines = render(&[&shown], &[], (total, 3), None);
             let wanted = format!("started: {total} of 3");
             prop_assert!(lines.first().is_some_and(|line| line.contains(&wanted)));
+        }
+
+        #[test]
+        fn a_start_is_refused_in_the_order_of_the_rules(
+            state in 0..6_usize,
+            waiting in any::<bool>(),
+            started in any::<bool>(),
+            count in 0..6_usize,
+            cap in 1..5_u64,
+        ) {
+            let all = [
+                State::Planned,
+                State::BuildPlanReady,
+                State::Made,
+                State::Checked,
+                State::ReadyToShip,
+                State::Shipped,
+            ];
+            let state = all.get(state).copied().expect("a state");
+            let view = View {
+                goal: goal(),
+                name: name("beta"),
+                state,
+                next: String::new(),
+                open: Counts::default(),
+                started,
+                without_start: false,
+                branch: started.then(|| "slice/demo/beta".to_owned()),
+                test_drive: false,
+                meets: Vec::new(),
+            };
+            let before = [name("alpha")];
+            let waits: Vec<&SliceName> = if waiting { before.iter().collect() } else { Vec::new() };
+            let goals: Vec<GoalName> = (0..count).map(|_| goal()).collect();
+            let said = start_refusal(&StartFacts {
+                view: &view,
+                waiting: &waits,
+                started_goals: &goals,
+                cap,
+            });
+            let wanted = if state == State::Shipped {
+                Some("beta is shipped".to_owned())
+            } else if state == State::Planned {
+                Some("beta is planned: its build plan needs a counting review first".to_owned())
+            } else if waiting {
+                Some("wait for alpha to ship".to_owned())
+            } else if started {
+                Some("slice/demo/beta already exists: the slice is started".to_owned())
+            } else if u64::try_from(count).unwrap_or(0) >= cap {
+                Some(format!("{count} slices are started and not shipped, in demo ([agents.parallel] slices = {cap}): ship one first"))
+            } else {
+                None
+            };
+            prop_assert_eq!(said, wanted);
         }
 
         #[test]

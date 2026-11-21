@@ -10,6 +10,7 @@ COMMANDS=(
   "receipt plan-review beta --author opus:high --by fable:high --result approve"
   "log beta note --text a-note"
   "status"
+  "start alpha"
 )
 
 @test "new commands: a missing setup stops each" {

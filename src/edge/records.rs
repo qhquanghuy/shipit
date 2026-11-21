@@ -37,6 +37,14 @@ pub(crate) fn logbook_path(store: &Path, goal: &GoalName) -> PathBuf {
     goal_dir(store, goal).join("logbook.jsonl")
 }
 
+pub(crate) fn metrics_path(store: &Path, goal: &GoalName) -> PathBuf {
+    store.join("metrics").join(format!("{goal}.toml"))
+}
+
+pub(crate) fn exists(path: &Path) -> bool {
+    fs::metadata(path).is_ok()
+}
+
 pub(crate) fn build_plan_path(store: &Path, goal: &GoalName, slice: &SliceName) -> PathBuf {
     goal_dir(store, goal)
         .join("slices")

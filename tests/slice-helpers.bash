@@ -86,7 +86,7 @@ st() {
 
 # plan_ready <slice> [goal]: a build plan for the slice with a counting plan review.
 plan_ready() {
-  write_build_plan "$1" "the plan of $1" "${2:-demo}"
+  write_build_plan "$1" "the plan of ${2:-demo}/$1" "${2:-demo}"
   "$SHIPIT_BIN" receipt plan-review "$1" --goal "${2:-demo}" --author opus:high --by fable:high --result approve >/dev/null
 }
 
