@@ -116,7 +116,7 @@ bigger_goal() {
   [ "$stderr" = 'shipit: --goal and --goal-file are only for the roadmap, and only one of them' ]
   run --separate-stderr "$SHIPIT_BIN" validate roadmap road.md --goal demo --goal-file "$SHIPIT_SRC/tests/fixtures/goal.md"
   [ "$status" -eq 2 ]
-  [ "$stderr" = "shipit: usage: shipit validate <kind> <file> [--goal <name> | --goal-file <path>]" ]
+  [ "$stderr" = "shipit: --goal and --goal-file are only for the roadmap, and only one of them" ]
 }
 
 @test "validate: a roadmap is held against its goal file, read from the caller's folder" {

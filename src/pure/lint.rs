@@ -119,10 +119,17 @@ fn is_word(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_'
 }
 
-// A match counts only when no word character touches a word character at its edge.
-fn bounded(text: &str, start: usize, end: usize, needle: &str) -> bool {
+// A match counts only when no word character touches a word character at its edge; a version
+// number after a model name is part of the name, so `opus4` is `opus`.
+fn bounded(text: &str, start: usize, end: usize, needle: &str, version: bool) -> bool {
     let before = text.get(..start).and_then(|head| head.chars().next_back());
-    let after = text.get(end..).and_then(|tail| tail.chars().next());
+    let tail = text.get(end..).unwrap_or_default();
+    let tail = if version {
+        tail.trim_start_matches(|c: char| c.is_ascii_digit())
+    } else {
+        tail
+    };
+    let after = tail.chars().next();
     let joined = |edge: Option<char>, outer: Option<char>| {
         edge.is_some_and(is_word) && outer.is_some_and(is_word)
     };
@@ -141,6 +148,7 @@ fn after_build(text: &str, start: usize) -> bool {
 fn take_matches(
     work: &mut String,
     needle: &str,
+    version: bool,
     keep: impl Fn(&str, usize) -> bool,
 ) -> Vec<(usize, String)> {
     let step = needle.chars().next().map_or(1, char::len_utf8);
@@ -149,7 +157,7 @@ fn take_matches(
     while let Some(at) = work.get(from..).and_then(|tail| tail.find(needle)) {
         let start = from + at;
         let end = start + needle.len();
-        if bounded(work, start, end, needle) && keep(work, start) {
+        if bounded(work, start, end, needle, version) && keep(work, start) {
             found.push((start, needle.to_owned()));
             let blanked = (
                 work.get(..start).map(str::to_owned),
@@ -172,42 +180,145 @@ fn by_length(mut needles: Vec<String>) -> Vec<String> {
     needles
 }
 
-struct Scan<'a> {
+// Lower case, with `_`, `-` and any run of white space as one space: `Claude_Code`, `claude-code`
+// and `Claude  Code` are one name.
+fn normalized(text: &str) -> String {
+    let mut out = String::new();
+    let mut gap = false;
+    for c in text.chars().flat_map(char::to_lowercase) {
+        if c == '_' || c == '-' || c.is_whitespace() {
+            gap = true;
+        } else {
+            if gap && !out.is_empty() {
+                out.push(' ');
+            }
+            gap = false;
+            out.push(c);
+        }
+    }
+    out
+}
+
+// The words to look for, made once for the whole run.
+struct Words {
+    harness: Vec<String>,
+    models: Vec<String>,
     rejected: Vec<String>,
-    models: &'a [String],
+}
+
+impl Words {
+    fn new(rejected: &[String], models: &[String]) -> Self {
+        let spelled =
+            |names: Vec<String>| by_length(names.iter().map(|name| normalized(name)).collect());
+        Self {
+            harness: spelled(HARNESS.iter().map(|name| (*name).to_owned()).collect()),
+            models: spelled(models.to_vec()),
+            rejected: by_length(with_plurals(rejected)),
+        }
+    }
+}
+
+// What a file may say: the model pack says models, and a harness file says harness names.
+struct Report {
     harness: bool,
     model: bool,
 }
 
-// The rules of a line, in the order they run; a harness name is not reported again as a model name.
-fn line_hits(text: &str, scan: &Scan<'_>) -> Vec<(usize, Rule, String)> {
-    let mut work = without_code_spans(text).to_lowercase();
+fn hits_of(
+    work: &mut String,
+    needles: &[String],
+    version: bool,
+    rule: Rule,
+) -> Vec<(usize, Rule, String)> {
     let mut hits = Vec::new();
-    let always = |_: &str, _: usize| true;
-    // Always blanked, so that a harness name in an exempt file is not a model name either.
-    let names = by_length(HARNESS.iter().map(|name| (*name).to_owned()).collect());
-    for needle in &names {
-        for (at, found) in take_matches(&mut work, needle, always) {
-            if scan.harness {
-                hits.push((at, Rule::HarnessName, found));
-            }
+    for needle in needles {
+        for (at, found) in take_matches(work, needle, version, |_, _| true) {
+            hits.push((at, rule, found));
         }
     }
-    if scan.model {
-        for needle in &by_length(scan.models.to_vec()) {
-            for (at, found) in take_matches(&mut work, needle, always) {
-                hits.push((at, Rule::ModelName, found));
-            }
+    hits
+}
+
+// A harness name split by a line break: the end of one line and the start of the next.
+fn split_harness(first: &str, second: &str, needles: &[String]) -> Vec<(usize, Rule, String)> {
+    let (a, b) = (
+        normalized(&without_code_spans(first)),
+        normalized(&without_code_spans(second)),
+    );
+    if a.is_empty() || b.is_empty() {
+        return Vec::new();
+    }
+    let window = format!("{a} {b}");
+    let split = a.len();
+    needles
+        .iter()
+        .filter(|needle| {
+            window.match_indices(needle.as_str()).any(|(start, _)| {
+                let end = start + needle.len();
+                start < split && end > split + 1 && bounded(&window, start, end, needle, false)
+            })
+        })
+        .map(|needle| (split, Rule::HarnessName, needle.clone()))
+        .collect()
+}
+
+// The start of a name that goes on in the next line is part of the name, not a model.
+fn blank_tail(work: &mut String, name: &str) {
+    let words: Vec<&str> = name.split(' ').collect();
+    for count in (1..words.len()).rev() {
+        let prefix = words.get(..count).unwrap_or_default().join(" ");
+        let kept = work.trim_end().len();
+        if work.trim_end().ends_with(&prefix) {
+            work.truncate(kept - prefix.len());
+            work.push_str(&" ".repeat(prefix.len()));
+            return;
         }
     }
-    for needle in &by_length(scan.rejected.clone()) {
-        for (at, found) in take_matches(&mut work, needle, always) {
-            hits.push((at, Rule::RejectedTerm, found));
-        }
+}
+
+// The rules of a line, in the order they run. A rejected term or a harness name in a code span
+// is a mention; a model name is not, so it is read inside spans too. A harness name is blanked
+// before the model names, so `Claude Code` is not also the model `claude`.
+fn line_hits(
+    text: &str,
+    next: Option<&str>,
+    words: &Words,
+    report: &Report,
+) -> Vec<(usize, Rule, String)> {
+    let plain = without_code_spans(text);
+    let mut hits = Vec::new();
+    let mut harness_work = normalized(&plain);
+    let found = hits_of(&mut harness_work, &words.harness, false, Rule::HarnessName);
+    let crossing = next
+        .map(|next| split_harness(text, next, &words.harness))
+        .unwrap_or_default();
+    let mut model_work = normalized(&text.replace('`', " "));
+    hits_of(&mut model_work, &words.harness, false, Rule::HarnessName);
+    for (_, _, name) in &crossing {
+        blank_tail(&mut model_work, name);
     }
+    if report.harness {
+        hits.extend(found);
+        hits.extend(crossing);
+    }
+    if report.model {
+        hits.extend(hits_of(
+            &mut model_work,
+            &words.models,
+            true,
+            Rule::ModelName,
+        ));
+    }
+    let mut work = plain.to_lowercase();
+    hits.extend(hits_of(
+        &mut work,
+        &words.rejected,
+        false,
+        Rule::RejectedTerm,
+    ));
     for needle in ["plans", "plan"] {
         let bare = |text: &str, start: usize| !after_build(text, start);
-        for (at, found) in take_matches(&mut work, needle, bare) {
+        for (at, found) in take_matches(&mut work, needle, false, bare) {
             hits.push((at, Rule::BarePlan, found));
         }
     }
@@ -228,13 +339,11 @@ pub(crate) fn lint(
     models: &[String],
     harness_globs: &[String],
 ) -> Vec<Finding> {
-    let rejected = with_plurals(rejected);
+    let words = Words::new(rejected, models);
     let mut all: Vec<(String, usize, usize, Rule, String)> = Vec::new();
     for (path, text) in files {
         let in_model_pack = path.starts_with(MODEL_PACKS);
-        let scan = Scan {
-            rejected: rejected.clone(),
-            models,
+        let report = Report {
             harness: !in_model_pack && !harness_globs.iter().any(|glob| matches_glob(glob, path)),
             model: !in_model_pack,
         };
@@ -249,7 +358,11 @@ pub(crate) fn lint(
             if !matches!(line.kind, Kind::Prose) {
                 continue;
             }
-            for (column, rule, matched) in line_hits(line.text, &scan) {
+            let next = read
+                .get(index + 1)
+                .filter(|next| matches!(next.kind, Kind::Prose))
+                .map(|next| next.text);
+            for (column, rule, matched) in line_hits(line.text, next, &words, &report) {
                 all.push((path.clone(), index + 1, column, rule, matched));
             }
         }
@@ -435,6 +548,52 @@ mod tests {
             &["harness/*.md".to_owned()],
         );
         assert_eq!(exempt, Vec::new());
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            failure_persistence: None,
+            ..ProptestConfig::default()
+        })]
+
+        // A model name is a model name in any case, in a code span, before a version number and
+        // beside any of `_`, `-` and a space; a letter after it makes it another word.
+        #[test]
+        fn a_model_name_is_found_in_any_spelling(
+            name in prop::sample::select(vec!["opus", "Opus", "OPUS", "claude", "Claude"]),
+            span in any::<bool>(),
+            version in "[0-9]{0,2}(\\.[0-9])?",
+            gap in prop::sample::select(vec![" ", "_", "-", "  "]),
+            letter in "[a-z]",
+        ) {
+            let said = format!("{name}{version}");
+            let said = if span { format!("`{said}`") } else { said };
+            let text = format!("use{gap}{said}{gap}here\n");
+            let wanted = vec![(1, Rule::ModelName, name.to_lowercase())];
+            prop_assert_eq!(found("a.md", &text), wanted);
+            let longer = format!("use {name}{letter} here\n");
+            prop_assert_eq!(found("a.md", &longer), Vec::new());
+        }
+    }
+
+    #[test]
+    fn a_harness_name_is_found_in_any_spelling_and_across_a_line_break() {
+        let harness = |text: &str| found("a.md", text);
+        let one = vec![(1, Rule::HarnessName, "claude code".to_owned())];
+        assert_eq!(harness("run claude_code now\n"), one);
+        assert_eq!(harness("run Claude  Code now\n"), one);
+        assert_eq!(harness("run claude-\ncode now\n"), one);
+        assert_eq!(harness("run Claude\nCode now\n"), one);
+        assert_eq!(harness("run `claude code` now\n"), Vec::new());
+        assert_eq!(
+            harness("run Claude\n```\nCode\n```\n"),
+            vec![(1, Rule::ModelName, "claude".to_owned())]
+        );
+    }
+
+    #[test]
+    fn a_name_outside_the_setup_is_not_known() {
+        assert_eq!(found("a.md", "ask GPT-5 or Gemini\n"), Vec::new());
     }
 
     #[test]

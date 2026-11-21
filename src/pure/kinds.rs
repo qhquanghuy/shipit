@@ -1,8 +1,22 @@
 use crate::pure::finding::ResultKind;
-use crate::pure::template::{Check, Embedded, Outcome, Spec};
+use crate::pure::template::{Check, Contradiction, Embedded, Outcome, Spec};
 use crate::pure::text::comma_list;
 
 const ANSWER: Check = Check::Answer(&["none found: ", "concern: ", "not relevant: "]);
+
+// A concern is a finding in waiting: an approval with a concern and no finding says two things.
+const CONCERN_SECURITY: Contradiction = Contradiction {
+    outcome: "approve",
+    part: "Security",
+    start: "concern: ",
+    needs_finding: true,
+};
+const CONCERN_PERFORMANCE: Contradiction = Contradiction {
+    outcome: "approve",
+    part: "Performance",
+    start: "concern: ",
+    needs_finding: true,
+};
 
 // Sorted by kind; the blank forms are data/templates/<kind>.md.
 pub(crate) const KINDS: &[Spec] = &[
@@ -26,6 +40,8 @@ pub(crate) const KINDS: &[Spec] = &[
         findings: None,
         none_allowed: &[],
         embedded: Embedded::CoverageMap,
+        forbidden: &[],
+        contradicts: &[],
     },
     Spec {
         kind: "decision-point",
@@ -38,6 +54,8 @@ pub(crate) const KINDS: &[Spec] = &[
         findings: None,
         none_allowed: &[],
         embedded: Embedded::Nothing,
+        forbidden: &[],
+        contradicts: &[],
     },
     Spec {
         kind: "explanation",
@@ -56,6 +74,8 @@ pub(crate) const KINDS: &[Spec] = &[
         findings: None,
         none_allowed: &[],
         embedded: Embedded::Nothing,
+        forbidden: &[("understood", "Unclear")],
+        contradicts: &[],
     },
     Spec {
         kind: "informed-review",
@@ -105,6 +125,17 @@ pub(crate) const KINDS: &[Spec] = &[
         findings: Some(("Findings", ResultKind::Review)),
         none_allowed: &[],
         embedded: Embedded::Nothing,
+        forbidden: &[],
+        contradicts: &[
+            CONCERN_SECURITY,
+            CONCERN_PERFORMANCE,
+            Contradiction {
+                outcome: "approve",
+                part: "Teach-back",
+                start: "[wrong] ",
+                needs_finding: true,
+            },
+        ],
     },
     Spec {
         kind: "known-issue",
@@ -117,6 +148,8 @@ pub(crate) const KINDS: &[Spec] = &[
         findings: None,
         none_allowed: &[],
         embedded: Embedded::Nothing,
+        forbidden: &[],
+        contradicts: &[],
     },
     Spec {
         kind: "model-advice",
@@ -129,6 +162,8 @@ pub(crate) const KINDS: &[Spec] = &[
         findings: None,
         none_allowed: &[],
         embedded: Embedded::Nothing,
+        forbidden: &[],
+        contradicts: &[],
     },
     Spec {
         kind: "roadmap",
@@ -157,6 +192,8 @@ pub(crate) const KINDS: &[Spec] = &[
         findings: None,
         none_allowed: &["Shared contracts", "Owner decisions", "Risks"],
         embedded: Embedded::Roadmap,
+        forbidden: &[],
+        contradicts: &[],
     },
     Spec {
         kind: "scout-report",
@@ -179,6 +216,8 @@ pub(crate) const KINDS: &[Spec] = &[
         findings: None,
         none_allowed: &[],
         embedded: Embedded::Nothing,
+        forbidden: &[("found", "Missing")],
+        contradicts: &[],
     },
     Spec {
         kind: "second-opinion",
@@ -201,6 +240,8 @@ pub(crate) const KINDS: &[Spec] = &[
         findings: Some(("Findings", ResultKind::Review)),
         none_allowed: &[],
         embedded: Embedded::Nothing,
+        forbidden: &[],
+        contradicts: &[CONCERN_SECURITY, CONCERN_PERFORMANCE],
     },
     Spec {
         kind: "test-drive",
@@ -219,6 +260,13 @@ pub(crate) const KINDS: &[Spec] = &[
         findings: Some(("Findings", ResultKind::TestDrive)),
         none_allowed: &[],
         embedded: Embedded::Nothing,
+        forbidden: &[],
+        contradicts: &[Contradiction {
+            outcome: "pass",
+            part: "Done-when",
+            start: "[fail] ",
+            needs_finding: false,
+        }],
     },
 ];
 

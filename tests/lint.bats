@@ -74,7 +74,7 @@ shipit: lint found 3 problems; put names of tools in a code span or reword' ]
   git commit -q -m "drop the vocabulary"
   run --separate-stderr "$SHIPIT_BIN" lint
   [ "$status" -eq 2 ]
-  [ "$stderr" = 'shipit: no docs/vocab.md at HEAD' ]
+  [ "$stderr" = 'shipit: no docs/vocab.md at main' ]
 }
 
 @test "lint: a missing setup stops it" {
@@ -91,4 +91,34 @@ shipit: lint found 3 problems; put names of tools in a code span or reword' ]
   run --separate-stderr "$SHIPIT_BIN" lint now
   [ "$status" -eq 2 ]
   [ "$stderr" = 'shipit: usage: shipit lint' ]
+}
+
+@test "lint: the vocabulary and the harness file are read at the base, not at the slice" {
+  lint_repo
+  git checkout -q -b slice/v1/loose
+  printf 'A task, and Claude Code.\n' >skills/a/SKILL.md
+  printf '# Vocabulary\n- Not framework terms: unit.\n' >docs/vocab.md
+  mkdir harness
+  printf 'skills/*/SKILL.md\n' >harness/claude-code.txt
+  git add -A
+  git commit -q -m "loosen the lint"
+  run --separate-stderr "$SHIPIT_BIN" lint
+  [ "$status" -eq 1 ]
+  [ "$stderr" = 'skills/a/SKILL.md:1: rejected term: task
+skills/a/SKILL.md:1: harness name: claude code
+shipit: lint found 2 problems; put names of tools in a code span or reword' ]
+}
+
+@test "lint: harness/claude-code.txt skips blank and # lines, and * stays inside one folder" {
+  lint_repo
+  mkdir -p harness skills/a/deep
+  printf '# the harness files\n\nskills/*/SKILL.md\n' >harness/claude-code.txt
+  printf 'Run Claude Code.\n' >skills/a/SKILL.md
+  printf 'Run Claude Code.\n' >skills/a/deep/SKILL.md
+  git add -A
+  git commit -q -m "list the harness files"
+  run --separate-stderr "$SHIPIT_BIN" lint
+  [ "$status" -eq 1 ]
+  [ "$stderr" = 'skills/a/deep/SKILL.md:1: harness name: claude code
+shipit: lint found 1 problems; put names of tools in a code span or reword' ]
 }

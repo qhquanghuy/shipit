@@ -2,6 +2,7 @@ use std::ffi::{OsStr, OsString};
 use std::io::Write;
 
 use crate::commands::setup::load_setup_table;
+use crate::edge::base::base_ref;
 use crate::edge::git::Git;
 use crate::pure::failure::Failure;
 use crate::pure::lint::{
@@ -12,11 +13,11 @@ use crate::pure::setup::HEAD;
 pub(crate) const HIDDEN: bool = true;
 pub(crate) const NEEDS_SETUP: bool = true;
 pub(crate) const USAGE: &str = "usage: shipit lint";
-pub(crate) const SUMMARY: &str = "Refuses the rejected terms of docs/vocab.md, a bare plan, model names outside data/packs/model and harness names outside the globs of harness/claude-code.txt, in the files of agents, data and skills as committed at HEAD. A word in a code span or a fence is exempt, and only the model names of the setup are known. The terms are read from HEAD too, so a change that drops one shows in its diff. docs are not scanned.";
+pub(crate) const SUMMARY: &str = "Refuses the rejected terms of docs/vocab.md, a bare plan, model names outside data/packs/model and harness names outside the globs of harness/claude-code.txt, in the files of agents, data and skills as committed at HEAD. A rejected term or a harness name in a code span or a fence is exempt; a model name is not exempt in a span, but is in a fence, may be written in any case, with `_`, `-` or a space between its words, and may carry a version number (`opus4`). A harness name split by a line break is found. Only the model names of the setup are known. The vocabulary and the harness file are read at the base branch of the setup, so a change that loosens its own lint has no effect. docs are not scanned.";
 pub(crate) const EXITS: [&str; 4] = ["clean", "findings", "usage, setup or vocabulary error", ""];
 
-fn text_at_head(git: &Git, path: &str) -> Option<String> {
-    git.show_file(OsStr::new(HEAD), path)
+fn text_at(git: &Git, rev: &str, path: &str) -> Option<String> {
+    git.show_file(OsStr::new(rev), path)
         .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
 }
 
@@ -40,7 +41,7 @@ fn committed_files(git: &Git) -> Result<Vec<(String, String)>, Failure> {
         .filter(|name| !name.is_empty())
     {
         let path = String::from_utf8_lossy(name).into_owned();
-        let text = text_at_head(git, &path)
+        let text = text_at(git, HEAD, &path)
             .ok_or_else(|| Failure::usage(format!("cannot read {path} at HEAD")))?;
         files.push((path, text));
     }
@@ -58,12 +59,15 @@ pub(crate) fn run(
     if !args.is_empty() {
         return Err(Failure::usage(USAGE));
     }
-    let vocabulary = text_at_head(&git, VOCABULARY)
-        .ok_or_else(|| Failure::usage(format!("no {VOCABULARY} at HEAD")))?;
+    // Policy comes from the base, as every other rule does: a slice cannot rewrite it for itself.
+    let base = base_ref(&git, &setup.gate.base)?;
+    let policy = base.full();
+    let vocabulary = text_at(&git, &policy, VOCABULARY)
+        .ok_or_else(|| Failure::usage(format!("no {VOCABULARY} at {base}")))?;
     let rejected = rejected_terms(&vocabulary).ok_or_else(|| {
         Failure::usage(format!("{VOCABULARY} has no \"Not framework terms\" line"))
     })?;
-    let globs = text_at_head(&git, HARNESS_FILE)
+    let globs = text_at(&git, &policy, HARNESS_FILE)
         .map(|text| harness_globs(&text))
         .unwrap_or_default();
     let files = committed_files(&git)?;

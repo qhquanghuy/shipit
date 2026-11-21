@@ -32,8 +32,13 @@ const GOAL_ONLY_FOR_ROADMAP: &str =
 
 enum Goal<'a> {
     Nothing,
+    Both,
     Stored(&'a OsStr),
     File(&'a OsStr),
+}
+
+fn is_goal_flag(flag: &OsString) -> bool {
+    flag == OsStr::new("--goal") || flag == OsStr::new("--goal-file")
 }
 
 fn goal_flag(flags: &[OsString]) -> Result<Option<Goal<'_>>, Failure> {
@@ -41,6 +46,9 @@ fn goal_flag(flags: &[OsString]) -> Result<Option<Goal<'_>>, Failure> {
         [] => Ok(None),
         [flag, value] if flag == OsStr::new("--goal") => Ok(Some(Goal::Stored(value))),
         [flag, value] if flag == OsStr::new("--goal-file") => Ok(Some(Goal::File(value))),
+        [first, _, second, _] if is_goal_flag(first) && is_goal_flag(second) && first != second => {
+            Ok(Some(Goal::Both))
+        }
         [_] | [_, _] | [_, _, _, ..] => Err(Failure::usage(USAGE)),
     }
 }
@@ -50,6 +58,7 @@ fn goal_text(git: &Git, name: &str, goal: &Goal<'_>) -> Result<Option<String>, F
     let path = match goal {
         Goal::Nothing if name == ROADMAP => return Err(Failure::usage(NEEDS_GOAL)),
         Goal::Nothing => return Ok(None),
+        Goal::Both => return Err(Failure::usage(GOAL_ONLY_FOR_ROADMAP)),
         Goal::Stored(_) | Goal::File(_) if name != ROADMAP => {
             return Err(Failure::usage(GOAL_ONLY_FOR_ROADMAP));
         }

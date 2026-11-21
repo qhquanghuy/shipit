@@ -6,6 +6,7 @@ use crate::pure::finding::{
     Class, Outcome as FindingOutcome, ResultKind, outcome_problems, parse_finding,
 };
 use crate::pure::goal::goal_items;
+use crate::pure::kinds::form;
 use crate::pure::markdown::{Kind, Line, lines};
 use crate::pure::markdown_parts::{bold_marker, heading, list_item};
 use crate::pure::messages::{FILE_PROBLEM, NO_BLOCK, NOT_TOML, say};
@@ -16,6 +17,7 @@ use crate::pure::text::comma_list;
 const FORM: &str = "## Form";
 const HEADER_KEYS: [&str; 3] = ["kind", "outcome", "input"];
 const NEXT: &str = "Next";
+const PLACEHOLDER_LABEL: &str = "[project · slice · phase]";
 const SLICES: &str = "## Slices";
 const COVERAGE: &str = "## Done-when coverage";
 const SPIKE: &str = "settled by spike ";
@@ -37,6 +39,19 @@ pub(crate) struct Spec {
     // Parts where one item `none` says there is nothing to say.
     pub(crate) none_allowed: &'static [&'static str],
     pub(crate) embedded: Embedded,
+    // Parts that an outcome refuses: (outcome, part).
+    pub(crate) forbidden: &'static [(&'static str, &'static str)],
+    pub(crate) contradicts: &'static [Contradiction],
+}
+
+// An item that the outcome cannot have: it starts with `start` in `part`; with `needs_finding`
+// the item is only refused when the output has no finding at all.
+#[derive(Debug)]
+pub(crate) struct Contradiction {
+    pub(crate) outcome: &'static str,
+    pub(crate) part: &'static str,
+    pub(crate) start: &'static str,
+    pub(crate) needs_finding: bool,
 }
 
 // A machine format inside the output, read by the formats and found under a heading of its own.
@@ -144,6 +159,16 @@ fn map_problems(file: &str, text: &str) -> Vec<String> {
 
 pub(crate) fn header(file: &str, text: &str) -> Result<Header, Vec<String>> {
     let table = block_table(file, text, FORM).map_err(|why| vec![why])?;
+    // Text above the Form section would escape the owner's line cap, which counts what follows it.
+    let first = text
+        .trim_start_matches('\u{feff}')
+        .lines()
+        .find(|line| !line.trim().is_empty());
+    if first != Some(FORM) {
+        return Err(vec![format!(
+            "header: the output must start with the \"{FORM}\" section"
+        )]);
+    }
     let mut unknown: Vec<&String> = table
         .keys()
         .filter(|key| !HEADER_KEYS.contains(&key.as_str()))
@@ -179,11 +204,23 @@ pub(crate) struct Part<'a> {
     // What follows the marker on its own line: a bold marker can carry the first words.
     lead: &'a str,
     pub(crate) lines: Vec<Line<'a>>,
+    // The line number of each of the lines, counted from 1.
+    numbers: Vec<usize>,
 }
 
 impl Part<'_> {
     fn is_empty(&self) -> bool {
-        self.lead.trim().is_empty() && self.lines.iter().all(|line| line.text.trim().is_empty())
+        self.texts().is_empty()
+    }
+
+    // The lines with something on them, trimmed.
+    fn texts(&self) -> Vec<&str> {
+        let lead = self.lead.trim();
+        let lines = self.lines.iter().map(|line| line.text.trim());
+        std::iter::once(lead)
+            .chain(lines)
+            .filter(|text| !text.is_empty())
+            .collect()
     }
 }
 
@@ -206,7 +243,7 @@ pub(crate) fn parts<'a>(spec: &Spec, all: Vec<Line<'a>>) -> Vec<Part<'a>> {
     let names = spec.part_names();
     let mut done = Vec::new();
     let mut open: Option<(Part<'a>, Option<usize>)> = None;
-    for line in all {
+    for (index, line) in all.into_iter().enumerate() {
         if matches!(line.kind, Kind::Prose) {
             if let Some((name, level, lead)) = start_of(&names, line.text) {
                 done.extend(open.take().map(|(part, _level)| part));
@@ -215,6 +252,7 @@ pub(crate) fn parts<'a>(spec: &Spec, all: Vec<Line<'a>>) -> Vec<Part<'a>> {
                         name,
                         lead,
                         lines: Vec::new(),
+                        numbers: Vec::new(),
                     },
                     level,
                 ));
@@ -231,6 +269,7 @@ pub(crate) fn parts<'a>(spec: &Spec, all: Vec<Line<'a>>) -> Vec<Part<'a>> {
         }
         if let Some((part, _level)) = open.as_mut() {
             part.lines.push(line);
+            part.numbers.push(index + 1);
         }
     }
     done.extend(open.map(|(part, _level)| part));
@@ -270,9 +309,14 @@ fn is_label(text: &str) -> bool {
 // The label and the length of an owner message, each as a problem or nothing.
 fn owner_problems(body: &[Line<'_>], max_lines: u64) -> (Option<String>, Option<String>) {
     let label = body.iter().find(|line| !line.text.trim().is_empty());
-    let label_problem = (!label.is_some_and(|line| is_label(line.text))).then(|| {
-        "label: the line after the Form section must be [project · slice · phase]".to_owned()
-    });
+    let label_problem = if label.is_some_and(|line| line.text.trim() == PLACEHOLDER_LABEL) {
+        Some(format!(
+            "label: {PLACEHOLDER_LABEL} is still the template's; name the project, the slice and the phase"
+        ))
+    } else {
+        (!label.is_some_and(|line| is_label(line.text)))
+            .then(|| format!("label: the line after the Form section must be {PLACEHOLDER_LABEL}"))
+    };
     let final_empty = body.last().is_some_and(|line| line.text.is_empty());
     let count = body.len() - usize::from(final_empty);
     let long = u64::try_from(count).is_ok_and(|count| count > max_lines);
@@ -281,7 +325,12 @@ fn owner_problems(body: &[Line<'_>], max_lines: u64) -> (Option<String>, Option<
     (label_problem, length_problem)
 }
 
-fn part_problems(names: &[&'static str], required: &[&str], found: &[Part<'_>]) -> Vec<String> {
+fn part_problems(
+    names: &[&'static str],
+    required: &[&str],
+    found: &[Part<'_>],
+    template: &[Part<'_>],
+) -> Vec<String> {
     let mut problems = Vec::new();
     for name in names {
         let mine: Vec<&Part<'_>> = found.iter().filter(|part| part.name == *name).collect();
@@ -289,11 +338,26 @@ fn part_problems(names: &[&'static str], required: &[&str], found: &[Part<'_>]) 
             [] if required.contains(name) => problems.push(format!("part \"{name}\" is missing")),
             [] => {}
             [only] if only.is_empty() => problems.push(format!("part \"{name}\" is empty")),
+            [only] if is_template_text(only, template) => {
+                problems.push(format!("part \"{name}\" is still the template's text"));
+            }
             [_only] => {}
             [_, _, ..] => problems.push(format!("part \"{name}\" appears {} times", mine.len())),
         }
     }
     problems
+}
+
+// A part whose every line is a line of the same part in the blank form was never filled in.
+fn is_template_text(part: &Part<'_>, template: &[Part<'_>]) -> bool {
+    let own = part.texts();
+    template
+        .iter()
+        .filter(|blank| blank.name == part.name)
+        .any(|blank| {
+            let given = blank.texts();
+            own.iter().all(|text| given.contains(text))
+        })
 }
 
 // A list item is read only outside fences, from the left margin.
@@ -442,6 +506,80 @@ fn once<'l, 'a>(found: &'l [Part<'a>], name: &str) -> Option<&'l Part<'a>> {
     mine.next().is_none().then_some(first)
 }
 
+// An answer that says the opposite of the outcome is refused; the rules are in the spec.
+fn contradictions(
+    spec: &Spec,
+    outcome: &str,
+    found: &[Part<'_>],
+    counts: Option<[usize; 3]>,
+) -> Vec<String> {
+    let mut problems = Vec::new();
+    for rule in spec
+        .contradicts
+        .iter()
+        .filter(|rule| rule.outcome == outcome)
+    {
+        let Some(part) = once(found, rule.part) else {
+            continue;
+        };
+        if rule.needs_finding && counts != Some([0, 0, 0]) {
+            continue;
+        }
+        let start = rule.start.trim_end();
+        for (index, item) in items(part).iter().enumerate() {
+            if !item.starts_with(rule.start) {
+                continue;
+            }
+            let place = format!(
+                "part \"{}\" item {} starts with {start}",
+                rule.part,
+                index + 1
+            );
+            problems.push(if rule.needs_finding {
+                format!("{place}, but the outcome {outcome} has no finding")
+            } else {
+                format!("{place}, which does not fit the outcome {outcome}")
+            });
+        }
+    }
+    problems
+}
+
+// The numbers of the lines that read as a finding once their indent and list marker are gone.
+fn loose_findings(spec: &Spec, all: &[Line<'_>]) -> Vec<usize> {
+    if spec.findings.is_none() {
+        return Vec::new();
+    }
+    all.iter()
+        .enumerate()
+        .filter(|(_, line)| matches!(line.kind, Kind::Prose))
+        .filter(|(_, line)| {
+            let text = line.text.trim_start();
+            parse_finding(0, list_item(text).unwrap_or(text)).is_ok()
+        })
+        .map(|(index, _)| index + 1)
+        .collect()
+}
+
+// A finding that no item of the findings part counts would escape the result: it is nested, plain
+// text, or under a heading that closed the part.
+fn hidden_findings(name: &str, loose: &[usize], found: &[Part<'_>]) -> Vec<String> {
+    let counted: Vec<usize> = found
+        .iter()
+        .filter(|part| part.name == name)
+        .flat_map(|part| part.lines.iter().zip(&part.numbers))
+        .filter(|(line, _)| matches!(line.kind, Kind::Prose) && list_item(line.text).is_some())
+        .map(|(_, number)| *number)
+        .collect();
+    loose
+        .iter()
+        .filter(|number| !counted.contains(number))
+        .map(|number| {
+            format!("line {number}: a finding that no item of the part \"{name}\" counts; make it a list item there")
+        })
+        .collect()
+}
+
 pub(crate) fn validate(spec: &Spec, ctx: &Context<'_>, text: &str) -> Result<Verdict, Vec<String>> {
     let head = header(ctx.file, text)?;
     if head.kind != spec.kind {
@@ -472,9 +610,26 @@ pub(crate) fn validate(spec: &Spec, ctx: &Context<'_>, text: &str) -> Result<Ver
         Embedded::Roadmap => roadmap_problems(ctx.file, text, ctx.goal),
         Embedded::CoverageMap => (None, map_problems(ctx.file, text)),
     };
+    let loose = loose_findings(spec, &all);
     let found = parts(spec, all);
+    let blank = form(spec.kind)
+        .and_then(|blank| lines(blank).ok())
+        .map(|blank| parts(spec, blank))
+        .unwrap_or_default();
     let mut problems: Vec<String> = label.into_iter().collect();
-    problems.extend(part_problems(&spec.part_names(), outcome.parts, &found));
+    problems.extend(part_problems(
+        &spec.part_names(),
+        outcome.parts,
+        &found,
+        &blank,
+    ));
+    for (shown, part) in spec.forbidden {
+        if *shown == head.outcome && found.iter().any(|found| found.name == *part) {
+            problems.push(format!(
+                "part \"{part}\" does not belong to the outcome {shown}"
+            ));
+        }
+    }
     for (name, check) in spec.checks {
         if let Some(part) = once(&found, name) {
             let none_is_ok = spec.none_allowed.contains(name);
@@ -498,6 +653,10 @@ pub(crate) fn validate(spec: &Spec, ctx: &Context<'_>, text: &str) -> Result<Ver
                 Err(more) => problems.extend(more),
             }
         }
+    }
+    problems.extend(contradictions(spec, &head.outcome, &found, counts));
+    if let Some((name, _kind)) = spec.findings {
+        problems.extend(hidden_findings(name, &loose, &found));
     }
     let next_is_last = found
         .iter()
@@ -593,7 +752,17 @@ mod tests {
             let check = spec.checks.iter().find(|(name, _)| *name == part);
             match check.map(|(_, check)| check) {
                 Some(Check::Answer(starts)) => {
-                    format!("{}because of {seed}", chosen(starts, seed))
+                    // An answer that says the opposite of the outcome is not a valid sample.
+                    let fits: Vec<&str> = starts
+                        .iter()
+                        .copied()
+                        .filter(|start| {
+                            !spec.contradicts.iter().any(|rule| {
+                                rule.outcome == outcome && rule.part == part && rule.start == *start
+                            })
+                        })
+                        .collect();
+                    format!("{}because of {seed}", chosen(&fits, seed))
                 }
                 Some(Check::Contains(phrases)) => format!("a {}word", chosen(phrases, seed)),
                 Some(Check::FileLines) if seed.is_multiple_of(2) => {
@@ -882,14 +1051,14 @@ mod tests {
             why in "[a-z][a-z ]{0,8}",
         ) {
             let spec = spec_of("second-opinion");
-            let bare = with_body(spec, "approve", part, &[start.trim_end()]);
+            let bare = with_body(spec, "approve-after-fixes", part, &[start.trim_end()]);
             prop_assert_eq!(
                 problems_of(spec, &bare),
                 vec![format!(
                     "part \"{part}\" item 1 must start with one of: none found:, concern:, not relevant:, then say why"
                 )]
             );
-            let answered = with_body(spec, "approve", part, &[&format!("{start}{why}")]);
+            let answered = with_body(spec, "approve-after-fixes", part, &[&format!("{start}{why}")]);
             prop_assert!(validate(spec, &ctx(1000), &answered).is_ok());
         }
 
@@ -942,6 +1111,8 @@ mod tests {
         findings: None,
         none_allowed: &["Facts"],
         embedded: Embedded::Nothing,
+        forbidden: &[],
+        contradicts: &[],
     };
 
     #[test]
@@ -1082,6 +1253,179 @@ mod tests {
         assert!(
             validate(spec, &ctx(1000), &empty).is_ok(),
             "an empty map is valid"
+        );
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            failure_persistence: None,
+            ..ProptestConfig::default()
+        })]
+
+        // The line cap counts what follows the Form section, so nothing may come before it.
+        #[test]
+        fn text_above_the_form_is_refused(
+            kind in 0_usize..32,
+            outcome in 0_usize..32,
+            seed in any::<u64>(),
+            above in "[a-z][a-z ]{0,20}",
+        ) {
+            let (spec, outcome) = pick(kind, outcome);
+            let text = format!("{above}\n{}", filled(spec, outcome.name, seed));
+            let problems = problems_of(spec, &text);
+            prop_assert!(
+                problems.contains(&"header: the output must start with the \"## Form\" section".to_owned()),
+                "{:?}", problems
+            );
+        }
+
+        // A hidden must-fix finding would pass under `approve`: nested, plain, or after a heading.
+        #[test]
+        fn a_finding_outside_the_findings_list_is_refused(
+            kind in prop::sample::select(vec!["second-opinion", "informed-review", "test-drive"]),
+            place in 0_usize..3,
+            seed in any::<u64>(),
+        ) {
+            let spec = spec_of(kind);
+            let outcome = if kind == "test-drive" { "pass" } else { "approve" };
+            let mut text = filled(spec, outcome, seed | 1);
+            text.push_str(["  - issue (blocking, security): a\n", "issue (blocking): a\n", "# Notes\n- issue (blocking): a\n"][place]);
+            let problems = problems_of(spec, &text);
+            prop_assert!(
+                problems.iter().any(|problem| problem.contains("a finding that no item of the part \"Findings\" counts")),
+                "{:?}", problems
+            );
+        }
+    }
+
+    #[test]
+    fn a_part_before_the_form_does_not_escape_the_line_cap() {
+        let spec = spec_of("decision-point");
+        let good = filled(spec, "waiting-for-the-owner", 0);
+        let (form, rest) = good.split_once("[shipit").expect("a label");
+        let moved = format!("**What:** one\n**Context:** two\n{form}[shipit{rest}");
+        let problems = problems_of(spec, &moved);
+        assert_eq!(
+            problems,
+            ["header: the output must start with the \"## Form\" section"]
+        );
+    }
+
+    // A blank form with an outcome chosen is every kind's easiest way to say nothing.
+    #[test]
+    fn a_blank_form_is_refused_for_every_outcome() {
+        for spec in KINDS {
+            let blank = form(spec.kind).expect("a form for every kind");
+            let listed = spec
+                .outcomes
+                .iter()
+                .map(|outcome| outcome.name)
+                .collect::<Vec<_>>()
+                .join(" | ");
+            for outcome in spec.outcomes {
+                let text = blank.replace(
+                    &format!("outcome = \"{listed}\""),
+                    &format!("outcome = \"{}\"", outcome.name),
+                );
+                let problems = problems_of(spec, &text);
+                for part in outcome.parts {
+                    let said = format!("part \"{part}\" is still the template's text");
+                    assert!(
+                        problems.contains(&said),
+                        "{} {part}: {problems:?}",
+                        spec.kind
+                    );
+                }
+                if spec.owner_message {
+                    assert!(
+                        problems
+                            .iter()
+                            .any(|problem| problem
+                                .contains("is still the template's; name the project")),
+                        "{}: {problems:?}",
+                        spec.kind
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_filled_part_with_one_template_line_is_content() {
+        let spec = spec_of("known-issue");
+        let blank = form(spec.kind).expect("a form");
+        let filled_in = blank.replace(
+            "Why it is left open.",
+            "Why it is left open. And a real reason.",
+        );
+        let problems = problems_of(spec, &filled_in);
+        assert!(!problems.contains(&"part \"Reason\" is still the template's text".to_owned()));
+    }
+
+    #[test]
+    fn an_answer_that_says_the_opposite_of_the_outcome_is_refused() {
+        let spec = spec_of("test-drive");
+        let text = with_body(spec, "pass", "Done-when", &["[fail] nothing works"]);
+        assert_eq!(
+            problems_of(spec, &text),
+            ["part \"Done-when\" item 1 starts with [fail], which does not fit the outcome pass"]
+        );
+        let text = with_body(spec, "findings", "Done-when", &["[fail] nothing works"]);
+        assert!(validate(spec, &ctx(1000), &text).is_ok());
+
+        let spec = spec_of("second-opinion");
+        let text = with_body(
+            spec,
+            "approve",
+            "Security",
+            &["concern: injection everywhere"],
+        );
+        assert_eq!(
+            problems_of(spec, &text),
+            [
+                "part \"Security\" item 1 starts with concern:, but the outcome approve has no finding"
+            ]
+        );
+        let with_finding = {
+            let mut parts = bodies(spec, "approve", 0);
+            for (name, body) in &mut parts {
+                if *name == "Security" {
+                    *body = vec!["- concern: injection everywhere".to_owned()];
+                }
+            }
+            parts.push(("Findings", vec!["- question: is it fixed?".to_owned()]));
+            render(spec, "approve", 0, &parts)
+        };
+        assert!(validate(spec, &ctx(1000), &with_finding).is_ok());
+
+        let spec = spec_of("informed-review");
+        let text = with_body(
+            spec,
+            "approve",
+            "Teach-back",
+            &["[wrong] the reader misread it"],
+        );
+        assert_eq!(
+            problems_of(spec, &text),
+            [
+                "part \"Teach-back\" item 1 starts with [wrong], but the outcome approve has no finding"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_part_of_another_outcome_is_refused() {
+        let spec = spec_of("explanation");
+        let text = with_body(spec, "understood", "Unclear", &["src/a.rs:3: why"]);
+        assert_eq!(
+            problems_of(spec, &text),
+            ["part \"Unclear\" does not belong to the outcome understood"]
+        );
+        let spec = spec_of("scout-report");
+        let text = with_body(spec, "found", "Missing", &["the owner of the repository"]);
+        assert_eq!(
+            problems_of(spec, &text),
+            ["part \"Missing\" does not belong to the outcome found"]
         );
     }
 

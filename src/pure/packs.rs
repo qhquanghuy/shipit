@@ -64,6 +64,19 @@ fn superpowers_pack_has_overrides() {
     }
 }
 
+// What lets an agent ask the human freely is not "no conflict": each such skill is overridden.
+#[test]
+fn the_skills_that_let_the_agent_ask_are_overridden() {
+    let overrides = items(pack("packs/skill/superpowers.md"), "## Overrides");
+    for skill in ["systematic-debugging", "test-driven-development"] {
+        let start = format!("`superpowers:{skill}`");
+        assert!(
+            overrides.iter().any(|item| item.starts_with(&start)),
+            "no override for {skill}"
+        );
+    }
+}
+
 #[test]
 fn coding_pack_covers_each_term() {
     let text = pack("packs/domain/coding.md").to_lowercase();
