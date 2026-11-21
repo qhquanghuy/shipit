@@ -555,3 +555,43 @@ refused() {
   refused '.environment = null' '.environment'
   refused '.environment = ["nix"]' '.environment'
 }
+
+@test "base must be a branch name, never a revision" {
+  local bad
+  for bad in 'HEAD~1' 'HEAD' '-x' 'a..b' 'v1^' 'a b'; do
+    refused ".base = \"$bad\"" '.base'
+  done
+  [[ $stderr == *".base: must be a branch name (see git check-ref-format --branch)" ]]
+}
+
+@test "a base like feature/x is a branch name" {
+  in_repo "$(mutated '.base = "feature/x"')"
+  stub_run
+  [ "$status" -eq 0 ]
+}
+
+@test "an empty ref is a usage error, not HEAD" {
+  in_repo "$(cat "$FIXTURE")"
+  stub_run ""
+  [ "$status" -eq 2 ]
+  [ "$stderr" = "shipit: empty ref; usage: shipit setup [ref]" ]
+  [ -z "$output" ]
+}
+
+@test "the largest u64 is a cap and 2^64 is not" {
+  in_repo "$(sed 's/"cap": 60/"cap": 18446744073709551615/' "$FIXTURE")"
+  stub_run
+  [ "$status" -eq 0 ]
+  [[ $output == *'"cap":18446744073709551615,'* ]]
+  in_repo "$(sed 's/"cap": 60/"cap": 18446744073709551616/' "$FIXTURE")"
+  stub_run
+  [ "$status" -eq 2 ]
+  [[ $stderr == *$'\n'".cap: must be an integer of at least 1" ]]
+}
+
+@test "a cap written with a fraction part at 2^64 is refused too" {
+  in_repo "$(sed 's/"cap": 60/"cap": 18446744073709551616.0/' "$FIXTURE")"
+  stub_run
+  [ "$status" -eq 2 ]
+  [[ $stderr == *$'\n'".cap: must be an integer of at least 1" ]]
+}

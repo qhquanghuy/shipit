@@ -45,7 +45,7 @@ not list. Every problem is reported at once, each with its path (for example
 |---|---|
 | top level | An object with exactly the keys above; all are required. |
 | `version` | The integer `1`. |
-| `base` | A non-empty string: the base branch. |
+| `base` | A branch name, as `git check-ref-format --branch` accepts it: the base branch. Not a revision (`HEAD~1`), not a tag. |
 | `cap` | An integer, 1 or more: the size cap for one change. |
 | `check` | An array of non-empty strings: the check commands. It may be empty (a new project's first day). |
 | `environment` | Exactly `run`: an array of non-empty strings, the command prefix that enters the project's tool environment (for example `["nix", "develop", "--command"]`, `["mise", "exec", "--"]`, `["devbox", "run", "--"]`); an empty array means none. Each check runs as `<run…> bash -c "<command>"`. |
@@ -69,7 +69,18 @@ Every command that reads the setup reads it as committed at a ref (default `HEAD
 that breaks a rule above each stop the command with exit 2 and a message that says what to fix.
 
 `check` also reads the base branch's setup, but only `base`, `cap`,
-`check` and `environment` (validated for their type only). Those four fields must be identical to the slice's: any
-difference is refused, because a branch must not choose its own checks; the owner merges setup changes on the base
-first. Nothing else in the base file is looked at, so the schema can grow. A base without a setup file prints a
-notice and nothing is compared. `shipit check --base <name>` names the base instead of the setup's `base`.
+`check` and `environment` (validated for their type only). Those four fields must be identical to the slice's, with one
+exception: when the slice's diff against the base touches only `.config/shipit.json`, a change is allowed. `check` then
+runs the slice's new checks with its new cap and environment, prints `shipit: this slice changes the checks (<fields>);
+setup change: the owner approves it by merging` on stderr, and marks the receipt (`"setup_change": true`,
+`"setup_fields"`); `shipit verify` prints `valid receipt for <tree> (setup change)`. The owner's merge is the approval.
+With any other file in the diff, any difference is refused, because a branch must not choose its own checks along with
+its own code; the owner merges setup changes on the base first. Nothing else in the base file is looked at, so the schema
+can grow. A base without a setup file prints a notice and nothing is compared. `shipit check --base <name>` names the
+base instead of the setup's `base` (a branch name too).
+
+## What a local check cannot stop
+
+The setup is the branch's own word, so `--base` is trusted: CI passes the pull request's real base there. A local check
+cannot stop `--base <your own branch>`, which compares the slice with itself. The recheck in CI is the gate, and local
+receipts can be gamed by design: they say that this machine ran the checks.

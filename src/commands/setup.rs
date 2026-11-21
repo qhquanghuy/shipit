@@ -4,9 +4,11 @@ use std::io::Write;
 use crate::edge::git::Git;
 use crate::pure::failure::Failure;
 use crate::pure::json::invalid;
-use crate::pure::setup::{SETUP_PATH, Setup, json_values, parse_setup, setup_label};
+use crate::pure::setup::{HEAD, SETUP_PATH, Setup, json_values, parse_setup, setup_label};
 
 pub(crate) const HIDDEN: bool = true;
+
+const USAGE: &str = "usage: shipit setup [ref]";
 
 pub(crate) fn load_setup(git: &Git, rev: &OsStr) -> Result<Setup, Failure> {
     let label = setup_label(&rev.to_string_lossy());
@@ -24,10 +26,10 @@ pub(crate) fn run(
     _err: &mut dyn Write,
 ) -> Result<(), Failure> {
     let rev = match args {
-        [] => OsString::from("HEAD"),
-        [rev] if rev.is_empty() => OsString::from("HEAD"),
+        [] => OsString::from(HEAD),
+        [rev] if rev.is_empty() => return Err(Failure::usage(format!("empty ref; {USAGE}"))),
         [rev] => rev.clone(),
-        [_, _, ..] => return Err(Failure::usage("usage: shipit setup [ref]")),
+        [_, _, ..] => return Err(Failure::usage(USAGE)),
     };
     let git = Git::find()?;
     let setup = load_setup(&git, &rev)?;

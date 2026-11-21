@@ -72,13 +72,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-
-    fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("shipit-store-{}-{name}", std::process::id()));
-        fs::remove_dir_all(&dir).ok();
-        fs::create_dir_all(&dir).expect("a temp folder");
-        dir
-    }
+    use crate::edge::testing::scratch;
 
     #[test]
     fn the_path_is_below_the_common_dir() {

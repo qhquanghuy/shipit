@@ -7,12 +7,13 @@ use crate::edge::git::Git;
 use crate::edge::run::run_check;
 use crate::edge::store::{check_receipt_path, write_json_atomic};
 use crate::pure::base::{BaseRef, BranchName, SelfBase, base_verdict, choose_base_ref};
-use crate::pure::baseline::{Flow, parse_baseline, setup_changes};
+use crate::pure::baseline::{Flow, FlowField, parse_baseline, setup_changes, setup_only};
 use crate::pure::failure::Failure;
 use crate::pure::json::invalid;
-use crate::pure::receipt::{CheckReceipt, Oid};
-use crate::pure::setup::{CheckCommand, SETUP_PATH, Setup, json_values, setup_label};
+use crate::pure::receipt::{BaseUsed, CheckReceipt, Oid};
+use crate::pure::setup::{CheckCommand, HEAD, SETUP_PATH, Setup, json_values, setup_label};
 use crate::pure::size::size_verdict;
+use crate::pure::text::comma_list;
 use crate::pure::work::{
     UNCOMMITTED, WorkChange, WorkFacts, change_verdict, dirty_paths, first_five, hidden_paths,
     hidden_refusal,
@@ -21,19 +22,26 @@ use crate::pure::work::{
 pub(crate) const HIDDEN: bool = false;
 
 const USAGE: &str = "usage: shipit check [--base <name>]";
-const HEAD: &str = "HEAD";
 
-// The value after --base is taken whatever it starts with.
+// The value after --base is taken whatever it starts with, then it must be a branch name.
+fn base_argument(value: Option<&OsString>) -> Result<BranchName, Failure> {
+    let value = value
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| Failure::usage(format!("--base needs a branch name; {USAGE}")))?;
+    value.to_str().and_then(BranchName::parse).ok_or_else(|| {
+        Failure::usage(format!(
+            "--base '{}' is not a branch name (see git check-ref-format --branch); {USAGE}",
+            value.to_string_lossy()
+        ))
+    })
+}
+
 fn parse_args(args: &[OsString]) -> Result<Option<BranchName>, Failure> {
     let mut base: Option<BranchName> = None;
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
         if arg == "--base" {
-            let name = rest
-                .next()
-                .and_then(|value| BranchName::parse(&value.to_string_lossy()))
-                .ok_or_else(|| Failure::usage(format!("--base needs a branch name; {USAGE}")))?;
-            if base.replace(name).is_some() {
+            if base.replace(base_argument(rest.next())?).is_some() {
                 return Err(Failure::usage(format!("--base given twice; {USAGE}")));
             }
         } else {
@@ -52,12 +60,14 @@ fn head_commit(git: &Git) -> Result<Oid, Failure> {
 }
 
 fn base_ref(git: &Git, base: &BranchName) -> Result<BaseRef, Failure> {
-    let origin_name = BaseRef::Origin(base.clone()).to_string();
-    let local_name = base.to_string();
-    let origin = git.commit_of(OsStr::new(&origin_name)).is_some();
-    let local = git.commit_of(OsStr::new(&local_name)).is_some();
+    let origin_ref = BaseRef::Origin(base.clone());
+    let local_ref = BaseRef::Local(base.clone());
+    let origin_full = origin_ref.full();
+    let local_full = local_ref.full();
+    let origin = git.commit_of(OsStr::new(&origin_full)).is_some();
+    let local = git.commit_of(OsStr::new(&local_full)).is_some();
     let local_has_origin =
-        origin && local && git.is_ancestor(OsStr::new(&origin_name), OsStr::new(&local_name));
+        origin && local && git.is_ancestor(OsStr::new(&origin_full), OsStr::new(&local_full));
     choose_base_ref(base, origin, local, local_has_origin).ok_or_else(|| {
         Failure::usage(format!(
             "base branch \"{base}\" not found (looked for origin/{base} and {base})"
@@ -69,14 +79,11 @@ fn refuse_self_base(
     git: &Git,
     base: &BranchName,
     trusted: bool,
-    base_ref: &BaseRef,
+    ref_commit: &Oid,
 ) -> Result<(), Failure> {
     let current = git.current_branch();
-    let ref_commit = git
-        .commit_of(OsStr::new(&base_ref.to_string()))
-        .ok_or_else(|| Failure::usage(format!("cannot resolve {base_ref} to a commit")))?;
     let head = head_commit(git)?;
-    base_verdict(trusted, base, current.as_deref(), &ref_commit, &head).map_err(
+    base_verdict(trusted, base, current.as_deref(), ref_commit, &head).map_err(
         |reason: SelfBase| {
             Failure::usage(format!(
                 "base \"{base}\" {reason}, and the setup is the branch's own word; pass --base \
@@ -92,7 +99,8 @@ fn load_baseline(
     err: &mut dyn Write,
 ) -> Result<Option<Flow>, Failure> {
     let name = base_ref.to_string();
-    let rev = OsStr::new(&name);
+    let full = base_ref.full();
+    let rev = OsStr::new(&full);
     let label = setup_label(&name);
     if !git.file_exists(rev, SETUP_PATH) {
         writeln!(err, "shipit: no setup file on {name}; nothing to compare").ok();
@@ -108,35 +116,45 @@ fn load_baseline(
         .map_err(|problems| Failure::usage(invalid(&label, &problems)))
 }
 
-// The slice must leave base, cap, check and environment as the base branch has them: a branch
-// that could change them could vouch for itself.
-fn refuse_changed_setup(
+// The fields of base, cap, check and environment that differ from the base branch's setup.
+fn changed_fields(
     git: &Git,
     setup: &Setup,
-    base: &BranchName,
     base_ref: &BaseRef,
     err: &mut dyn Write,
-) -> Result<(), Failure> {
-    let Some(baseline) = load_baseline(git, base_ref, err)? else {
-        return Ok(());
-    };
-    let changes = setup_changes(&baseline, &Flow::of(setup));
-    if changes.is_empty() {
-        return Ok(());
-    }
-    let fields = joined(&changes);
-    Err(Failure::no(format!(
-        "this slice changes the checks ({fields}); the owner merges setup changes on {base} \
-         first (or merge/rebase {base} if it moved on)"
-    )))
+) -> Result<Vec<FlowField>, Failure> {
+    Ok(load_baseline(git, base_ref, err)?
+        .map(|baseline| setup_changes(&baseline, &Flow::of(setup)))
+        .unwrap_or_default())
 }
 
-fn joined<T: ToString>(items: &[T]) -> String {
-    items
-        .iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>()
-        .join(", ")
+// A branch that could change the checks along with its code could vouch for itself, so the
+// owner merges those first. A slice that edits the setup file alone only asks the owner: it is
+// marked in the receipt and approved by merging.
+fn approve_setup_change(
+    git: &Git,
+    changes: &[FlowField],
+    since: &Oid,
+    base: &BranchName,
+    err: &mut dyn Write,
+) -> Result<Option<Vec<String>>, Failure> {
+    if changes.is_empty() {
+        return Ok(None);
+    }
+    let fields = comma_list(changes);
+    if !setup_only(&git.changed_names(since)?) {
+        return Err(Failure::no(format!(
+            "this slice changes the checks ({fields}); the owner merges setup changes on {base} \
+             first (or merge/rebase {base} if it moved on)"
+        )));
+    }
+    writeln!(
+        err,
+        "shipit: this slice changes the checks ({fields}); setup change: the owner approves it \
+         by merging"
+    )
+    .ok();
+    Ok(Some(changes.iter().map(ToString::to_string).collect()))
 }
 
 fn refuse_changed_work(git: &Git, command: &str, commit: &Oid, tree: &Oid) -> Result<(), Failure> {
@@ -184,9 +202,9 @@ fn refuse_changed_work(git: &Git, command: &str, commit: &Oid, tree: &Oid) -> Re
 fn run_commands(
     git: &Git,
     setup: &Setup,
-    commit: &Oid,
-    tree: &Oid,
+    (commit, tree): (&Oid, &Oid),
     out: &mut dyn Write,
+    err: &mut dyn Write,
 ) -> Result<(), Failure> {
     let prefix: Vec<String> = setup
         .environment
@@ -197,7 +215,10 @@ fn run_commands(
     for command in setup.check.iter().map(CheckCommand::as_str) {
         writeln!(out, "check: {command}").ok();
         out.flush().ok();
-        let code = run_check(git.top(), &prefix, command);
+        let code = run_check(git.top(), &prefix, command).unwrap_or_else(|not_started| {
+            writeln!(err, "shipit: {}", not_started.message).ok();
+            not_started.code
+        });
         if code != 0 {
             return Err(Failure::no(format!(
                 "check failed (exit {code}): {command}; fix it and run shipit check again"
@@ -231,13 +252,17 @@ pub(crate) fn run(
     }
 
     let trusted = override_base.is_some();
-    let base = override_base.unwrap_or_else(|| BranchName::from(&setup.base));
+    let base = override_base.unwrap_or_else(|| setup.base.clone());
     let base_ref = base_ref(&git, &base)?;
-    refuse_self_base(&git, &base, trusted, &base_ref)?;
-    refuse_changed_setup(&git, &setup, &base, &base_ref, err)?;
+    let base_commit = git
+        .commit_of(OsStr::new(&base_ref.full()))
+        .ok_or_else(|| Failure::usage(format!("cannot resolve {base_ref} to a commit")))?;
+    refuse_self_base(&git, &base, trusted, &base_commit)?;
+    let changes = changed_fields(&git, &setup, &base_ref, err)?;
     let merge_base = git
-        .merge_base_with_head(OsStr::new(&base_ref.to_string()))
+        .merge_base_with_head(OsStr::new(&base_ref.full()))
         .ok_or_else(|| Failure::usage(format!("no shared history with {base_ref}")))?;
+    let setup_fields = approve_setup_change(&git, &changes, &merge_base, &base, err)?;
     let files = git.changed_files_count(&merge_base)?;
     let (fits, message) = size_verdict(files, setup.cap);
     writeln!(out, "{message}").ok();
@@ -251,7 +276,7 @@ pub(crate) fn run(
 
     let commit = head_commit(&git)?;
     let tree = git.tree_of(OsStr::new(HEAD))?;
-    run_commands(&git, &setup, &commit, &tree, out)?;
+    run_commands(&git, &setup, (&commit, &tree), out, err)?;
 
     let time = now_utc();
     let path = check_receipt_path(&git.common_dir()?, &tree);
@@ -262,12 +287,15 @@ pub(crate) fn run(
         .collect();
     let short = git.short(&tree)?;
     let receipt = CheckReceipt::new(
-        tree,
-        commit,
+        (tree, commit),
+        BaseUsed {
+            name: base_ref.full(),
+            commit: base_commit,
+        },
         (files, setup.cap),
         commands,
+        setup_fields,
         time,
-        format!("shipit {}", env!("CARGO_PKG_VERSION")),
     );
     write_json_atomic(&path, &receipt)?;
     writeln!(out, "receipt written for {short}").ok();
@@ -279,13 +307,10 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
-
-    fn os(args: &[&str]) -> Vec<OsString> {
-        args.iter().map(OsString::from).collect()
-    }
+    use crate::pure::testing::os;
 
     fn name(text: &str) -> BranchName {
-        BranchName::parse(text).expect("a non-empty name")
+        BranchName::parse(text).expect("a branch name")
     }
 
     #[test]
@@ -294,13 +319,26 @@ mod tests {
     }
 
     #[test]
-    fn base_takes_the_next_argument_whatever_it_starts_with() {
+    fn base_takes_the_next_argument_as_a_branch_name() {
         assert_eq!(parse_args(&os(&["--base", "main"])), Ok(Some(name("main"))));
-        assert_eq!(parse_args(&os(&["--base", "-x"])), Ok(Some(name("-x"))));
         assert_eq!(
-            parse_args(&os(&["--base", "--base"])),
-            Ok(Some(name("--base")))
+            parse_args(&os(&["--base", "feature/x"])),
+            Ok(Some(name("feature/x")))
         );
+    }
+
+    #[test]
+    fn a_base_that_is_not_a_branch_name_is_refused_whatever_git_would_make_of_it() {
+        for text in ["-x", "--base", "HEAD~1", "HEAD", "v1^", "a..b", "a b"] {
+            assert_eq!(
+                parse_args(&os(&["--base", text])),
+                Err(Failure::usage(format!(
+                    "--base '{text}' is not a branch name (see git check-ref-format --branch); \
+                     usage: shipit check [--base <name>]"
+                ))),
+                "{text}"
+            );
+        }
     }
 
     #[test]
@@ -356,7 +394,7 @@ mod tests {
         })]
 
         #[test]
-        fn base_x_parses_to_x_for_any_non_empty_x(x in ".{1,20}") {
+        fn base_x_parses_to_x_for_any_branch_name_x(x in "[a-z][a-z0-9]{0,9}(/[a-z0-9]{1,5}){0,2}") {
             prop_assert_eq!(parse_args(&os(&["--base", &x])), Ok(Some(name(&x))));
         }
     }

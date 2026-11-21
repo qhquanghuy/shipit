@@ -32,6 +32,21 @@ struct ReceiptSize {
     cap: Cap,
 }
 
+// The setup was changed by the slice itself, and nothing else was: the owner approves it by
+// merging (docs/setup.md).
+#[derive(Debug, Serialize)]
+struct SetupChange {
+    setup_change: bool,
+    setup_fields: Vec<String>,
+}
+
+// The ref the slice was compared with (the full name) and the commit it was at.
+#[derive(Debug)]
+pub(crate) struct BaseUsed {
+    pub(crate) name: String,
+    pub(crate) commit: Oid,
+}
+
 // Field order is the file's order (docs/store.md).
 #[derive(Debug, Serialize)]
 pub(crate) struct CheckReceipt {
@@ -39,43 +54,66 @@ pub(crate) struct CheckReceipt {
     version: u8,
     key: Oid,
     commit: Oid,
+    base_ref: String,
+    base_commit: Oid,
     size: ReceiptSize,
     commands: Vec<String>,
+    #[serde(flatten)]
+    setup_change: Option<SetupChange>,
     time: String,
     tool: String,
 }
 
 impl CheckReceipt {
     pub(crate) fn new(
-        tree: Oid,
-        commit: Oid,
+        (tree, commit): (Oid, Oid),
+        base: BaseUsed,
         (files, cap): (u64, Cap),
         commands: Vec<String>,
+        setup_fields: Option<Vec<String>>,
         time: String,
-        tool: String,
     ) -> Self {
         Self {
             kind: "check",
             version: 1,
             key: tree,
             commit,
+            base_ref: base.name,
+            base_commit: base.commit,
             size: ReceiptSize { files, cap },
             commands,
+            setup_change: setup_fields.map(|setup_fields| SetupChange {
+                setup_change: true,
+                setup_fields,
+            }),
             time,
-            tool,
+            tool: format!("shipit {}", env!("CARGO_PKG_VERSION")),
         }
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Validity {
+    Plain,
+    SetupChange,
+}
+
 // Valid only for exactly one value: an object with kind "check", version 1 and key equal to the
 // tree.
-pub(crate) fn receipt_valid(docs: Option<&[Value]>, tree: &Oid) -> bool {
+pub(crate) fn receipt_validity(docs: Option<&[Value]>, tree: &Oid) -> Option<Validity> {
     let Some([doc]) = docs else {
-        return false;
+        return None;
     };
-    doc.get("kind").and_then(Value::as_str) == Some("check")
+    let valid = doc.get("kind").and_then(Value::as_str) == Some("check")
         && doc.get("version").and_then(Value::as_f64) == Some(1.0)
-        && doc.get("key").and_then(Value::as_str) == Some(tree.as_str())
+        && doc.get("key").and_then(Value::as_str) == Some(tree.as_str());
+    valid.then(|| {
+        if doc.get("setup_change") == Some(&Value::Bool(true)) {
+            Validity::SetupChange
+        } else {
+            Validity::Plain
+        }
+    })
 }
 
 #[cfg(test)]
@@ -83,6 +121,8 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
+    use crate::pure::setup::json_values;
+    use crate::pure::testing::{cap, oid};
 
     proptest! {
         #![proptest_config(ProptestConfig {
@@ -98,8 +138,8 @@ mod tests {
             prop_assume!(a != b);
             let (a, b) = (Oid::parse(&a).expect("hex"), Oid::parse(&b).expect("hex"));
             let docs = [receipt_for(a.clone())];
-            prop_assert!(receipt_valid(Some(&docs), &a));
-            prop_assert!(!receipt_valid(Some(&docs), &b));
+            prop_assert!(receipt_validity(Some(&docs), &a).is_some());
+            prop_assert!(receipt_validity(Some(&docs), &b).is_none());
         }
 
         #[test]
@@ -124,43 +164,50 @@ mod tests {
         }
     }
 
-    fn oid_of(c: char) -> Oid {
-        Oid::parse(&c.to_string().repeat(40)).expect("40 hex digits")
+    fn base() -> BaseUsed {
+        BaseUsed {
+            name: "refs/heads/main".to_owned(),
+            commit: oid('c'),
+        }
+    }
+
+    fn receipt(tree: Oid, setup_fields: Option<Vec<String>>) -> CheckReceipt {
+        CheckReceipt::new(
+            (tree, oid('b')),
+            base(),
+            (3, cap(60)),
+            vec!["true".to_owned()],
+            setup_fields,
+            "2026-11-21T10:00:00Z".to_owned(),
+        )
     }
 
     fn receipt_for(tree: Oid) -> Value {
-        let setup = include_str!("../../tests/fixtures/setup-valid.json");
-        let cap = crate::pure::setup::json_values(setup.as_bytes())
-            .ok()
-            .and_then(|docs| crate::pure::setup::parse_setup(&docs).ok())
-            .map(|setup| setup.cap)
-            .expect("the fixture parses");
-        let receipt = CheckReceipt::new(
-            tree,
-            oid_of('b'),
-            (3, cap),
-            vec![],
-            "2026-11-21T10:00:00Z".to_owned(),
-            "shipit 0.1.0".to_owned(),
-        );
-        let text = serde_json::to_string(&receipt).expect("serializes");
+        let text = serde_json::to_string(&receipt(tree, None)).expect("serializes");
         serde_json::from_str(&text).expect("reads back")
     }
 
     fn parsed(text: &str) -> Vec<Value> {
-        crate::pure::setup::json_values(text.as_bytes()).expect("valid JSON")
+        json_values(text.as_bytes()).expect("valid JSON")
+    }
+
+    fn valid(docs: &[Value], tree: &Oid) -> bool {
+        receipt_validity(Some(docs), tree).is_some()
     }
 
     #[test]
     fn a_receipt_is_valid_for_its_own_tree() {
-        let docs = [receipt_for(oid_of('a'))];
-        assert!(receipt_valid(Some(&docs), &oid_of('a')));
-        assert!(!receipt_valid(Some(&docs), &oid_of('c')));
+        let docs = [receipt_for(oid('a'))];
+        assert_eq!(
+            receipt_validity(Some(&docs), &oid('a')),
+            Some(Validity::Plain)
+        );
+        assert!(!valid(&docs, &oid('c')));
     }
 
     #[test]
     fn no_file_is_no_receipt() {
-        assert!(!receipt_valid(None, &oid_of('a')));
+        assert_eq!(receipt_validity(None, &oid('a')), None);
     }
 
     #[test]
@@ -182,10 +229,7 @@ mod tests {
             ),
         ];
         for text in &bad {
-            assert!(
-                !receipt_valid(Some(&parsed(text)), &oid_of('a')),
-                "{text} must be invalid"
-            );
+            assert!(!valid(&parsed(text), &oid('a')), "{text} must be invalid");
         }
     }
 
@@ -193,34 +237,50 @@ mod tests {
     fn a_version_written_as_1_point_0_is_valid_as_in_jq() {
         let key = "a".repeat(40);
         let text = format!("{{\"kind\":\"check\",\"version\":1.0,\"key\":\"{key}\"}}");
-        assert!(receipt_valid(Some(&parsed(&text)), &oid_of('a')));
+        assert!(valid(&parsed(&text), &oid('a')));
     }
 
     #[test]
     fn the_receipt_serializes_in_the_documented_order() {
-        let oid = |c: char| Oid::parse(&c.to_string().repeat(40)).expect("40 hex digits");
-        let setup = include_str!("../../tests/fixtures/setup-valid.json");
-        let cap = crate::pure::setup::json_values(setup.as_bytes())
-            .ok()
-            .and_then(|docs| crate::pure::setup::parse_setup(&docs).ok())
-            .map(|setup| setup.cap)
-            .expect("the fixture parses");
-        let receipt = CheckReceipt::new(
-            oid('a'),
-            oid('b'),
-            (3, cap),
-            vec!["true".to_owned()],
-            "2026-11-21T10:00:00Z".to_owned(),
-            "shipit 0.1.0".to_owned(),
-        );
-        let (a, b) = ("a".repeat(40), "b".repeat(40));
+        let (a, b, c) = ("a".repeat(40), "b".repeat(40), "c".repeat(40));
+        let tool = env!("CARGO_PKG_VERSION");
         assert_eq!(
-            serde_json::to_string(&receipt).ok(),
+            serde_json::to_string(&receipt(oid('a'), None)).ok(),
             Some(format!(
                 "{{\"kind\":\"check\",\"version\":1,\"key\":\"{a}\",\"commit\":\"{b}\",\
+                 \"base_ref\":\"refs/heads/main\",\"base_commit\":\"{c}\",\
                  \"size\":{{\"files\":3,\"cap\":60}},\"commands\":[\"true\"],\
-                 \"time\":\"2026-11-21T10:00:00Z\",\"tool\":\"shipit 0.1.0\"}}"
+                 \"time\":\"2026-11-21T10:00:00Z\",\"tool\":\"shipit {tool}\"}}"
             ))
         );
+    }
+
+    #[test]
+    fn a_setup_change_is_marked_with_its_fields_and_verify_sees_the_mark() {
+        let marked = receipt(oid('a'), Some(vec!["cap".to_owned(), "check".to_owned()]));
+        let text = serde_json::to_string(&marked).expect("serializes");
+        assert!(
+            text.contains("\"commands\":[\"true\"],\"setup_change\":true,\"setup_fields\":[\"cap\",\"check\"],\"time\""),
+            "{text}"
+        );
+        assert_eq!(
+            receipt_validity(Some(&parsed(&text)), &oid('a')),
+            Some(Validity::SetupChange)
+        );
+    }
+
+    #[test]
+    fn only_the_boolean_true_marks_a_setup_change() {
+        let key = "a".repeat(40);
+        for mark in ["false", "1", "\"true\"", "null"] {
+            let text = format!(
+                "{{\"kind\":\"check\",\"version\":1,\"key\":\"{key}\",\"setup_change\":{mark}}}"
+            );
+            assert_eq!(
+                receipt_validity(Some(&parsed(&text)), &oid('a')),
+                Some(Validity::Plain),
+                "{mark}"
+            );
+        }
     }
 }

@@ -69,6 +69,7 @@ functional.
 The human reviewer reads the change, so the code must be simple to read:
 
 - Reuse before adding. No dead code and no duplicate code.
+- Make the simplest change that meets the done-when.
 - Comments only for decisions, not for what the code already says.
 - The pull request leads with the changed types and interfaces.
 
@@ -196,7 +197,7 @@ the next phase only after it validates.
 | reviewer | review | approve, approve after fixes, rework |
 | tester | test drive | pass, findings |
 | researcher | model advice | ready for the owner |
-| reader | explanation of the change, written without the build plan | none: a signal for the reviewer, not a gate |
+| reader | explanation of the change, written without the build plan | understood, unclear |
 
 A scout that returns `partial` or `not found` is asked once more with a narrower question and
 where it already looked. If that is still not enough, the question goes to a scout one tier up,

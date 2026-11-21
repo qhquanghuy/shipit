@@ -1,4 +1,5 @@
 use crate::pure::receipt::Oid;
+use crate::pure::text::comma_list;
 
 pub(crate) const UNCOMMITTED: &str =
     "uncommitted changes: commit first, a receipt is per commit content";
@@ -39,12 +40,12 @@ pub(crate) fn change_verdict(facts: &WorkFacts<'_>) -> WorkChange {
 }
 
 pub(crate) fn first_five<S: AsRef<str>>(lines: impl IntoIterator<Item = S>) -> String {
-    lines
-        .into_iter()
-        .take(LISTED)
-        .map(|line| line.as_ref().to_owned())
-        .collect::<Vec<_>>()
-        .join(", ")
+    comma_list(
+        lines
+            .into_iter()
+            .take(LISTED)
+            .map(|line| line.as_ref().to_owned()),
+    )
 }
 
 fn entries(z: &[u8]) -> impl Iterator<Item = &[u8]> {
@@ -96,10 +97,7 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
-
-    fn oid(c: char) -> Oid {
-        Oid::parse(&c.to_string().repeat(40)).expect("40 hex digits")
-    }
+    use crate::pure::testing::oid;
 
     fn verdicts(edit: impl Fn(&mut Facts)) -> WorkChange {
         let mut facts = Facts {

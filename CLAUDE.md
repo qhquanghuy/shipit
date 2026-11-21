@@ -21,6 +21,7 @@ Rust CLI: checks and receipts for agent work. Terms: `docs/vocab.md`. Behaviour:
   and `pub(crate) fn run(args, out, err) -> Result<(), Failure>`.
 - A module is one file in `src/pure/` or `src/edge/`; folders are flat, no `mod x;` lines.
 - Shared (owned by rust-core): `Cargo.toml`, `build.rs`, `clippy.toml`, `flake.nix`, `src/main.rs`, `tests/helpers.bash`.
+- Unit-test helpers shared by modules: `src/pure/testing.rs` (`oid`, `os`, `cap`) and `src/edge/testing.rs` (`scratch`); both are `cfg(test)`. Reuse them, do not copy.
 
 ## Rules the tooling cannot check
 

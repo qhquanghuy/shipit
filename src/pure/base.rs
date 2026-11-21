@@ -1,21 +1,41 @@
 use std::fmt;
 
-use crate::pure::receipt::Oid;
-use crate::pure::setup::NonEmpty;
+use serde::Serialize;
 
-// May start with a dash: git always gets it after --end-of-options.
-#[derive(Debug, Clone, PartialEq, Eq)]
+use crate::pure::receipt::Oid;
+
+// A branch name as `git check-ref-format --branch` accepts it, and never a revision such as
+// `HEAD~1` or a tag: the setup's base is the branch's own word, so it must name a branch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
 pub(crate) struct BranchName(String);
+
+const FORBIDDEN: &[char] = &[' ', '~', '^', ':', '?', '*', '[', '\\'];
+
+fn is_branch_name(text: &str) -> bool {
+    !text.is_empty()
+        && !text.starts_with('-')
+        && text != "HEAD"
+        && !text.ends_with(['/', '.'])
+        && !text.contains("..")
+        && !text.contains("@{")
+        && !text.contains(|c: char| c.is_ascii_control() || FORBIDDEN.contains(&c))
+        && text.split('/').all(|part| {
+            !part.is_empty()
+                && !part.starts_with('.')
+                && part
+                    .rsplit_once('.')
+                    .is_none_or(|(_, extension)| extension != "lock")
+        })
+}
 
 impl BranchName {
     pub(crate) fn parse(text: &str) -> Option<Self> {
-        (!text.is_empty()).then(|| Self(text.to_owned()))
+        is_branch_name(text).then(|| Self(text.to_owned()))
     }
-}
 
-impl From<&NonEmpty> for BranchName {
-    fn from(name: &NonEmpty) -> Self {
-        Self(name.as_str().to_owned())
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
     }
 }
 
@@ -25,10 +45,20 @@ impl fmt::Display for BranchName {
     }
 }
 
+// The full ref name is what git is asked for: a short name could resolve to a tag.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum BaseRef {
     Local(BranchName),
     Origin(BranchName),
+}
+
+impl BaseRef {
+    pub(crate) fn full(&self) -> String {
+        match self {
+            Self::Local(name) => format!("refs/heads/{name}"),
+            Self::Origin(name) => format!("refs/remotes/origin/{name}"),
+        }
+    }
 }
 
 impl fmt::Display for BaseRef {
@@ -96,13 +126,10 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
+    use crate::pure::testing::oid;
 
     fn name(text: &str) -> BranchName {
         BranchName::parse(text).expect("a non-empty name")
-    }
-
-    fn oid(c: char) -> Oid {
-        Oid::parse(&c.to_string().repeat(40)).expect("40 hex digits")
     }
 
     #[test]
@@ -121,7 +148,56 @@ mod tests {
     fn a_base_ref_is_shown_as_git_names_it() {
         assert_eq!(BaseRef::Local(name("main")).to_string(), "main");
         assert_eq!(BaseRef::Origin(name("main")).to_string(), "origin/main");
-        assert_eq!(BaseRef::Origin(name("-x")).to_string(), "origin/-x");
+    }
+
+    #[test]
+    fn the_full_ref_names_a_branch_never_a_tag() {
+        assert_eq!(BaseRef::Local(name("main")).full(), "refs/heads/main");
+        assert_eq!(
+            BaseRef::Origin(name("a/b")).full(),
+            "refs/remotes/origin/a/b"
+        );
+    }
+
+    #[test]
+    fn names_git_accepts_as_branches_parse() {
+        for text in ["main", "a/b", "@", "@x", "a@b", "é", "release-1.0", "x.y/z"] {
+            assert_eq!(BranchName::parse(text), Some(name(text)), "{text}");
+        }
+    }
+
+    #[test]
+    fn revisions_and_malformed_names_are_not_branches() {
+        let bad = [
+            "",
+            "-x",
+            "HEAD",
+            "HEAD~1",
+            "HEAD^",
+            "main~2",
+            "a..b",
+            "a//b",
+            "/a",
+            "a/",
+            "a.",
+            ".a",
+            "a/.b",
+            "a.lock",
+            "a/b.lock/c",
+            "a b",
+            "a:b",
+            "a?",
+            "a*",
+            "a[",
+            "a\\b",
+            "a@{b",
+            "@{-1}",
+            "a\tb",
+            "a\u{7f}b",
+        ];
+        for text in bad {
+            assert_eq!(BranchName::parse(text), None, "{text:?}");
+        }
     }
 
     #[test]
@@ -161,7 +237,7 @@ mod tests {
 
         #[test]
         fn a_trusted_base_is_always_ok(
-            base in ".{1,8}",
+            base in "[a-z]{1,8}",
             current in proptest::option::of(".{0,8}"),
             same in any::<bool>(),
         ) {

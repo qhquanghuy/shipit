@@ -3,7 +3,7 @@ use std::fmt;
 use serde_json::Value;
 
 use crate::pure::json::{Parsed, Problem, whole};
-use crate::pure::setup::Setup;
+use crate::pure::setup::{SETUP_PATH, Setup};
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Flow {
@@ -70,6 +70,11 @@ pub(crate) fn setup_changes(base: &Flow, branch: &Flow) -> Vec<FlowField> {
     .filter(|(_, same)| !same)
     .map(|(field, _)| field)
     .collect()
+}
+
+// A diff that touches the setup file and nothing else.
+pub(crate) fn setup_only(names: &[Vec<u8>]) -> bool {
+    matches!(names, [only] if only == SETUP_PATH.as_bytes())
 }
 
 fn all_strings(value: &Value) -> Option<Vec<String>> {
@@ -142,6 +147,17 @@ mod tests {
             check: vec!["a".to_owned(), "b".to_owned()],
             environment: json!({"run": []}),
         }
+    }
+
+    #[test]
+    fn only_a_diff_of_the_setup_file_alone_is_setup_only() {
+        let setup = SETUP_PATH.as_bytes().to_vec();
+        assert!(setup_only(std::slice::from_ref(&setup)));
+        assert!(!setup_only(&[]));
+        assert!(!setup_only(&[b"src/main.rs".to_vec()]));
+        assert!(!setup_only(&[setup.clone(), b"a".to_vec()]));
+        assert!(!setup_only(&[b"a".to_vec(), setup]));
+        assert!(!setup_only(&[b".config/shipit.json.bak".to_vec()]));
     }
 
     fn names(changes: &[FlowField]) -> Vec<String> {

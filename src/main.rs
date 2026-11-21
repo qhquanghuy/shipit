@@ -4,6 +4,15 @@ use std::process::ExitCode;
 
 include!(concat!(env!("OUT_DIR"), "/modules.rs"));
 
+// The build script is compiled again here only so that its rules have unit tests.
+#[cfg(test)]
+#[path = "../build.rs"]
+#[expect(
+    dead_code,
+    reason = "the build script's main is never called by the tests"
+)]
+mod build_script;
+
 use crate::pure::dispatch::{Invocation, dispatch, unknown_command, usage};
 use crate::pure::failure::Failure;
 

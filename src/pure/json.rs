@@ -73,9 +73,9 @@ pub(crate) fn whole(value: &Value) -> Option<u64> {
         return Some(n);
     }
     let x = value.as_f64()?;
-    // 2^64: a u64 written with a fraction part rounds up to it, and `as` saturates.
+    // 2^64 is not a u64 and `as` would saturate it: the bound is exclusive.
     let limit = 18_446_744_073_709_551_616.0_f64;
-    (x.fract() == 0.0 && (0.0..=limit).contains(&x)).then_some(x as u64)
+    (x.fract() == 0.0 && (0.0..limit).contains(&x)).then_some(x as u64)
 }
 
 pub(crate) fn non_empty(value: &Value) -> Option<&str> {

@@ -4,13 +4,13 @@ use std::io::Write;
 use crate::edge::git::Git;
 use crate::edge::store::{check_receipt_path, read_json};
 use crate::pure::failure::Failure;
-use crate::pure::receipt::receipt_valid;
+use crate::pure::receipt::{Validity, receipt_validity};
+use crate::pure::setup::HEAD;
 use crate::pure::work::{UNCOMMITTED, hidden_paths, hidden_refusal};
 
 pub(crate) const HIDDEN: bool = false;
 
 const USAGE: &str = "usage: shipit verify [commit]";
-const HEAD: &str = "HEAD";
 
 // None means HEAD, and then the work must be clean too. Two or more arguments are counted before
 // the emptiness of one.
@@ -55,13 +55,15 @@ pub(crate) fn run(
     let tree = git.tree_of(target)?;
     let path = check_receipt_path(&git.common_dir()?, &tree);
     let docs = read_json(&path);
-    if receipt_valid(docs.as_deref(), &tree) {
-        let short = git.short(&tree)?;
-        writeln!(out, "valid receipt for {short}").ok();
-        Ok(())
-    } else {
-        Err(Failure::no("no receipt for this content: run shipit check"))
-    }
+    let Some(validity) = receipt_validity(docs.as_deref(), &tree) else {
+        return Err(Failure::no("no receipt for this content: run shipit check"));
+    };
+    let short = git.short(&tree)?;
+    match validity {
+        Validity::Plain => writeln!(out, "valid receipt for {short}").ok(),
+        Validity::SetupChange => writeln!(out, "valid receipt for {short} (setup change)").ok(),
+    };
+    Ok(())
 }
 
 #[cfg(test)]
@@ -69,10 +71,7 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
-
-    fn os(args: &[&str]) -> Vec<OsString> {
-        args.iter().map(OsString::from).collect()
-    }
+    use crate::pure::testing::os;
 
     #[test]
     fn no_argument_means_head() {

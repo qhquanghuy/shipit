@@ -5,11 +5,13 @@
 )]
 
 use std::ffi::{OsStr, OsString};
+use std::os::unix::ffi::OsStringExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use crate::pure::failure::Failure;
 use crate::pure::receipt::Oid;
+use crate::pure::setup::HEAD;
 
 #[derive(Debug)]
 pub(crate) struct GitFailed;
@@ -24,17 +26,33 @@ fn text(bytes: &[u8]) -> String {
     text.strip_suffix('\n').unwrap_or(&text).to_owned()
 }
 
+// The newline git ends the line with is dropped; the rest is the path as the file system has it,
+// whether or not it is UTF-8.
+fn path_of(bytes: &[u8]) -> PathBuf {
+    PathBuf::from(OsString::from_vec(
+        bytes.strip_suffix(b"\n").unwrap_or(bytes).to_vec(),
+    ))
+}
+
 fn oid_of(bytes: &[u8]) -> Option<Oid> {
     Oid::parse(&text(bytes))
 }
 
-// `<rev>^{kind}`, built without turning a rev that is not UTF-8 into text.
-fn peeled(rev: &OsStr, kind: &str) -> OsString {
+// `<rev><parts…>`, built without turning a rev that is not UTF-8 into text.
+fn spec(rev: &OsStr, parts: &[&str]) -> OsString {
     let mut spec = OsString::from(rev);
-    spec.push("^{");
-    spec.push(kind);
-    spec.push("}");
+    for part in parts {
+        spec.push(part);
+    }
     spec
+}
+
+fn peeled(rev: &OsStr, kind: &str) -> OsString {
+    spec(rev, &["^{", kind, "}"])
+}
+
+fn rev_path(rev: &OsStr, path: &str) -> OsString {
+    spec(rev, &[":", path])
 }
 
 impl Git {
@@ -51,7 +69,7 @@ impl Git {
             return Err(not_a_repository());
         }
         Ok(Self {
-            top: PathBuf::from(text(&output.stdout)),
+            top: path_of(&output.stdout),
         })
     }
 
@@ -81,22 +99,20 @@ impl Git {
     }
 
     pub(crate) fn show_file(&self, rev: &OsStr, path: &str) -> Option<Vec<u8>> {
-        let mut spec = OsString::from(rev);
-        spec.push(":");
-        spec.push(path);
-        self.output(&[OsStr::new("show"), OsStr::new("--end-of-options"), &spec])
-            .ok()
+        self.output(&[
+            OsStr::new("show"),
+            OsStr::new("--end-of-options"),
+            &rev_path(rev, path),
+        ])
+        .ok()
     }
 
     pub(crate) fn file_exists(&self, rev: &OsStr, path: &str) -> bool {
-        let mut spec = OsString::from(rev);
-        spec.push(":");
-        spec.push(path);
         self.output(&[
             OsStr::new("cat-file"),
             OsStr::new("-e"),
             OsStr::new("--end-of-options"),
-            &spec,
+            &rev_path(rev, path),
         ])
         .is_ok()
     }
@@ -136,15 +152,23 @@ impl Git {
 
     pub(crate) fn common_dir(&self) -> Result<PathBuf, Failure> {
         self.run(&["rev-parse", "--path-format=absolute", "--git-common-dir"])
-            .map(|bytes| PathBuf::from(text(&bytes)))
+            .map(|bytes| path_of(&bytes))
             .map_err(|_why| {
                 Failure::usage("not inside a git repository; run shipit from inside the project")
             })
     }
 
     pub(crate) fn status_porcelain(&self) -> Result<Vec<u8>, Failure> {
-        self.run(&["status", "--porcelain", "-z", "--untracked-files=normal"])
-            .map_err(|_why| Failure::usage("cannot read the git status"))
+        self.run(&[
+            "-c",
+            "core.fsmonitor=false",
+            "status",
+            "--porcelain",
+            "-z",
+            "--untracked-files=normal",
+            "--ignore-submodules=none",
+        ])
+        .map_err(|_why| Failure::usage("cannot read the git status"))
     }
 
     pub(crate) fn ls_files_v_z(&self) -> Result<Vec<u8>, Failure> {
@@ -158,7 +182,7 @@ impl Git {
     }
 
     pub(crate) fn current_branch(&self) -> Option<String> {
-        self.run(&["symbolic-ref", "--quiet", "--short", "HEAD"])
+        self.run(&["symbolic-ref", "--quiet", "--short", HEAD])
             .ok()
             .map(|bytes| text(&bytes))
             .filter(|name| !name.is_empty())
@@ -181,7 +205,7 @@ impl Git {
                 OsStr::new("merge-base"),
                 OsStr::new("--end-of-options"),
                 rev,
-                OsStr::new("HEAD"),
+                OsStr::new(HEAD),
             ])
             .ok()?;
         oid_of(&bytes)
@@ -198,7 +222,7 @@ impl Git {
                 "-M",
                 "--end-of-options",
                 since.as_str(),
-                "HEAD",
+                HEAD,
             ])
             .map_err(|_why| {
                 Failure::usage(format!("cannot count the changed files since {since}"))
@@ -206,6 +230,28 @@ impl Git {
         let count = bytes.split(|byte| *byte == 0).count().saturating_sub(1);
         u64::try_from(count)
             .map_err(|_why| Failure::usage(format!("cannot count the changed files since {since}")))
+    }
+
+    // Every path a deletion or a rename touches, each once: no rename detection can hide one.
+    pub(crate) fn changed_names(&self, since: &Oid) -> Result<Vec<Vec<u8>>, Failure> {
+        let bytes = self
+            .run(&[
+                "diff",
+                "-z",
+                "--name-only",
+                "--no-renames",
+                "--end-of-options",
+                since.as_str(),
+                HEAD,
+            ])
+            .map_err(|_why| {
+                Failure::usage(format!("cannot list the changed files since {since}"))
+            })?;
+        Ok(bytes
+            .split(|byte| *byte == 0)
+            .filter(|name| !name.is_empty())
+            .map(<[u8]>::to_vec)
+            .collect())
     }
 
     pub(crate) fn changed_paths(&self, before: &Oid, after: &Oid) -> Result<String, Failure> {

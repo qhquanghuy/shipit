@@ -1,16 +1,19 @@
 use serde::{Serialize, Serializer};
 use serde_json::{Map, Value};
 
+use crate::pure::base::BranchName;
 use crate::pure::json::{
     Parsed, Problem, Problems, at, fail, integer_at_most, non_empty, object_at, optional, present,
     shape, whole,
 };
 
 pub(crate) const SETUP_PATH: &str = ".config/shipit.json";
+pub(crate) const HEAD: &str = "HEAD";
 
 const ONE_OF: &str = "must be one of low, medium, high, xhigh, max";
 const TIER_REF: &str = "must be the number of an existing tier";
 const NOT_EMPTY: &str = "must be a non-empty string";
+const BRANCH: &str = "must be a branch name (see git check-ref-format --branch)";
 const TOP_KEYS: [&str; 11] = [
     "version",
     "base",
@@ -160,7 +163,7 @@ pub(crate) struct MessagesToOwner {
 #[derive(Debug, PartialEq, Eq, Serialize)]
 pub(crate) struct Setup {
     pub(crate) version: Version,
-    pub(crate) base: NonEmpty,
+    pub(crate) base: BranchName,
     pub(crate) cap: Cap,
     pub(crate) check: Vec<CheckCommand>,
     pub(crate) environment: Environment,
@@ -180,7 +183,7 @@ struct Context {
 }
 
 pub(crate) fn setup_label(rev: &str) -> String {
-    if rev == "HEAD" {
+    if rev == HEAD {
         SETUP_PATH.to_owned()
     } else {
         format!("{rev}:{SETUP_PATH}")
@@ -494,7 +497,13 @@ pub(crate) fn parse_setup(docs: &[Value]) -> Parsed<Setup> {
         |value| (whole(value) == Some(1)).then_some(Version),
         "must be the integer 1",
     ));
-    let base = problems.take(at(object, "base", "", non_empty_value, NOT_EMPTY));
+    let base = problems.take(at(
+        object,
+        "base",
+        "",
+        |value| value.as_str().and_then(BranchName::parse),
+        BRANCH,
+    ));
     let cap = problems.take(at(
         object,
         "cap",
@@ -607,6 +616,38 @@ mod tests {
     }
 
     #[test]
+    fn the_base_must_be_a_branch_name_not_a_revision() {
+        for bad in ["HEAD~1", "HEAD", "-x", "a..b", "v1^", ""] {
+            let mut value = fixture();
+            value["base"] = json!(bad);
+            assert_eq!(
+                lines_of(value),
+                [".base: must be a branch name (see git check-ref-format --branch)"],
+                "{bad:?}"
+            );
+        }
+    }
+
+    // A value the proptest found: without serde_json's float_roundtrip the parser reads this as
+    // a nearby non-integer.
+    #[test]
+    fn a_large_integer_written_with_a_zero_fraction_reads_back_exactly() {
+        let value: Value = serde_json::from_str("2215942996861907.0").unwrap();
+        assert_eq!(whole(&value), Some(2_215_942_996_861_907));
+    }
+
+    #[test]
+    fn the_upper_bound_of_a_whole_number_is_exclusive() {
+        let two_to_the_64: Value = serde_json::from_str("18446744073709551616").unwrap();
+        assert_eq!(whole(&two_to_the_64), None);
+        let as_float: Value = serde_json::from_str("1.8446744073709552e19").unwrap();
+        assert_eq!(whole(&as_float), None);
+        assert_eq!(whole(&json!(u64::MAX)), Some(u64::MAX));
+        let largest_float: Value = serde_json::from_str("18446744073709549568.0").unwrap();
+        assert_eq!(whole(&largest_float), Some(18_446_744_073_709_549_568));
+    }
+
+    #[test]
     fn a_zero_cap_is_one_problem() {
         let mut value = fixture();
         value["cap"] = json!(0);
@@ -657,7 +698,7 @@ mod tests {
             lines_of(value),
             [
                 ".version: must be the integer 1",
-                ".base: must be a non-empty string",
+                ".base: must be a branch name (see git check-ref-format --branch)",
                 ".cap: must be an integer of at least 1",
                 ".fix_rounds: must be an integer of at least 0",
                 ".effort_cap: must be one of low, medium, high, xhigh, max",
@@ -681,7 +722,7 @@ mod tests {
         assert_eq!(
             lines_of(value),
             [
-                ".base: must be a non-empty string",
+                ".base: must be a branch name (see git check-ref-format --branch)",
                 ".cap: must be an integer of at least 1",
                 ".roles.maker.effort: must not be above effort_cap",
                 ".packs.model: must be a non-empty string",
@@ -815,7 +856,7 @@ mod tests {
                     let then_tier = scout_tier + 1 + offset % (n - scout_tier);
                     Setup {
                         version: Version,
-                        base: NonEmpty(base),
+                        base: BranchName::parse(&base).unwrap(),
                         cap: Cap(cap_value),
                         check: check.into_iter().map(CheckCommand).collect(),
                         environment: Environment {
@@ -873,7 +914,8 @@ mod tests {
         #[test]
         fn whole_accepts_a_u64_written_with_a_zero_fraction(n in any::<u64>()) {
             let value: Value = serde_json::from_str(&format!("{n}.0")).unwrap();
-            prop_assert!(whole(&value).is_some());
+            // Within 1024 of 2^64 the text rounds up to 2^64, which is refused.
+            prop_assert_eq!(whole(&value).is_some(), n < u64::MAX - 1024);
             if n < 1 << 53 {
                 prop_assert_eq!(whole(&value), Some(n));
             }
