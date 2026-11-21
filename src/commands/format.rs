@@ -11,7 +11,7 @@ use crate::pure::block::toml_block;
 use crate::pure::coverage_map::parse_map;
 use crate::pure::failure::Failure;
 use crate::pure::finding::{Finding, Outcome, ResultKind, outcome_problems, parse_finding};
-use crate::pure::goal::{DoneWhen, goal_items};
+use crate::pure::goal::{QualifiedDoneWhen, goal_items};
 use crate::pure::roadmap::{Roadmap, SliceName, meets_problems, parse_roadmap, waves};
 use crate::pure::rules::invalid;
 use crate::pure::setup::{HEAD, toml_table};
@@ -30,7 +30,7 @@ const COVERAGE: &str = "## Done-when coverage";
 struct Printed<'a> {
     roadmap: &'a Roadmap,
     waves: Vec<Vec<&'a SliceName>>,
-    goal: Option<&'a [DoneWhen]>,
+    goal: Option<Vec<QualifiedDoneWhen>>,
 }
 
 fn print(out: &mut dyn Write, value: &impl Serialize) -> Result<(), Failure> {
@@ -64,7 +64,12 @@ fn roadmap_command(args: &[OsString], out: &mut dyn Write) -> Result<(), Failure
             if !problems.is_empty() {
                 return Err(Failure::usage(invalid(&label, &problems)));
             }
-            Some(items)
+            Some(
+                items
+                    .into_iter()
+                    .map(|id| QualifiedDoneWhen::of(&roadmap.goal, id))
+                    .collect(),
+            )
         }
     };
     print(
@@ -72,7 +77,7 @@ fn roadmap_command(args: &[OsString], out: &mut dyn Write) -> Result<(), Failure
         &Printed {
             roadmap: &roadmap,
             waves: waves(&roadmap),
-            goal: goal.as_deref(),
+            goal,
         },
     )
 }

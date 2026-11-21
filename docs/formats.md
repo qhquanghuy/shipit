@@ -27,13 +27,15 @@ block that is never closed is no block.
 Heading `## Slices`. `shipit format roadmap <file> [--goal <goal file>]` reads it.
 
 ```toml
+goal = "demo"             # the goal's name: lowercase letters, digits and "-", starting with a letter
+
 [[slice]]
 name = "alpha"            # lowercase letters, digits and "-", starting with a letter; not "roadmap"
 after = []                # names of slices or proof steps; no repeats; not itself
-meets = ["DW1"]           # done-when ids, DW then a number from 1; no repeats
+meets = ["DW1"]           # done-when ids of this goal: DW1 or demo:DW1; no repeats
 owns = ["src/alpha.rs", "docs/"]   # at least one path; a trailing "/" makes a folder
 test_drive = false
-branch = "slice/alpha"    # a branch name; not the setup's gate.base; unique
+branch = "slice/demo/alpha"   # exactly slice/<goal>/<name>
 
 [[proof]]                 # work outside a slice (an owner's live test, another repository)
 name = "firectl-proof"
@@ -42,9 +44,15 @@ meets = ["DW15", "DW16"]
 how = "a pull request to firectl, run from the firectl session"
 ```
 
-The top level holds exactly `slice` (required, at least one) and `proof` (optional). A slice has exactly the keys
+The top level holds exactly `goal` and `slice` (required, at least one) and `proof` (optional). A slice has exactly the keys
 above; a proof step has `name`, `after`, `meets` and `how`, and no `branch`. Names are unique across slices and proof
 steps. Indexes in paths start at 0 (`.slice[2].owns[0]`). Roadmap order is the slices, then the proof steps.
+
+**Goal names.** A roadmap names its goal, and a slice's branch is exactly `slice/<goal>/<slice>`, built from the roadmap's
+`goal` and the slice's `name`; there is no other form. Inside a roadmap a plain `DW<n>` is an id of its own goal, and
+`<goal>:DW<n>` is accepted only when it names that same goal. Views that span goals write the qualified form, and
+`shipit format roadmap` prints every done-when id qualified. That a goal name is unique among goals that have not shipped
+is not checked here: receipts-and-status owns it, because only it sees more than one goal.
 
 A done-when item that no automated test can prove is met by a proof step, never by a slice.
 
@@ -54,6 +62,7 @@ then a cycle, then overlapping `owns`.
 | Path | Message |
 |---|---|
 | `.<key>` | `unknown key`, `missing` |
+| `.goal` | `must be lowercase letters, digits and "-", starting with a letter` |
 | `.slice` | `must be a non-empty array of objects` |
 | `.proof` | `must be an array of objects` |
 | `.slice[i].name` | `must be lowercase letters, digits and "-", starting with a letter, and not "roadmap"` |
@@ -63,14 +72,14 @@ then a cycle, then overlapping `owns`.
 | `.slice[i].after[j]` | `"<name>" is listed twice` |
 | `.slice[i].after[j]` | `"<name>" cannot come after itself` |
 | `.slice[i].meets` | `must be an array of done-when ids` |
-| `.slice[i].meets[j]` | `must be a done-when id such as "DW4"` |
+| `.slice[i].meets[j]` | `must be a done-when id of this goal, written DW4 or <goal>:DW4` |
 | `.slice[i].meets[j]` | `"<id>" is listed twice` |
 | `.slice[i].owns` | `must be an array of non-empty strings`, `must list at least one path` |
 | `.slice[i].owns[j]` | `must be a non-empty string` |
 | `.slice[i].test_drive` | `must be true or false` |
 | `.slice[i].branch` | `must be a branch name (see git check-ref-format --branch)` |
 | `.slice[i].branch` | `must not be the base branch "<base>"` |
-| `.slice[i].branch` | `"<branch>" is used twice` |
+| `.slice[i].branch` | `must be "slice/<goal>/<slice>"` |
 | `.proof[i].how` | `must be a non-empty string` |
 | `.slice[i].after[j]` | `no slice or proof step named "<name>"` |
 | `.slice` | `after makes a cycle: a, b, a` |
@@ -104,7 +113,7 @@ done-when item of the goal`; then, in number order, `DW3: no slice` for each ite
 ## `shipit format roadmap`
 
 Reads the setup (for `gate.base`) from `HEAD`, then the files given, relative to the current folder. Prints
-`{"roadmap": …, "waves": [[…], …], "goal": ["DW1", …] | null}`. Every failure is exit 2:
+`{"roadmap": …, "waves": [[…], …], "goal": ["demo:DW1", …] | null}`; done-when ids are printed qualified. Every failure is exit 2:
 
 | Message | When |
 |---|---|

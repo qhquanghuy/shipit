@@ -5,7 +5,7 @@ use serde::Serialize;
 use toml::{Table, Value};
 
 use crate::pure::base::BranchName;
-use crate::pure::goal::{DoneWhen, parse_done_when};
+use crate::pure::goal::{DoneWhen, GoalName, QualifiedDoneWhen, parse_done_when};
 use crate::pure::rules::{
     Parsed, Problem, Problems, at, fail, non_empty, object_at, optional, present, shape,
 };
@@ -13,6 +13,7 @@ use crate::pure::text::comma_list;
 
 const NAME: &str =
     "must be lowercase letters, digits and \"-\", starting with a letter, and not \"roadmap\"";
+const GOAL: &str = "must be lowercase letters, digits and \"-\", starting with a letter";
 const BRANCH: &str = "must be a branch name (see git check-ref-format --branch)";
 const NOT_EMPTY: &str = "must be a non-empty string";
 const SLICE_KEYS: [&str; 6] = ["name", "after", "meets", "owns", "test_drive", "branch"];
@@ -41,7 +42,7 @@ impl fmt::Display for SliceName {
 pub(crate) struct Slice {
     pub(crate) name: SliceName,
     pub(crate) after: Vec<SliceName>,
-    pub(crate) meets: Vec<DoneWhen>,
+    pub(crate) meets: Vec<QualifiedDoneWhen>,
     pub(crate) owns: Vec<String>,
     pub(crate) test_drive: bool,
     pub(crate) branch: BranchName,
@@ -51,7 +52,7 @@ pub(crate) struct Slice {
 pub(crate) struct Proof {
     pub(crate) name: SliceName,
     pub(crate) after: Vec<SliceName>,
-    pub(crate) meets: Vec<DoneWhen>,
+    pub(crate) meets: Vec<QualifiedDoneWhen>,
     pub(crate) how: String,
 }
 
@@ -77,7 +78,7 @@ impl Element {
         }
     }
 
-    fn meets(&self) -> &[DoneWhen] {
+    fn meets(&self) -> &[QualifiedDoneWhen] {
         match self {
             Self::Slice(slice) => &slice.meets,
             Self::Proof(proof) => &proof.meets,
@@ -95,6 +96,7 @@ impl Element {
 // Roadmap order: the slices, then the proof steps.
 #[derive(Debug, PartialEq, Eq, Serialize)]
 pub(crate) struct Roadmap {
+    pub(crate) goal: GoalName,
     pub(crate) elements: Vec<Element>,
 }
 
@@ -104,11 +106,26 @@ struct Shared {
     meets: Vec<DoneWhen>,
 }
 
+// Plain `DW<n>` is the roadmap's own goal; a qualified id must name that same goal.
+fn own_done_when(text: &str, goal: Option<&GoalName>) -> Option<DoneWhen> {
+    parse_done_when(text).or_else(|| {
+        QualifiedDoneWhen::parse(text)
+            .filter(|qualified| goal.is_none_or(|own| *own == qualified.goal))
+            .map(|qualified| qualified.id)
+    })
+}
+
+fn qualify(goal: &GoalName, ids: Vec<DoneWhen>) -> Vec<QualifiedDoneWhen> {
+    ids.into_iter()
+        .map(|id| QualifiedDoneWhen::of(goal, id))
+        .collect()
+}
+
 fn distinct<T: PartialEq + fmt::Display>(
     value: &Value,
     path: &str,
     (plural, singular): (&str, &str),
-    parse: fn(&str) -> Option<T>,
+    parse: impl Fn(&str) -> Option<T>,
 ) -> Parsed<Vec<T>> {
     let Some(items) = value.as_array() else {
         return fail(path, &format!("must be an array of {plural}"));
@@ -117,7 +134,7 @@ fn distinct<T: PartialEq + fmt::Display>(
     let mut found: Vec<T> = Vec::new();
     for (index, item) in items.iter().enumerate() {
         let here = format!("{path}[{index}]");
-        match item.as_str().and_then(parse) {
+        match item.as_str().and_then(&parse) {
             None => problems.push(Problem::new(here, format!("must be {singular}"))),
             Some(next) if found.contains(&next) => {
                 problems.push(Problem::new(here, format!("\"{next}\" is listed twice")));
@@ -132,7 +149,12 @@ fn distinct<T: PartialEq + fmt::Display>(
     }
 }
 
-fn parse_shared(object: &Table, path: &str, names: &mut Vec<SliceName>) -> Parsed<Shared> {
+fn parse_shared(
+    object: &Table,
+    path: &str,
+    goal: Option<&GoalName>,
+    names: &mut Vec<SliceName>,
+) -> Parsed<Shared> {
     let mut problems = Problems::default();
     let name = problems.take(at(
         object,
@@ -173,8 +195,11 @@ fn parse_shared(object: &Table, path: &str, names: &mut Vec<SliceName>) -> Parse
         distinct(
             value,
             &format!("{path}.meets"),
-            ("done-when ids", "a done-when id such as \"DW4\""),
-            parse_done_when,
+            (
+                "done-when ids",
+                "a done-when id of this goal, written DW4 or <goal>:DW4",
+            ),
+            |text| own_done_when(text, goal),
         )
     }));
     problems.finish(|| {
@@ -212,14 +237,14 @@ fn parse_slice(
     value: &Value,
     index: usize,
     base: &BranchName,
+    goal: Option<&GoalName>,
     names: &mut Vec<SliceName>,
-    branches: &mut Vec<BranchName>,
 ) -> Parsed<Slice> {
     let path = format!(".slice[{index}]");
     let object = object_at(value, &path)?;
     let mut problems = Problems::default();
     problems.add(shape(&path, object, &SLICE_KEYS, &[]));
-    let shared = problems.take(parse_shared(object, &path, names));
+    let shared = problems.take(parse_shared(object, &path, goal, names));
     let owns = problems.take(present(object, "owns", |value| {
         parse_owns(value, &format!("{path}.owns"))
     }));
@@ -238,18 +263,20 @@ fn parse_slice(
         BRANCH,
     ));
     if let Some(branch) = &branch {
+        // The exact name also makes branches unique, as slice names are.
+        let expected = goal
+            .zip(shared.as_ref())
+            .map(|(goal, shared)| format!("slice/{goal}/{}", shared.name));
         if branch == base {
             problems.push(Problem::new(
                 format!("{path}.branch"),
                 format!("must not be the base branch \"{base}\""),
             ));
-        } else if branches.contains(branch) {
+        } else if let Some(expected) = expected.filter(|expected| expected != branch.as_str()) {
             problems.push(Problem::new(
                 format!("{path}.branch"),
-                format!("\"{branch}\" is used twice"),
+                format!("must be \"{expected}\""),
             ));
-        } else {
-            branches.push(branch.clone());
         }
     }
     problems.finish(|| {
@@ -257,7 +284,7 @@ fn parse_slice(
         Some(Slice {
             name,
             after,
-            meets,
+            meets: qualify(goal?, meets),
             owns: owns?,
             test_drive: test_drive?,
             branch: branch?,
@@ -265,12 +292,17 @@ fn parse_slice(
     })
 }
 
-fn parse_proof(value: &Value, index: usize, names: &mut Vec<SliceName>) -> Parsed<Proof> {
+fn parse_proof(
+    value: &Value,
+    index: usize,
+    goal: Option<&GoalName>,
+    names: &mut Vec<SliceName>,
+) -> Parsed<Proof> {
     let path = format!(".proof[{index}]");
     let object = object_at(value, &path)?;
     let mut problems = Problems::default();
     problems.add(shape(&path, object, &PROOF_KEYS, &[]));
-    let shared = problems.take(parse_shared(object, &path, names));
+    let shared = problems.take(parse_shared(object, &path, goal, names));
     let how = problems.take(at(
         object,
         "how",
@@ -283,7 +315,7 @@ fn parse_proof(value: &Value, index: usize, names: &mut Vec<SliceName>) -> Parse
         Some(Proof {
             name,
             after,
-            meets,
+            meets: qualify(goal?, meets),
             how: how?,
         })
     })
@@ -318,18 +350,24 @@ fn tables<T>(
 // The rules that need the whole roadmap run when every element is valid on its own.
 pub(crate) fn parse_roadmap(table: &Table, base: &BranchName) -> Parsed<Roadmap> {
     let mut problems = Problems::default();
-    problems.add(shape("", table, &["slice"], &["proof"]));
+    problems.add(shape("", table, &["goal", "slice"], &["proof"]));
+    let goal = problems.take(at(
+        table,
+        "goal",
+        "",
+        |value| non_empty(value).and_then(GoalName::parse),
+        GOAL,
+    ));
     let mut names = Vec::new();
-    let mut branches = Vec::new();
     let slices = problems.take(present(table, "slice", |value| {
         tables(value, ".slice", true, |item, index| {
-            parse_slice(item, index, base, &mut names, &mut branches)
+            parse_slice(item, index, base, goal.as_ref(), &mut names)
         })
     }));
     let proofs = problems
         .take(optional(table, "proof", |value| {
             tables(value, ".proof", false, |item, index| {
-                parse_proof(item, index, &mut names)
+                parse_proof(item, index, goal.as_ref(), &mut names)
             })
         }))
         .map(Option::unwrap_or_default);
@@ -339,7 +377,10 @@ pub(crate) fn parse_roadmap(table: &Table, base: &BranchName) -> Parsed<Roadmap>
             .map(Element::Slice)
             .chain(proofs?.into_iter().map(Element::Proof))
             .collect();
-        Some(Roadmap { elements })
+        Some(Roadmap {
+            goal: goal?,
+            elements,
+        })
     })?;
     let rest = whole_roadmap_problems(&roadmap);
     if rest.is_empty() {
@@ -522,15 +563,20 @@ pub(crate) fn meets_problems(roadmap: &Roadmap, goal: &[DoneWhen]) -> Vec<Proble
     let mut problems = Vec::new();
     for (path, element) in labelled(roadmap) {
         for (index, item) in element.meets().iter().enumerate() {
-            if !goal.contains(item) {
+            if !goal.contains(&item.id) {
                 problems.push(Problem::new(
                     format!("{path}.meets[{index}]"),
-                    format!("\"{item}\" is not a done-when item of the goal"),
+                    format!("\"{}\" is not a done-when item of the goal", item.id),
                 ));
             }
         }
     }
-    let met: BTreeSet<&DoneWhen> = roadmap.elements.iter().flat_map(Element::meets).collect();
+    let met: BTreeSet<&DoneWhen> = roadmap
+        .elements
+        .iter()
+        .flat_map(Element::meets)
+        .map(|item| &item.id)
+        .collect();
     let unmet: BTreeSet<&DoneWhen> = goal.iter().filter(|item| !met.contains(item)).collect();
     problems.extend(
         unmet
@@ -572,7 +618,7 @@ mod tests {
     fn slice_text(spec: &Spec) -> String {
         let meets: Vec<String> = spec.meets.iter().map(|n| format!("DW{n}")).collect();
         format!(
-            "[[slice]]\nname = \"{0}\"\nafter = {1}\nmeets = {2}\nowns = {3}\ntest_drive = false\nbranch = \"slice/{0}\"\n\n",
+            "[[slice]]\nname = \"{0}\"\nafter = {1}\nmeets = {2}\nowns = {3}\ntest_drive = false\nbranch = \"slice/g/{0}\"\n\n",
             spec.name,
             quoted(&spec.after),
             quoted(&meets),
@@ -580,9 +626,14 @@ mod tests {
         )
     }
 
-    fn parse(text: &str) -> Parsed<Roadmap> {
+    fn parse_raw(text: &str) -> Parsed<Roadmap> {
         let table = toml_table(text.as_bytes()).map_err(|why| vec![Problem::new("toml", why)])?;
         parse_roadmap(&table, &name("main"))
+    }
+
+    // Every roadmap under test is the goal "g", so its slices' branches are slice/g/<name>.
+    fn parse(text: &str) -> Parsed<Roadmap> {
+        parse_raw(&format!("goal = \"g\"\n{text}"))
     }
 
     fn lines(problems: &[Problem]) -> Vec<String> {
@@ -805,10 +856,10 @@ branch = \"slice/y\"
                 ".slice[1].after[1]: \"alpha\" is listed twice",
                 ".slice[1].after[2]: must be a slice or proof step name",
                 ".slice[1].meets[1]: \"DW1\" is listed twice",
-                ".slice[1].meets[2]: must be a done-when id such as \"DW4\"",
+                ".slice[1].meets[2]: must be a done-when id of this goal, written DW4 or <goal>:DW4",
                 ".slice[1].owns[1]: must be a non-empty string",
                 ".slice[2].owns: missing",
-                ".slice[2].branch: \"slice/x\" is used twice",
+                ".slice[2].branch: must be \"slice/g/gamma\"",
                 ".proof[0].branch: unknown key",
                 ".proof[0].how: must be a non-empty string",
             ]
@@ -818,8 +869,16 @@ branch = \"slice/y\"
             lines(&itself),
             [".slice[0].after[0]: \"a\" cannot come after itself"]
         );
-        let top = parse("[[proofs]]\nname = \"x\"\n").expect_err("broken");
-        assert_eq!(lines(&top), [".proofs: unknown key", ".slice: missing"]);
+        let top = parse_raw("[[proofs]]\nname = \"x\"\n").expect_err("broken");
+        assert_eq!(
+            lines(&top),
+            [".proofs: unknown key", ".goal: missing", ".slice: missing"]
+        );
+        let goal = parse_raw("goal = \"Bad\"\n[[slice]]\n").expect_err("broken");
+        assert_eq!(
+            lines(&goal)[0],
+            ".goal: must be lowercase letters, digits and \"-\", starting with a letter"
+        );
         let kinds = parse("slice = []\nproof = 1\n").expect_err("broken");
         assert_eq!(
             lines(&kinds),
@@ -828,6 +887,76 @@ branch = \"slice/y\"
                 ".proof: must be an array of objects"
             ]
         );
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            failure_persistence: None,
+            ..ProptestConfig::default()
+        })]
+
+        #[test]
+        fn a_branch_must_be_slice_goal_slice(
+            goal in "[a-z][a-z0-9-]{0,6}",
+            slice in "[a-z][a-z0-9-]{0,6}",
+            other in "[a-z][a-z0-9-]{0,6}",
+        ) {
+            prop_assume!(slice != "roadmap" && other != goal && other != slice);
+            let text = |branch: &str| {
+                format!(
+                    "goal = \"{goal}\"\n{}",
+                    slice_text(&spec(&slice, &[], &["f/"]))
+                        .replace(&format!("slice/g/{slice}"), branch)
+                )
+            };
+            let right = format!("slice/{goal}/{slice}");
+            let roadmap = parse_raw(&text(&right)).expect("the exact branch is accepted");
+            prop_assert_eq!(roadmap.goal.to_string(), goal.clone());
+            for wrong in [
+                format!("slice/{slice}"),
+                format!("slice/{other}/{slice}"),
+                format!("slice/{goal}/{other}"),
+                format!("{right}/x"),
+            ] {
+                let problems = parse_raw(&text(&wrong)).expect_err("another branch is refused");
+                prop_assert_eq!(
+                    lines(&problems),
+                    vec![format!(".slice[0].branch: must be \"{right}\"")]
+                );
+            }
+        }
+
+        #[test]
+        fn done_when_ids_in_a_roadmap_are_plain_or_qualified_by_its_own_goal(
+            goal in "[a-z][a-z0-9-]{0,6}",
+            other in "[a-z][a-z0-9-]{0,6}",
+            n in 1_u64..100,
+        ) {
+            prop_assume!(other != goal);
+            let text = |meets: &str| {
+                format!(
+                    "goal = \"{goal}\"\n[[slice]]\nname = \"a\"\nafter = []\nmeets = {meets}\nowns = [\"f/\"]\ntest_drive = false\nbranch = \"slice/{goal}/a\"\n"
+                )
+            };
+            let qualified = format!("{goal}:DW{n}");
+            for meets in [format!("[\"DW{n}\"]"), format!("[\"{qualified}\"]")] {
+                let roadmap = parse_raw(&text(&meets)).expect("an id of its own goal");
+                prop_assert_eq!(
+                    serde_json::to_string(&roadmap).ok().map(|json| json.contains(&format!("\"meets\":[\"{qualified}\"]"))),
+                    Some(true)
+                );
+            }
+            let both = parse_raw(&text(&format!("[\"DW{n}\", \"{qualified}\"]"))).expect_err("one id twice");
+            prop_assert_eq!(
+                lines(&both),
+                vec![format!(".slice[0].meets[1]: \"DW{n}\" is listed twice")]
+            );
+            let foreign = parse_raw(&text(&format!("[\"{other}:DW{n}\"]"))).expect_err("another goal's id");
+            prop_assert_eq!(
+                lines(&foreign),
+                vec![".slice[0].meets[0]: must be a done-when id of this goal, written DW4 or <goal>:DW4".to_owned()]
+            );
+        }
     }
 
     #[test]

@@ -7,7 +7,7 @@ ROADMAP="$SHIPIT_SRC/tests/fixtures/roadmap.md"
 GOAL="$SHIPIT_SRC/tests/fixtures/goal.md"
 
 # What `shipit format roadmap` prints for the fixtures.
-PRINTED='{"roadmap":{"elements":[{"kind":"slice","name":"alpha","after":[],"meets":["DW1"],"owns":["src/alpha.rs","docs/alpha/"],"test_drive":false,"branch":"slice/alpha"},{"kind":"slice","name":"beta","after":["alpha"],"meets":["DW2"],"owns":["src/beta.rs"],"test_drive":true,"branch":"slice/beta"},{"kind":"slice","name":"gamma","after":["alpha"],"meets":["DW3"],"owns":["src/gamma.rs"],"test_drive":false,"branch":"slice/gamma"},{"kind":"proof","name":"proof","after":["beta","gamma"],"meets":[],"how":"run by the owner"}]},"waves":[["alpha"],["beta","gamma"],["proof"]],"goal":["DW1","DW2","DW3"]}'
+PRINTED='{"roadmap":{"goal":"demo","elements":[{"kind":"slice","name":"alpha","after":[],"meets":["demo:DW1"],"owns":["src/alpha.rs","docs/alpha/"],"test_drive":false,"branch":"slice/demo/alpha"},{"kind":"slice","name":"beta","after":["alpha"],"meets":["demo:DW2"],"owns":["src/beta.rs"],"test_drive":true,"branch":"slice/demo/beta"},{"kind":"slice","name":"gamma","after":["alpha"],"meets":["demo:DW3"],"owns":["src/gamma.rs"],"test_drive":false,"branch":"slice/demo/gamma"},{"kind":"proof","name":"proof","after":["beta","gamma"],"meets":[],"how":"run by the owner"}]},"waves":[["alpha"],["beta","gamma"],["proof"]],"goal":["demo:DW1","demo:DW2","demo:DW3"]}'
 
 setup() {
   cd "$(make_repo)"
@@ -36,6 +36,20 @@ setup() {
 .slice[1].name: "alpha" is used twice
 .slice[1].after[0]: "alpha" cannot come after itself
 .slice[2].owns: must list at least one path' ]
+}
+
+@test "format roadmap: a roadmap without a goal or with a branch outside its goal exits 2" {
+  sed '/^goal = /d' "$ROADMAP" >nogoal.md
+  run --separate-stderr "$SHIPIT_BIN" format roadmap nogoal.md
+  [ "$status" -eq 2 ]
+  [ "$stderr" = 'shipit: nogoal.md is invalid:
+.goal: missing' ]
+
+  sed 's#slice/demo/beta#slice/beta#' "$ROADMAP" >branch.md
+  run --separate-stderr "$SHIPIT_BIN" format roadmap branch.md
+  [ "$status" -eq 2 ]
+  [ "$stderr" = 'shipit: branch.md is invalid:
+.slice[1].branch: must be "slice/demo/beta"' ]
 }
 
 @test "format roadmap: an item nobody meets exits 2 with \"DW3: no slice\"" {

@@ -12,13 +12,15 @@ cap = 60
 The slices, in order. `beta` and `gamma` run in parallel after `alpha`.
 
 ```toml
+goal = "demo"
+
 [[slice]]
 name = "alpha"
 after = []
 meets = ["DW1"]
 owns = ["src/alpha.rs", "docs/alpha/"]
 test_drive = false
-branch = "slice/alpha"
+branch = "slice/demo/alpha"
 
 [[slice]]
 name = "beta"
@@ -26,7 +28,7 @@ after = ["alpha"]
 meets = ["DW2"]
 owns = ["src/beta.rs"]
 test_drive = true
-branch = "slice/beta"
+branch = "slice/demo/beta"
 
 [[slice]]
 name = "gamma"
@@ -34,7 +36,7 @@ after = ["alpha"]
 meets = ["DW3"]
 owns = ["src/gamma.rs"]
 test_drive = false
-branch = "slice/gamma"
+branch = "slice/demo/gamma"
 
 [[proof]]
 name = "proof"

@@ -19,6 +19,61 @@ impl Serialize for DoneWhen {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(transparent)]
+pub(crate) struct GoalName(String);
+
+impl GoalName {
+    pub(crate) fn parse(text: &str) -> Option<Self> {
+        let mut chars = text.chars();
+        let valid = chars.next().is_some_and(|first| first.is_ascii_lowercase())
+            && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+        valid.then(|| Self(text.to_owned()))
+    }
+}
+
+impl fmt::Display for GoalName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+// The form for views that span goals; inside one goal a plain `DW<n>` means its own.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct QualifiedDoneWhen {
+    pub(crate) goal: GoalName,
+    pub(crate) id: DoneWhen,
+}
+
+impl QualifiedDoneWhen {
+    pub(crate) fn of(goal: &GoalName, id: DoneWhen) -> Self {
+        Self {
+            goal: goal.clone(),
+            id,
+        }
+    }
+
+    pub(crate) fn parse(text: &str) -> Option<Self> {
+        let (goal, id) = text.split_once(':')?;
+        Some(Self {
+            goal: GoalName::parse(goal)?,
+            id: parse_done_when(id)?,
+        })
+    }
+}
+
+impl fmt::Display for QualifiedDoneWhen {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}:{}", self.goal, self.id)
+    }
+}
+
+impl Serialize for QualifiedDoneWhen {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
+
 // No sign, no leading zero: "01" and "1" must not name the same item.
 fn number(digits: &str) -> Option<u64> {
     let first = digits.chars().next()?;
@@ -138,6 +193,48 @@ mod tests {
             ] {
                 prop_assert_eq!(parse_done_when(&text), None, "{}", text);
             }
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            failure_persistence: None,
+            ..ProptestConfig::default()
+        })]
+
+        #[test]
+        fn goal_names_and_qualified_ids_round_trip(
+            goal in "[a-z][a-z0-9-]{0,8}",
+            n in 1_u64..u64::MAX,
+            bad in "[^a-z0-9:-]",
+            digit_first in "[0-9-][a-z0-9-]{0,5}",
+        ) {
+            let text = format!("{goal}:DW{n}");
+            let parsed = QualifiedDoneWhen::parse(&text).expect("a qualified id");
+            prop_assert_eq!(parsed.to_string(), text.clone());
+            prop_assert_eq!(parsed.goal.to_string(), goal.clone());
+            prop_assert_eq!(
+                serde_json::to_string(&parsed).ok(),
+                Some(format!("\"{text}\""))
+            );
+            prop_assert_eq!(
+                QualifiedDoneWhen::of(&GoalName::parse(&goal).expect("a goal"), DoneWhen(n)),
+                parsed
+            );
+            for refused in [
+                format!("{goal}{bad}DW{n}"),
+                format!("{bad}{goal}:DW{n}"),
+                format!("{digit_first}:DW{n}"),
+                format!("{goal}:{n}"),
+                format!("{goal}:DW0"),
+                format!(":DW{n}"),
+                format!("{goal}:{goal}:DW{n}"),
+                format!("DW{n}"),
+            ] {
+                prop_assert_eq!(QualifiedDoneWhen::parse(&refused), None, "{}", refused);
+            }
+            prop_assert_eq!(GoalName::parse(&format!("{goal}{bad}")), None);
+            prop_assert_eq!(GoalName::parse(&digit_first), None);
         }
     }
 
