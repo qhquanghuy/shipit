@@ -296,14 +296,6 @@ mod tests {
             ..ProptestConfig::default()
         })]
 
-        // TOML tells floats from integers: a whole float is not a cap either.
-        #[test]
-        fn a_float_is_never_a_cap(x in proptest::num::f64::NORMAL | proptest::num::f64::ZERO) {
-            let mut doc = table("base = \"m\"\ncheck = []\n[environment]\nrun = []\n");
-            doc.insert("cap".to_owned(), Value::Float(x));
-            prop_assert_eq!(problems(&doc), [".cap: must be an integer of at least 1"]);
-        }
-
         #[test]
         fn the_verdict_follows_the_merge_base_not_the_tip(
             forked in arb_flow(),

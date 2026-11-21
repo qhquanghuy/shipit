@@ -812,16 +812,6 @@ mod tests {
         );
     }
 
-    // A float is the wrong kind even when it is whole: TOML tells integers from floats.
-    #[test]
-    fn a_whole_float_is_not_an_integer() {
-        let written = FIXTURE.replace("cap = 60", "cap = 60.0");
-        assert_eq!(
-            lines_of_text(&written),
-            [".cap: must be an integer of at least 1"]
-        );
-    }
-
     #[test]
     fn the_label_names_the_ref_unless_it_is_head() {
         assert_eq!(setup_label("HEAD"), ".config/shipit.toml");
@@ -993,12 +983,33 @@ mod tests {
             prop_assert!(toml_table(bad.as_bytes()).is_err());
         }
 
+        // The bad byte sits inside an otherwise valid file, so a lossy read would accept it.
         #[test]
-        fn bytes_that_are_not_utf8_are_an_error(
-            mut bytes in proptest::collection::vec(any::<u8>(), 0..8),
-        ) {
-            bytes.push(0xff);
+        fn bytes_that_are_not_utf8_are_an_error(byte in 0x80_u8..=0xff) {
+            let mut bytes = b"base = \"".to_vec();
+            bytes.push(byte);
+            bytes.extend_from_slice(b"\"");
             prop_assert!(toml_table(&bytes).is_err());
+        }
+
+        // TOML tells floats from integers: a whole float is not an integer either.
+        #[test]
+        fn whole_refuses_a_float(x in proptest::num::f64::NORMAL | proptest::num::f64::ZERO) {
+            prop_assert_eq!(whole(&Value::Float(x)), None);
+        }
+
+        // Kept by the toml crate's preserve_order feature; without it the keys come out sorted.
+        #[test]
+        fn unknown_keys_are_reported_in_file_order(
+            keys in proptest::collection::btree_set("x_[a-z]{1,6}", 2..6)
+                .prop_map(|keys| keys.into_iter().collect::<Vec<_>>())
+                .prop_shuffle(),
+        ) {
+            let mut unknown = keys.join(" = 1\n");
+            unknown.push_str(" = 1\n");
+            let expected: Vec<String> =
+                keys.iter().map(|key| format!(".{key}: unknown key")).collect();
+            prop_assert_eq!(lines_of_text(&format!("{unknown}{FIXTURE}")), expected);
         }
 
         // The integers of the file are i64: a bigger one is not a TOML value at all.
