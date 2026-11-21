@@ -15,6 +15,7 @@ use crate::pure::block::toml_block;
 use crate::pure::failure::Failure;
 use crate::pure::goal::GoalName;
 use crate::pure::goal_pick::roadmap_version;
+use crate::pure::logbook::{Logged, read_entries};
 use crate::pure::messages::{FILE_PROBLEM, NO_BLOCK, NOT_TOML, say};
 use crate::pure::receipt::Oid;
 use crate::pure::review::ReceiptKind;
@@ -160,6 +161,21 @@ pub(crate) fn write_new(path: &Path, value: &impl Serialize) -> Result<(), Write
         Err(why) if why.kind() == ErrorKind::AlreadyExists => Err(WriteNew::Exists),
         Err(_why) => Err(cannot()),
     }
+}
+
+// A goal without a logbook yet has no entries; a damaged line stops the reader, naming it.
+pub(crate) fn read_logbook(store: &Path, goal: &GoalName) -> Result<Vec<Logged>, Failure> {
+    let path = logbook_path(store, goal);
+    let shown = path.display();
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(why) if why.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(_why) => return Err(Failure::usage(format!("cannot read {shown}"))),
+    };
+    let text = String::from_utf8(bytes)
+        .map_err(|_why| Failure::usage(format!("logbook {shown} is not UTF-8 text")))?;
+    read_entries(&text)
+        .map_err(|why| Failure::usage(format!("logbook {shown} {why}; fix that line by hand")))
 }
 
 // One write of the whole line, so that lines of parallel writers never interleave.

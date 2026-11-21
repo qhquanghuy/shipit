@@ -1,7 +1,7 @@
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::pure::finding::{Finding, Outcome, ResultKind};
+use crate::pure::finding::{Class, Finding, Outcome, ResultKind};
 use crate::pure::rank::{Basis, Rank};
 use crate::pure::receipt::Oid;
 use crate::pure::roadmap::SliceName;
@@ -89,6 +89,40 @@ pub(crate) fn receipt_time(docs: Option<&[Value]>) -> Option<String> {
     doc.get("time").and_then(Value::as_str).map(str::to_owned)
 }
 
+// A finding as a receipt file keeps it.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Stored {
+    pub(crate) id: String,
+    pub(crate) is_question: bool,
+    pub(crate) class: Class,
+    pub(crate) text: String,
+}
+
+fn parse_class(text: &str) -> Option<Class> {
+    match text {
+        "must fix" => Some(Class::MustFix),
+        "must answer" => Some(Class::MustAnswer),
+        "nice to fix" => Some(Class::NiceToFix),
+        _ => None,
+    }
+}
+
+pub(crate) fn stored_findings(doc: &Value) -> Option<Vec<Stored>> {
+    doc.get("findings")?
+        .as_array()?
+        .iter()
+        .map(|finding| {
+            let text_of = |name: &str| finding.get(name)?.as_str();
+            Some(Stored {
+                id: text_of("id")?.to_owned(),
+                is_question: text_of("label")? == "question",
+                class: parse_class(text_of("class")?)?,
+                text: text_of("text")?.to_owned(),
+            })
+        })
+        .collect()
+}
+
 // What a check receipt says it was compared with: the ref's short name and the commit.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct CheckBase {
@@ -113,6 +147,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::pure::finding::parse_finding;
 
     const KINDS: [ReceiptKind; 4] = [
         ReceiptKind::PlanReview,
@@ -133,6 +168,27 @@ mod tests {
             prop_assert_eq!(ReceiptKind::parse(kind.name()), Some(kind));
             let known = KINDS.iter().any(|kind| kind.name() == junk);
             prop_assert_eq!(ReceiptKind::parse(&junk).is_some(), known);
+        }
+
+        #[test]
+        fn a_stored_finding_reads_back_what_a_receipt_wrote(
+            body in "[a-z][a-z ]{0,15}[a-z]",
+            which in 0..4_usize,
+        ) {
+            let leads = ["issue (blocking)", "suggestion (non-blocking)", "nitpick", "question"];
+            let lead = leads.get(which).copied().expect("a lead");
+            let finding = parse_finding(0, &format!("{lead}: {body}")).expect("a finding");
+            let doc = json!({"findings": [serde_json::to_value(&finding).expect("json")]});
+            prop_assert_eq!(
+                stored_findings(&doc),
+                Some(vec![Stored {
+                    id: "F1".to_owned(),
+                    is_question: which == 3,
+                    class: finding.class,
+                    text: body,
+                }])
+            );
+            prop_assert_eq!(stored_findings(&json!({"findings": [{"id": "F1"}]})), None);
         }
 
         #[test]

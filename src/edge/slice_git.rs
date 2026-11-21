@@ -4,9 +4,16 @@ use std::path::Path;
 
 use crate::commands::check::settle_base;
 use crate::edge::git::Git;
+use crate::edge::records::{build_plan_path, store_dir};
+use crate::edge::store::{check_receipt_path, read_json};
+use crate::pure::base::BaseRef;
+use crate::pure::branch::slice_branch;
 use crate::pure::failure::Failure;
+use crate::pure::goal::GoalName;
 use crate::pure::messages::{NO_FILE, say};
-use crate::pure::receipt::Oid;
+use crate::pure::receipt::{Oid, receipt_validity};
+use crate::pure::review::{ReceiptKind, check_base};
+use crate::pure::roadmap::SliceName;
 use crate::pure::rules::invalid;
 use crate::pure::setup::{Setup, parse_setup, setup_label};
 
@@ -26,7 +33,11 @@ pub(crate) fn file_hash(git: &Git, path: &Path) -> Result<Oid, Failure> {
 
 // The ranks and limits are the base branch's word: a branch never judges itself with its own.
 // A base with no setup file is the adoption, and the branch's own setup is the policy.
-pub(crate) fn load_policy(git: &Git, head: Setup, err: &mut dyn Write) -> Result<Setup, Failure> {
+pub(crate) fn load_policy(
+    git: &Git,
+    head: Setup,
+    err: &mut dyn Write,
+) -> Result<(Setup, BaseRef), Failure> {
     let (_base, base_ref, flow) = settle_base(git, head.gate.base.clone(), false, err)?;
     let Some(flow) = flow else {
         writeln!(
@@ -34,10 +45,12 @@ pub(crate) fn load_policy(git: &Git, head: Setup, err: &mut dyn Write) -> Result
             "shipit: the policy is this branch's own setup (adoption)"
         )
         .ok();
-        return Ok(head);
+        return Ok((head, base_ref));
     };
-    parse_setup(flow.table())
-        .map_err(|problems| Failure::usage(invalid(&setup_label(&base_ref.to_string()), &problems)))
+    let policy = parse_setup(flow.table()).map_err(|problems| {
+        Failure::usage(invalid(&setup_label(&base_ref.to_string()), &problems))
+    })?;
+    Ok((policy, base_ref))
 }
 
 // The local branch, else origin's: a slice another clone pushed can be reviewed here.
@@ -57,6 +70,24 @@ pub(crate) fn merge_base(git: &Git, a: &Oid, b: &Oid) -> Option<Oid> {
         ])
         .ok()?;
     Oid::parse(String::from_utf8_lossy(&bytes).trim())
+}
+
+// The commit, then its parents.
+pub(crate) fn parents(git: &Git, commit: &Oid) -> Result<Vec<Oid>, Failure> {
+    let bytes = git
+        .output(&[
+            OsStr::new("rev-list"),
+            OsStr::new("--parents"),
+            OsStr::new("-n"),
+            OsStr::new("1"),
+            OsStr::new(commit.as_str()),
+        ])
+        .map_err(|_why| Failure::usage(format!("cannot read the parents of {commit}")))?;
+    Ok(String::from_utf8_lossy(&bytes)
+        .split_whitespace()
+        .skip(1)
+        .filter_map(Oid::parse)
+        .collect())
 }
 
 // Every option is given, so that no setting of the user's (prefixes, renames, an external
@@ -98,6 +129,75 @@ pub(crate) fn patch_id(git: &Git, from: &Oid, to: &Oid) -> Result<Option<Oid>, F
         )
         .map_err(|_why| cannot())?;
     let text = String::from_utf8_lossy(&ids);
-    let first = text.split_whitespace().next();
-    Ok(first.and_then(Oid::parse))
+    Ok(text.split_whitespace().next().and_then(Oid::parse))
+}
+
+// What `shipit check` judged: the base it used (its short name), the commit where the work left
+// it, and the id of the change since.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Checked {
+    pub(crate) base: String,
+    pub(crate) merge_base: Oid,
+    pub(crate) patch_id: Option<Oid>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Tip {
+    pub(crate) commit: Oid,
+    pub(crate) tree: Oid,
+    pub(crate) checked: Option<Checked>,
+}
+
+// The key a receipt of this kind would have for the slice's current version; None when the
+// version has none yet (no plan file, no branch, no checked change).
+pub(crate) fn current_key(
+    git: &Git,
+    common: &Path,
+    (goal, slice): (&GoalName, &SliceName),
+    kind: ReceiptKind,
+) -> Result<Option<Oid>, Failure> {
+    let store = store_dir(common);
+    match kind {
+        ReceiptKind::PlanReview => Ok(file_hash(git, &build_plan_path(&store, goal, slice)).ok()),
+        ReceiptKind::InformedReview | ReceiptKind::SecondOpinion | ReceiptKind::TestDrive => {
+            let Some(commit) = branch_tip(git, &slice_branch(goal, slice)) else {
+                return Ok(None);
+            };
+            let tip = tip_of(git, common, commit)?;
+            Ok(match kind {
+                ReceiptKind::TestDrive => Some(tip.tree),
+                ReceiptKind::PlanReview
+                | ReceiptKind::InformedReview
+                | ReceiptKind::SecondOpinion => tip.checked.and_then(|checked| checked.patch_id),
+            })
+        }
+    }
+}
+
+// A review is keyed by the change `check` judged, so a version with no valid check receipt has
+// no key.
+pub(crate) fn tip_of(git: &Git, common: &Path, commit: Oid) -> Result<Tip, Failure> {
+    let tree = git.tree_of(OsStr::new(commit.as_str()))?;
+    let docs = read_json(&check_receipt_path(common, &tree));
+    let base = receipt_validity(docs.as_deref(), &tree)
+        .and(docs.as_deref())
+        .and_then(<[_]>::first)
+        .and_then(check_base);
+    let checked = match base {
+        None => None,
+        Some(base) => {
+            let fork = merge_base(git, &base.commit, &commit)
+                .ok_or_else(|| Failure::usage(format!("no shared history with {}", base.name)))?;
+            Some(Checked {
+                patch_id: patch_id(git, &fork, &commit)?,
+                base: base.name,
+                merge_base: fork,
+            })
+        }
+    };
+    Ok(Tip {
+        commit,
+        tree,
+        checked,
+    })
 }

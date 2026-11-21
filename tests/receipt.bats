@@ -224,7 +224,7 @@ PLAN=(--author opus:high --by fable:high --result approve)
   check_here
   rec second-opinion beta --author sonnet:high --by opus:high --result approve
   [ "$status" -eq 0 ]
-  printf 'text\n' >>work1
+  printf 'text\n' >>beta-1
   git commit -q -am "a text change"
   check_here
   rec second-opinion beta --author sonnet:high --by opus:high --result approve
@@ -274,7 +274,7 @@ PLAN=(--author opus:high --by fable:high --result approve)
   local first
   first=$(git rev-parse HEAD)
   check_here
-  printf 'more\n' >>work1
+  printf 'more\n' >>beta-1
   git commit -q -am "more work"
   check_here
   rec second-opinion beta --author sonnet:high --by opus:high --result approve --commit "$first"

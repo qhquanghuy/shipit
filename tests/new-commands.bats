@@ -8,6 +8,7 @@ load slice-helpers
 # first thing it needs.
 COMMANDS=(
   "receipt plan-review beta --author opus:high --by fable:high --result approve"
+  "log beta note --text a-note"
 )
 
 @test "new commands: a missing setup stops each" {

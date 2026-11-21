@@ -9,18 +9,19 @@ use crate::edge::records::{
     WriteNew, append_line, build_plan_path, goal_names, load_goal, logbook_path, newest_roadmap,
     receipt_path, store_dir, write_new,
 };
-use crate::edge::slice_git::{branch_tip, file_hash, load_policy, merge_base, patch_id};
-use crate::edge::store::{check_receipt_path, read_json};
+use crate::edge::slice_git::{branch_tip, file_hash, load_policy, tip_of};
+use crate::edge::store::read_json;
 use crate::pure::branch::slice_branch;
 use crate::pure::failure::Failure;
 use crate::pure::finding::{Finding, Outcome, outcome_problems, parse_finding};
+use crate::pure::flags::{goal_flag, once, take_value, unknown_argument, worker_flag};
 use crate::pure::goal::GoalName;
 use crate::pure::goal_pick::{element_named, which_goal};
 use crate::pure::logbook::{Entry, line};
 use crate::pure::messages::{NOT_A_RESULT, say};
-use crate::pure::rank::{Worker, parse_worker, rank_verdict, role_notice};
-use crate::pure::receipt::{Oid, receipt_validity};
-use crate::pure::review::{Receipt, ReceiptKind, Subject, check_base, receipt_time, tool};
+use crate::pure::rank::{Worker, rank_verdict, role_notice};
+use crate::pure::receipt::Oid;
+use crate::pure::review::{Receipt, ReceiptKind, Subject, receipt_time, tool};
 use crate::pure::roadmap::{Element, Roadmap, SliceName};
 use crate::pure::setup::HEAD;
 
@@ -47,54 +48,23 @@ struct Args {
     goal: Option<GoalName>,
 }
 
-fn take_value<'a>(flag: &str, next: Option<&'a OsString>) -> Result<&'a str, Failure> {
-    next.and_then(|value| value.to_str())
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| Failure::usage(format!("{flag} needs a value; {USAGE}")))
-}
-
-fn once(slot: &mut Option<String>, flag: &str, next: Option<&OsString>) -> Result<(), Failure> {
-    let value = take_value(flag, next)?;
-    if slot.replace(value.to_owned()).is_some() {
-        return Err(Failure::usage(format!("{flag} given twice; {USAGE}")));
-    }
-    Ok(())
-}
-
 fn parse_args(args: &[OsString]) -> Result<Args, Failure> {
     let mut parsed = Args::default();
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
         match arg.to_str() {
-            Some("--author") => once(&mut parsed.author, "--author", rest.next())?,
-            Some("--by") => once(&mut parsed.by, "--by", rest.next())?,
-            Some("--result") => once(&mut parsed.result, "--result", rest.next())?,
-            Some("--commit") => once(&mut parsed.commit, "--commit", rest.next())?,
+            Some("--author") => once(&mut parsed.author, "--author", rest.next(), USAGE)?,
+            Some("--by") => once(&mut parsed.by, "--by", rest.next(), USAGE)?,
+            Some("--result") => once(&mut parsed.result, "--result", rest.next(), USAGE)?,
+            Some("--commit") => once(&mut parsed.commit, "--commit", rest.next(), USAGE)?,
             Some("--finding") => parsed
                 .findings
-                .push(take_value("--finding", rest.next())?.to_owned()),
+                .push(take_value("--finding", rest.next(), USAGE)?.to_owned()),
             Some("--fresh") => parsed.fresh = true,
-            Some("--goal") => {
-                let name = take_value("--goal", rest.next())?;
-                let goal = GoalName::parse(name).ok_or_else(|| {
-                    Failure::usage(format!("--goal '{name}' is not a goal name; {USAGE}"))
-                })?;
-                if parsed.goal.replace(goal).is_some() {
-                    return Err(Failure::usage(format!("--goal given twice; {USAGE}")));
-                }
-            }
-            Some(flag) if flag.starts_with("--") => {
-                return Err(Failure::usage(format!(
-                    "unknown argument '{flag}'; {USAGE}"
-                )));
-            }
+            Some("--goal") => goal_flag(&mut parsed.goal, rest.next(), USAGE)?,
+            Some(flag) if flag.starts_with("--") => return Err(unknown_argument(arg, USAGE)),
             Some(word) => parsed.positional.push(word.to_owned()),
-            None => {
-                return Err(Failure::usage(format!(
-                    "unknown argument '{}'; {USAGE}",
-                    arg.to_string_lossy()
-                )));
-            }
+            None => return Err(unknown_argument(arg, USAGE)),
         }
     }
     Ok(parsed)
@@ -110,15 +80,6 @@ struct Request {
     fresh: bool,
     commit: Option<String>,
     goal: Option<GoalName>,
-}
-
-fn worker(flag: &str, text: Option<&str>) -> Result<Worker, Failure> {
-    let text = text.ok_or_else(|| Failure::usage(format!("{flag} is required; {USAGE}")))?;
-    parse_worker(text).ok_or_else(|| {
-        Failure::usage(format!(
-            "{flag} '{text}' is not <model>:<effort> or <model>:<effort>@<tier>; {USAGE}"
-        ))
-    })
 }
 
 fn request(args: Args) -> Result<Request, Failure> {
@@ -152,8 +113,8 @@ fn request(args: Args) -> Result<Request, Failure> {
     Ok(Request {
         kind,
         target: target.clone(),
-        author: worker("--author", args.author.as_deref())?,
-        by: worker("--by", args.by.as_deref())?,
+        author: worker_flag("--author", args.author.as_deref(), USAGE)?,
+        by: worker_flag("--by", args.by.as_deref(), USAGE)?,
         outcome,
         findings,
         fresh: args.fresh,
@@ -246,26 +207,17 @@ fn work_target(
         None => branch_tip(git, &branch)
             .ok_or_else(|| Failure::usage(format!("branch {branch} not found")))?,
     };
-    let tree = git.tree_of(OsStr::new(commit.as_str()))?;
-    let docs = read_json(&check_receipt_path(common, &tree));
-    let checked = receipt_validity(docs.as_deref(), &tree)
-        .and(docs.as_deref())
-        .and_then(<[_]>::first)
-        .ok_or_else(|| {
-            Failure::no(format!(
-                "no check receipt for this content: run shipit check on {branch}"
-            ))
-        })?;
-    let base = check_base(checked).ok_or_else(|| {
-        Failure::usage("the check receipt for this content does not name its base")
+    let tip = tip_of(git, common, commit)?;
+    let checked = tip.checked.ok_or_else(|| {
+        Failure::no(format!(
+            "no check receipt for this content: run shipit check on {branch}"
+        ))
     })?;
-    let fork = merge_base(git, &base.commit, &commit)
-        .ok_or_else(|| Failure::usage(format!("no shared history with {}", base.name)))?;
     let key = match request.kind {
-        ReceiptKind::TestDrive => tree.clone(),
+        ReceiptKind::TestDrive => tip.tree.clone(),
         ReceiptKind::PlanReview | ReceiptKind::InformedReview | ReceiptKind::SecondOpinion => {
-            patch_id(git, &fork, &commit)?.ok_or_else(|| {
-                Failure::no(format!("the slice has no changes against {}", base.name))
+            checked.patch_id.ok_or_else(|| {
+                Failure::no(format!("the slice has no changes against {}", checked.base))
             })?
         }
     };
@@ -274,12 +226,12 @@ fn work_target(
         key,
         subject: Subject::Work {
             branch,
-            commit: commit.to_string(),
-            tree: tree.to_string(),
-            merge_base: fork.to_string(),
+            commit: tip.commit.to_string(),
+            tree: tip.tree.to_string(),
+            merge_base: checked.merge_base.to_string(),
         },
-        tree: Some(tree),
-        commit: Some(commit),
+        tree: Some(tip.tree),
+        commit: Some(tip.commit),
     })
 }
 
@@ -291,7 +243,7 @@ pub(crate) fn run(
     let git = Git::find()?;
     let (head, _table) = load_setup_table(&git, OsStr::new(HEAD))?;
     let request = request(parse_args(args)?)?;
-    let policy = load_policy(&git, head, err)?;
+    let (policy, _base_ref) = load_policy(&git, head, err)?;
     let common = git.common_dir()?;
     let store = store_dir(&common);
     let goal = which_goal(

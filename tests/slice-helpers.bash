@@ -41,7 +41,7 @@ make_work() {
   local i
   git checkout -q -b "$1" main
   for i in $(seq 1 "$2"); do
-    printf '%s\n' "$i" >"work$i"
+    printf '%s\n' "$1 $i" >"${1##*/}-$i"
   done
   git add -A
   git commit -q -m "work on $1"
@@ -63,4 +63,18 @@ check_here() {
 # patch_id_of <rev>: the patch id of the change from main to <rev>, as a plain diff gives it.
 patch_id_of() {
   git diff --binary --full-index "$(git merge-base main "$1")" "$1" | git patch-id --stable | cut -d' ' -f1
+}
+
+# reviewed <slice> [count]: slice/demo/<slice> with <count> new files, checked and with an
+# informed review; the repo is back on main.
+reviewed() {
+  make_work "slice/demo/$1" "${2:-1}"
+  check_here
+  "$SHIPIT_BIN" receipt informed-review "$1" --author sonnet:high --by opus:high --result approve >/dev/null
+  git checkout -q main
+}
+
+# lg <args>: run shipit log, stdout in $output, stderr in $stderr.
+lg() {
+  run --separate-stderr "$SHIPIT_BIN" log "$@"
 }
