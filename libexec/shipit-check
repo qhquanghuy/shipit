@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# shipit check [--cap-from <ref>]: run the project's checks on a clean commit
+# and write a receipt for its tree. Exit 0 ok, 1 a check or the size cap
+# failed, 2 usage or setup error, 3 uncommitted changes.
+
+# shellcheck source=../lib/common.sh
+source "$SHIPIT_ROOT/lib/common.sh"
+# shellcheck source=../lib/setup.sh
+source "$SHIPIT_ROOT/lib/setup.sh"
+# shellcheck source=../lib/store.sh
+source "$SHIPIT_ROOT/lib/store.sh"
+# shellcheck source=../lib/git.sh
+source "$SHIPIT_ROOT/lib/git.sh"
+
+readonly STATUS_ARGS=(status --porcelain --untracked-files=normal)
+
+# dirty_paths: the first few paths `git status` lists, on one line.
+dirty_paths() {
+  git "${STATUS_ARGS[@]}" | sed -n '1,5p' | cut -c4- | paste -sd, - | sed 's/,/, /g'
+}
+
+# changed_paths <tree a> <tree b>: the first few paths that differ, on one line.
+changed_paths() {
+  git diff --name-only "$1" "$2" | sed -n '1,5p' | paste -sd, - | sed 's/,/, /g'
+}
+
+# run_commands <setup json>: run each check command with bash -c, in order,
+# stopping at the first failure.
+run_commands() {
+  local cmd rc
+  while IFS= read -r -d '' cmd; do
+    printf 'check: %s\n' "$cmd"
+    rc=0
+    bash -c "$cmd" </dev/null || rc=$?
+    [[ $rc -eq 0 ]] ||
+      die 1 "check failed (exit $rc): $cmd; fix it and run shipit check again"
+  done < <(printf '%s\n' "$1" | jq -j '.check[] + "\u0000"')
+}
+
+main() {
+  local cap_from=
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --cap-from)
+        [[ $# -ge 2 && -n $2 ]] || die 2 "--cap-from needs a ref; usage: shipit check [--cap-from <ref>]"
+        cap_from=$2
+        shift 2
+        ;;
+      *) die 2 "unknown argument '$1'; usage: shipit check [--cap-from <ref>]" ;;
+    esac
+  done
+
+  local top setup cap_json
+  top=$(repo_top)
+  cd "$top"
+  setup=$(load_setup)
+  cap_json=$setup
+  if [[ -n $cap_from ]]; then
+    git rev-parse --verify --quiet --end-of-options "$cap_from^{commit}" >/dev/null ||
+      die 2 "--cap-from: '$cap_from' is not a commit; give a branch, tag or commit"
+    if git cat-file -e "$cap_from:$SETUP_PATH" 2>/dev/null; then
+      cap_json=$(load_setup "$cap_from")
+    else
+      printf 'no setup file at %s; using this one\n' "$cap_from"
+    fi
+  fi
+
+  local dirty
+  dirty=$(git "${STATUS_ARGS[@]}")
+  [[ -z $dirty ]] ||
+    die 3 "uncommitted changes: commit first, a receipt is per commit content"
+
+  local base ref mb files cap verdict
+  base=$(printf '%s\n' "$setup" | jq -r '.base')
+  ref=$(base_ref "$base")
+  mb=$(merge_base "$ref")
+  files=$(changed_files_count "$mb")
+  cap=$(printf '%s\n' "$cap_json" | jq '.cap')
+  verdict=$(jq -n -c --argjson files "$files" --argjson cap "$cap" \
+    '{files: $files, cap: $cap}' | jq_lib -c 'include "size"; size_verdict')
+  printf '%s\n' "$verdict" | jq -r '.message'
+  [[ $(printf '%s\n' "$verdict" | jq -r '.ok') == true ]] ||
+    die 1 "too big: $files files (cap $cap) against $ref; split the work into smaller changes"
+
+  local commit tree
+  commit=$(git rev-parse HEAD)
+  tree=$(git rev-parse 'HEAD^{tree}')
+
+  run_commands "$setup"
+
+  local commit_after tree_after paths
+  commit_after=$(git rev-parse HEAD)
+  tree_after=$(git rev-parse 'HEAD^{tree}')
+  dirty=$(git "${STATUS_ARGS[@]}")
+  if [[ -n $dirty ]]; then
+    paths=$(dirty_paths)
+    die 1 "a check changed the work: $paths"
+  elif [[ $tree_after != "$tree" ]]; then
+    paths=$(changed_paths "$tree" "$tree_after")
+    die 1 "a check changed the work: ${paths:-the commit content} (it committed)"
+  elif [[ $commit_after != "$commit" ]]; then
+    die 1 "a check changed the work: it moved HEAD to a new commit"
+  fi
+
+  local version now receipt_path
+  version=$(<"$SHIPIT_ROOT/VERSION")
+  now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  receipt_path=$(store_path "receipts/check/$tree.json")
+  jq -n -c \
+    --arg key "$tree" --arg commit "$commit" --arg time "$now" \
+    --arg tool "shipit $version" \
+    --argjson files "$files" --argjson cap "$cap" \
+    --argjson commands "$(printf '%s\n' "$setup" | jq -c '.check')" \
+    '{kind: "check", version: 1, key: $key, commit: $commit,
+      size: {files: $files, cap: $cap}, commands: $commands,
+      time: $time, tool: $tool}' | write_json_atomic "$receipt_path"
+  printf 'receipt written for %s\n' "$(git rev-parse --short "$tree")"
+}
+
+main "$@"
