@@ -230,7 +230,7 @@ and measures size as changed files. A pack interface for the tool waits for a se
 | Gate | When | Done by |
 |---|---|---|
 | Review needs a receipt | Before a reviewer of the work or a tester starts. Reviewers of a roadmap or a build plan are not gated, because no work exists yet. | A Claude Code hook that runs `shipit verify` for the slice's working copy. It never runs the checks itself. |
-| Push needs a receipt | Before `git push` of a slice branch. Other pushes pass. | A git `pre-push` hook that runs `shipit verify` on the newest commit of each pushed branch. A slice branch is any branch other than the base branch. |
+| Push needs a receipt | Before `git push` of a slice branch. Other pushes pass. | A git `pre-push` hook that runs `shipit verify` on the newest commit of each pushed branch. A slice branch is a branch named `slice/<goal>/<slice>`; pushes of other branches pass, with a notice. |
 | Recheck | On every pull request | CI runs `shipit check` from the start, at a pinned ShipIt commit, and trusts no receipt. |
 | Ship needs the owner | Before any ship command: merging a pull request, pushing to the base branch, pushing a tag, creating a release | A Claude Code hook that turns the command into a question the owner must answer, in every permission mode. The owner may say yes and let the agent carry it out. |
 
@@ -259,8 +259,8 @@ The goal is met when all of these are true.
    order, and writes a receipt only when every one passes.
 2. `shipit verify` passes only for the exact version that was checked. A new commit with changed
    content fails it; an amended commit with the same content passes.
-3. A malformed or missing setup file stops every command that uses it (all except `shipit init`
-   and `shipit verify`) with a clear message. Nothing runs on a guessed default.
+3. A malformed or missing setup file stops every command that needs a setup (`shipit help` shows
+   which) with a clear message. Nothing runs on a guessed default.
 4. `shipit status` shows each slice's state and next step without any stored status field.
    Deleting a receipt changes the answer.
 5. A review receipt from a reviewer who does not rank above the author is refused: same model and
