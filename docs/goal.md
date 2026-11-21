@@ -226,8 +226,8 @@ The goal is met when all of these are true.
    order, and writes a receipt only when every one passes.
 2. `shipit verify` passes only for the exact version that was checked. A new commit with changed
    content fails it; an amended commit with the same content passes.
-3. A malformed or missing setup file stops every command except `shipit init` with a clear message. Nothing runs on a
-   guessed default.
+3. A malformed or missing setup file stops every command that uses it (all except `shipit init`
+   and `shipit verify`) with a clear message. Nothing runs on a guessed default.
 4. `shipit status` shows each slice's state and next step without any stored status field.
    Deleting a receipt changes the answer.
 5. A review receipt from a reviewer who does not rank above the author is refused: same model and
