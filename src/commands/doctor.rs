@@ -16,7 +16,7 @@ use crate::pure::setup::{HEAD, SETUP_PATH};
 pub(crate) const HIDDEN: bool = false;
 pub(crate) const NEEDS_SETUP: bool = false;
 pub(crate) const USAGE: &str = "usage: shipit doctor";
-pub(crate) const SUMMARY: &str = "Shows the machine facts (system, headless or not, common agent tools with versions, whether agent config is writable, the machine notes) and the setup file's health; the notes' format is the one docs/machine-notes.md states.";
+pub(crate) const SUMMARY: &str = "Shows the machine facts (system, headless or not, common agent tools with versions, whether agent config is writable, the machine notes) and the setup file's health; the notes' format is the one docs/machine-notes.md states. To tell whether a file can be created it briefly creates and removes .shipit-write-probe-<pid> in the nearest folder that exists.";
 pub(crate) const EXITS: [&str; 4] = ["facts printed", "", "usage error", ""];
 
 // A missing or invalid setup is reported, never a reason to stop: the machine facts are what

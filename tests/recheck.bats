@@ -149,10 +149,10 @@ last_line() {
   git commit -q -m "a workflow"
   run_recheck fix/x
   [ "$status" -eq 0 ]
-  ! grep -qF '[' "$SUMMARY"
-  ! grep -qF '](' "$SUMMARY"
-  ! grep -qF '://' "$SUMMARY"
-  ! grep -qF '@' "$SUMMARY"
+  run ! grep -qF '[' "$SUMMARY"
+  run ! grep -qF '](' "$SUMMARY"
+  run ! grep -qF '://' "$SUMMARY"
+  run ! grep -qF '@' "$SUMMARY"
   grep -q '^CI job: CHANGED: ' "$SUMMARY"
 }
 

@@ -238,7 +238,7 @@ pub(crate) fn is_lefthook_local(name: &str) -> bool {
 // A top-level `pre-push` key in any spelling: bare or quoted, with a comment or a flow mapping
 // after the colon. A second one would make lefthook refuse the whole file.
 pub(crate) fn has_pre_push_key(text: &str) -> bool {
-    text.lines().any(|line| {
+    text.trim_start_matches('\u{feff}').lines().any(|line| {
         let key = line
             .strip_prefix("pre-push")
             .or_else(|| line.strip_prefix("\"pre-push\""))
@@ -807,6 +807,9 @@ mod tests {
             let key_indented = format!("  pre-push:\n{before}{after}x\n");
             prop_assert!(has_pre_push_key("pre-push:\n  commands:\n"));
             prop_assert!(has_pre_push_key(&key_at_column_zero));
+            // a file that starts with a byte order mark, as some editors write it
+            let with_mark = "\u{feff}pre-push:\n  commands: {}\n";
+            prop_assert!(has_pre_push_key(with_mark));
             // every spelling of the same key: a comment, quotes, a flow mapping
             for spelled in [
                 "pre-push: # mine\n  commands: {}\n",
