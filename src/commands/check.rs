@@ -341,6 +341,7 @@ pub(crate) fn run(
         BaseUsed {
             name: base_ref.full(),
             commit: base_commit,
+            given: trusted,
         },
         (files, setup.gate.max_files),
         commands,

@@ -83,7 +83,7 @@ LOG="$BATS_TEST_TMPDIR/log"
   run_check
   [ "$status" -eq 0 ]
   [[ $output == *"size: 2 files (cap 2)"* ]]
-  jq -e '.size.files == 2' "$(store)"/receipts/check/*.json
+  jq -e '.size.files == 2 and .base_given == false' "$(store)"/receipts/check/*.json
 }
 
 @test "commands run in order" {

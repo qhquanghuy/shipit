@@ -41,13 +41,14 @@ design (`shipit check --base <own branch>` compares the slice with itself, and a
 
 ```json
 {"kind": "check", "version": 1, "key": "<tree hash>", "commit": "<commit hash>",
- "base_ref": "refs/heads/main", "base_commit": "<commit hash of the base>",
+ "base_ref": "refs/heads/main", "base_commit": "<commit hash of the base>", "base_given": false,
  "size": {"files": 24, "cap": 60}, "commands": ["…"],
  "time": "2026-11-21T10:00:00Z", "tool": "shipit 0.1.0"}
 ```
 
 `base_ref` is the full ref the slice was compared with (`refs/heads/<base>` or `refs/remotes/origin/<base>`) and
-`base_commit` the commit it was at. When the slice changed only the setup file (docs/setup.md), the receipt also has
+`base_commit` the commit it was at. `base_given` is true when `--base` named the base (CI's receipts say so); a receipt
+without it reads as not given, and `shipit verify` names the ref of a given base. When the slice changed only the setup file (docs/setup.md), the receipt also has
 `"setup_change": true` and `"setup_fields": ["gate.check"]` (the changed fields, in the order gate.base, gate.max_files, gate.check, gate.environment),
 placed after `commands`; `shipit verify` says so. Receipts without a setup change have neither key.
 

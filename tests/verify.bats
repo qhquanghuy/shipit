@@ -182,3 +182,11 @@ receipt_file() {
   [ "$status" -eq 1 ]
   [[ $stderr == "shipit: uncommitted changes"* ]]
 }
+
+@test "a receipt made with --base: verify names the base" {
+  start_repo
+  "$SHIPIT_BIN" check --base main >/dev/null
+  run_verify
+  [ "$status" -eq 0 ]
+  [ "$output" = "valid receipt for $(short_tree) (--base refs/heads/main)" ]
+}
