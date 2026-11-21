@@ -6,7 +6,6 @@ macro_rules! messages {
     ($($name:ident = $text:expr;)*) => {
         $(pub(crate) const $name: &str = $text;)*
 
-        #[cfg(test)]
         pub(crate) const ALL: &[&str] = &[$($name),*];
     };
 }
@@ -69,8 +68,8 @@ messages! {
     ALLOWS_NO_MUST_FIX = "<result> allows no must-fix finding";
     NOT_A_RESULT = "\"<word>\" is not a result: approve, approve-after-fixes, rework, pass or findings";
 
-    USAGE = "usage: shipit format <roadmap|map|findings> …";
-    ROADMAP_USAGE = "usage: shipit format roadmap <file> [--goal <goal file>]";
+    USAGE = "usage: shipit format <roadmap|map|findings|messages> …";
+    ROADMAP_USAGE = "usage: shipit format roadmap <file> [<goal file>]";
     MAP_USAGE = "usage: shipit format map <file>";
     FINDINGS_USAGE = "usage: shipit format findings <review|test-drive> <result> [<finding>…]";
 }
@@ -102,78 +101,6 @@ pub(crate) fn say(template: &str, fills: &[(&str, &dyn Display)]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // The doc's tables: the cell under a header named "Message", and nothing else, is a message.
-    const DOC: &str = include_str!("../../tests/fixtures/formats.md");
-
-    // Owned by pure::rules, which the setup shares.
-    const SHARED: [&str; 4] = [
-        "unknown key",
-        "missing",
-        "must be an object",
-        "<file> is invalid:",
-    ];
-
-    fn cells(row: &str) -> Vec<String> {
-        row.replace("\\|", "\u{1}")
-            .trim()
-            .trim_matches('|')
-            .split('|')
-            .map(|cell| cell.replace('\u{1}', "|").trim().to_owned())
-            .collect()
-    }
-
-    fn spans(cell: &str) -> Vec<String> {
-        cell.split('`')
-            .skip(1)
-            .step_by(2)
-            .map(str::to_owned)
-            .collect()
-    }
-
-    fn documented() -> Vec<String> {
-        let mut found = Vec::new();
-        let mut column: Option<usize> = None;
-        for line in DOC.lines() {
-            if !line.starts_with('|') {
-                column = None;
-                continue;
-            }
-            let row = cells(line);
-            match column {
-                None => column = row.iter().position(|cell| cell == "Message"),
-                Some(at) => {
-                    if let Some(cell) = row.get(at) {
-                        found.extend(spans(cell));
-                    }
-                }
-            }
-        }
-        found
-    }
-
-    #[test]
-    fn every_message_in_the_doc_is_in_the_code_and_every_message_in_the_code_is_in_the_doc() {
-        let in_doc = documented();
-        let unknown: Vec<&String> = in_doc
-            .iter()
-            .filter(|message| {
-                !ALL.contains(&message.as_str()) && !SHARED.contains(&message.as_str())
-            })
-            .collect();
-        assert!(
-            unknown.is_empty(),
-            "in the doc, not in the code: {unknown:?}"
-        );
-        let missing: Vec<&&str> = ALL
-            .iter()
-            .filter(|message| !in_doc.iter().any(|documented| documented == *message))
-            .collect();
-        assert!(
-            missing.is_empty(),
-            "in the code, not in the doc: {missing:?}"
-        );
-    }
 
     #[test]
     fn a_value_that_looks_like_a_key_is_not_filled_in_again() {

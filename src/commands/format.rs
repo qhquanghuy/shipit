@@ -11,14 +11,23 @@ use crate::pure::failure::Failure;
 use crate::pure::finding::{Finding, Outcome, ResultKind, outcome_problems, parse_finding};
 use crate::pure::goal::{QualifiedDoneWhen, goal_items};
 use crate::pure::messages::{
-    FILE_PROBLEM, FINDINGS_USAGE, MAP_USAGE, NO_BLOCK, NOT_A_RESULT, NOT_TOML, ROADMAP_USAGE,
-    USAGE, say,
+    self, FILE_PROBLEM, FINDINGS_USAGE, MAP_USAGE, NO_BLOCK, NOT_A_RESULT, NOT_TOML, ROADMAP_USAGE,
+    say,
 };
 use crate::pure::roadmap::{Roadmap, SliceName, meets_problems, parse_roadmap, waves};
 use crate::pure::rules::invalid;
 use crate::pure::setup::toml_table;
 
 pub(crate) const HIDDEN: bool = true;
+pub(crate) const NEEDS_SETUP: bool = false;
+pub(crate) const USAGE: &str = messages::USAGE;
+pub(crate) const SUMMARY: &str = "Reads a roadmap, a done-when map or findings from files or arguments and prints what it parsed as compact JSON; it reads only the files given and needs no repository.";
+pub(crate) const EXITS: [&str; 4] = [
+    "the parsed format, printed",
+    "",
+    "usage error, or a file that is missing, cannot be read with certainty, or is invalid",
+    "",
+];
 
 const SLICES: &str = "## Slices";
 const COVERAGE: &str = "## Done-when coverage";
@@ -70,7 +79,7 @@ fn file_table(label: &str, text: &str) -> Result<toml::Table, Failure> {
 fn roadmap_command(args: &[OsString], out: &mut dyn Write) -> Result<(), Failure> {
     let (file, goal_file) = match args {
         [file] => (file, None),
-        [file, flag, goal] if flag == OsStr::new("--goal") => (file, Some(goal)),
+        [file, goal] => (file, Some(goal)),
         _ => return Err(Failure::usage(ROADMAP_USAGE)),
     };
     let label = file.to_string_lossy();
@@ -167,6 +176,12 @@ pub(crate) fn run(
         Some((form, rest)) if form == OsStr::new("roadmap") => roadmap_command(rest, out),
         Some((form, rest)) if form == OsStr::new("map") => map_command(rest, out),
         Some((form, rest)) if form == OsStr::new("findings") => findings_command(rest, out),
+        Some((form, [])) if form == OsStr::new("messages") => {
+            for message in messages::ALL {
+                writeln!(out, "{message}").ok();
+            }
+            Ok(())
+        }
         Some(_) | None => Err(Failure::usage(USAGE)),
     }
 }

@@ -16,7 +16,7 @@ setup() {
 }
 
 @test "format roadmap: prints the parsed roadmap and its waves" {
-  run --separate-stderr "$SHIPIT_BIN" format roadmap "$ROADMAP" --goal "$GOAL"
+  run --separate-stderr "$SHIPIT_BIN" format roadmap "$ROADMAP" "$GOAL"
   [ "$status" -eq 0 ]
   [ -z "$stderr" ]
   [ "$output" = "$PRINTED" ]
@@ -42,7 +42,7 @@ setup() {
 
 @test "format roadmap: an item nobody meets exits 2 with \"DW3: no slice\"" {
   sed 's/^meets = \["DW3"\]/meets = []/' "$ROADMAP" >unmet.md
-  run --separate-stderr "$SHIPIT_BIN" format roadmap unmet.md --goal "$GOAL"
+  run --separate-stderr "$SHIPIT_BIN" format roadmap unmet.md "$GOAL"
   [ "$status" -eq 2 ]
   [ "$stderr" = 'shipit: unmet.md is invalid:
 DW3: no slice' ]
@@ -81,12 +81,12 @@ DW3: no slice' ]
 
 @test "format roadmap: a goal that cannot be read with certainty exits 2" {
   printf '## Done-when\n\n1. a\n```\n2. b\n' >open-goal.md
-  run --separate-stderr "$SHIPIT_BIN" format roadmap "$ROADMAP" --goal open-goal.md
+  run --separate-stderr "$SHIPIT_BIN" format roadmap "$ROADMAP" open-goal.md
   [ "$status" -eq 2 ]
   [ "$stderr" = 'shipit: goal: a fence opened at line 4 is never closed' ]
 
   printf '## Done-when\n' >empty-goal.md
-  run --separate-stderr "$SHIPIT_BIN" format roadmap "$ROADMAP" --goal empty-goal.md
+  run --separate-stderr "$SHIPIT_BIN" format roadmap "$ROADMAP" empty-goal.md
   [ "$status" -eq 2 ]
   [ "$stderr" = 'shipit: goal: no numbered items under "## Done-when"' ]
 }
@@ -107,7 +107,7 @@ DW3: no slice' ]
 @test "format: an unknown form exits 2 with the usage" {
   run --separate-stderr "$SHIPIT_BIN" format
   [ "$status" -eq 2 ]
-  [ "$stderr" = "shipit: usage: shipit format <roadmap|map|findings> …" ]
+  [ "$stderr" = "shipit: usage: shipit format <roadmap|map|findings|messages> …" ]
 }
 
 @test "format map: prints the items of a file and of a build-plan block" {
@@ -170,4 +170,46 @@ finding "issue (non-blocking): x\nissue (blocking): y": a finding is one line, w
   run --separate-stderr "$SHIPIT_BIN" format findings review maybe
   [ "$status" -eq 2 ]
   [ "$stderr" = 'shipit: "maybe" is not a result: approve, approve-after-fixes, rework, pass or findings' ]
+}
+
+# documented_messages <doc>: each code span in the "Message" column of the doc's tables.
+documented_messages() {
+  awk '
+    /^\|/ {
+      line = $0
+      gsub(/\\\|/, "\001", line)
+      n = split(line, cell, "|")
+      if (!col) {
+        for (i = 2; i < n; i++) {
+          name = cell[i]
+          gsub(/^ +| +$/, "", name)
+          if (name == "Message") col = i
+        }
+        next
+      }
+      text = cell[col]
+      gsub(/\001/, "|", text)
+      m = split(text, part, "`")
+      for (i = 2; i <= m; i += 2) print part[i]
+      next
+    }
+    { col = 0 }
+  ' "$1"
+}
+
+@test "docs/formats.md names every message the code prints, and no other" {
+  # Printed by pure::rules, which the setup shares.
+  shared=$'unknown key\nmissing\nmust be an object\n<file> is invalid:'
+  in_code=$("$SHIPIT_BIN" format messages)
+  [ -n "$in_code" ]
+  run diff <(documented_messages "$SHIPIT_SRC/docs/formats.md" | LC_ALL=C sort -u) \
+    <(printf '%s\n%s\n' "$in_code" "$shared" | LC_ALL=C sort -u)
+  [ "$output" = "" ]
+  [ "$status" -eq 0 ]
+}
+
+@test "a message that the doc names and the code does not print is found" {
+  sed 's/`a nitpick is never blocking`/`a nitpick is not blocking`/' "$SHIPIT_SRC/docs/formats.md" >doc.md
+  [ "$(documented_messages doc.md | grep -c 'a nitpick is not blocking')" -eq 1 ]
+  ! "$SHIPIT_BIN" format messages | grep -qxF 'a nitpick is not blocking'
 }
