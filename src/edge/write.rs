@@ -5,7 +5,8 @@
 )]
 
 use std::fs::{self, OpenOptions};
-use std::io::Write as _;
+use std::io::{ErrorKind, Write as _};
+use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::Path;
 
 use crate::pure::failure::Failure;
@@ -23,6 +24,60 @@ pub(crate) fn append_text(path: &Path, text: &str) -> Result<(), Failure> {
         .open(path)
         .and_then(|mut file| file.write_all(text.as_bytes()))
         .map_err(|_why| cannot_write(path))
+}
+
+// The file is made new: one that exists is the caller's refusal (`exists`, exit 1), and a write
+// that fails leaves no half-written file.
+pub(crate) fn write_new(
+    path: &Path,
+    text: &str,
+    executable: bool,
+    exists: &str,
+) -> Result<(), Failure> {
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).map_err(|_why| cannot_write(path))?;
+    }
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    if executable {
+        options.mode(0o755);
+    }
+    let mut file = options.open(path).map_err(|why| {
+        if why.kind() == ErrorKind::AlreadyExists {
+            Failure::no(exists)
+        } else {
+            cannot_write(path)
+        }
+    })?;
+    if file.write_all(text.as_bytes()).is_err() {
+        drop(file);
+        fs::remove_file(path).ok();
+        return Err(cannot_write(path));
+    }
+    Ok(())
+}
+
+// A line is added only when no line of the file equals it; the last line is ended first.
+pub(crate) fn append_line(path: &Path, line: &str) -> Result<bool, Failure> {
+    let existing = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(why) if why.kind() == ErrorKind::NotFound => Vec::new(),
+        Err(_why) => return Err(cannot_write(path)),
+    };
+    if existing
+        .split(|byte| *byte == b'\n')
+        .any(|have| have == line.as_bytes())
+    {
+        return Ok(false);
+    }
+    let ended = existing.is_empty() || existing.ends_with(b"\n");
+    let text = if ended {
+        format!("{line}\n")
+    } else {
+        format!("\n{line}\n")
+    };
+    append_text(path, &text)?;
+    Ok(true)
 }
 
 // Opening for append writes nothing and follows symlinks. A missing file can be created when
@@ -91,6 +146,73 @@ mod tests {
             append_text(&path, "x"),
             Err(Failure::usage(format!("cannot write {}", path.display())))
         );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            failure_persistence: None,
+            cases: 16,
+            ..ProptestConfig::default()
+        })]
+
+        #[test]
+        fn write_new_never_replaces(first in "[a-z\n]{0,10}", second in "[a-z\n]{0,10}") {
+            let dir = scratch("write-new");
+            let path = dir.join("deep").join("file");
+            prop_assert_eq!(write_new(&path, &first, false, "exists"), Ok(()));
+            prop_assert_eq!(
+                write_new(&path, &second, true, "it exists"),
+                Err(Failure::no("it exists"))
+            );
+            prop_assert_eq!(fs::read_to_string(&path).ok(), Some(first));
+            fs::remove_dir_all(&dir).ok();
+        }
+
+        #[test]
+        fn append_line_only_when_absent(
+            lines in proptest::collection::vec("[a-z]{0,4}", 0..4),
+            line in "[a-z]{1,4}",
+            ended in any::<bool>(),
+        ) {
+            let dir = scratch("append-line");
+            let path = dir.join("file");
+            let mut text = lines.join("\n");
+            if ended && !lines.is_empty() {
+                text.push('\n');
+            }
+            fs::write(&path, &text).expect("a file");
+            let present = text.split('\n').any(|have| have == line);
+            prop_assert_eq!(append_line(&path, &line), Ok(!present));
+            let after = fs::read_to_string(&path).expect("readable");
+            prop_assert!(after.starts_with(&text));
+            if present {
+                prop_assert_eq!(after, text);
+            } else {
+                // the last line is ended first, and the new line ends the file
+                let added = after.get(text.len()..).unwrap_or_default();
+                let wanted = if text.is_empty() || text.ends_with('\n') {
+                    format!("{line}\n")
+                } else {
+                    format!("\n{line}\n")
+                };
+                prop_assert_eq!(added, wanted);
+                prop_assert_eq!(append_line(&path, &line), Ok(false));
+            }
+            fs::remove_dir_all(&dir).ok();
+        }
+    }
+
+    #[test]
+    fn write_new_makes_the_hook_executable() {
+        let dir = scratch("write-new-mode");
+        let hook = dir.join("hook");
+        write_new(&hook, "x", true, "exists").expect("written");
+        let plain = dir.join("plain");
+        write_new(&plain, "x", false, "exists").expect("written");
+        let mode_of = |path: &Path| fs::metadata(path).expect("metadata").permissions().mode();
+        assert_eq!(mode_of(&hook) & 0o111, 0o111);
+        assert_eq!(mode_of(&plain) & 0o111, 0);
         fs::remove_dir_all(&dir).ok();
     }
 

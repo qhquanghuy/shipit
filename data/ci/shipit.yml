@@ -1,0 +1,21 @@
+name: shipit
+
+on:
+  pull_request:
+  push:
+    branches: [BASE_BRANCH]
+
+permissions:
+  contents: read
+
+jobs:
+  recheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      # remove this step if your check commands do not need Nix
+      - uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
+      # set SHIPIT_COMMIT to a full ShipIt commit hash
+      - uses: qhquanghuy/shipit@SHIPIT_COMMIT
