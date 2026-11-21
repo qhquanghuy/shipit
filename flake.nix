@@ -24,7 +24,8 @@
           craneLib = crane.mkLib pkgs;
 
           # The Rust source: cargo files, `.rs` files, the lint and format settings, and
-          # `data/` when a slice adds it (build.rs embeds it).
+          # `data/` when a slice adds it (build.rs embeds it), and the test fixtures the
+          # unit tests include.
           src = fs.toSource {
             root = ./.;
             fileset = fs.unions [
@@ -32,6 +33,7 @@
               ./clippy.toml
               ./rustfmt.toml
               (fs.maybeMissing ./data)
+              ./tests/fixtures
             ];
           };
 

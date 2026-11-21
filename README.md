@@ -14,15 +14,16 @@ Status: early. Two commands exist, `shipit check` and `shipit verify`.
 
 ## Run it
 
-From a clone, run `bin/shipit` (for example `bin/shipit check` from inside your project), or
-with Nix, without cloning:
+With Nix, without cloning:
 
 ```
 nix run github:qhquanghuy/shipit -- check
 ```
 
-Needs git 2.31, bash 4.4 and jq 1.6 or newer, on Linux or macOS 12.3 or newer. The Nix
-package brings its own copies.
+From a clone, `cargo build --release` and run `target/release/shipit` (for example `shipit check` from
+inside your project). On x86_64 Linux, `nix build .#static` builds a static binary that runs anywhere.
+
+Needs git 2.31 or newer, and bash (only to run the check commands) on the `PATH`.
 
 ## Check and verify
 
@@ -69,9 +70,13 @@ Exit codes:
 ## Develop
 
 ```
-nix develop      # bash, jq, git, bats, shellcheck, actionlint
-bats tests       # run the tests
-nix flake check  # shellcheck, bats and actionlint, as CI runs them
+nix develop                          # rust, bats, jq, git, shellcheck, actionlint
+cargo build && bats tests            # build, then run the tests against target/debug/shipit
+cargo clippy --all-targets           # lint
+cargo test                           # unit tests
+rustfmt $(git ls-files '*.rs')       # format
+nix flake check                      # what CI runs
 ```
 
+`SHIPIT_BIN=<path> bats tests` runs the tests against another binary.
 `nix flake check` sees only files git tracks: `git add` new files first.

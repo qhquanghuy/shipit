@@ -1,8 +1,8 @@
 # The setup file
 
 ShipIt reads one file per project: `.config/shipit.json` at the top of the repository. No
-environment variable changes any value in it. The schema is checked in full, by
-`lib/setup.jq`, whenever a command loads the file.
+environment variable changes any value in it. The schema is checked in full
+whenever a command reads the file.
 
 ## Example
 
@@ -24,7 +24,8 @@ environment variable changes any value in it. The schema is checked in full, by
   "roles": {
     "scout":  {"tier": 1, "retries": 1, "then": {"tier": 2}},
     "maker":  {"tier": 2, "effort": "high"},
-    "tester": {"tier": 3, "effort": "medium"}
+    "tester": {"tier": 3, "effort": "medium"},
+    "reader": {"tier": 1}
   },
   "packs": {"skill": "superpowers", "domain": "coding", "model": "claude"},
   "messages_to_owner": {"max_lines": 30, "status_update_max_lines": 10}
@@ -51,7 +52,7 @@ not list. Every problem is reported at once, each with its path (for example
 | `fix_rounds` | An integer, 0 or more. |
 | `effort_cap` | On the effort scale: `low`, `medium`, `high`, `xhigh`, `max`, in that order. |
 | `tiers` | A non-empty array of objects. The `tier` values are exactly 1 to n, in order. `model` is a non-empty string. `stand_in` is optional; if present it has both `model` (a non-empty string) and `effort` (on the scale, not above `effort_cap`). |
-| `roles` | Exactly `scout`, `maker`, `tester`. Each has `tier`, the number of an existing tier. `effort` is optional: on the scale, not above `effort_cap`. `scout` also requires `retries` (an integer, 0 or more) and `then` (an object with only `tier`: an existing tier above `scout.tier`). |
+| `roles` | Exactly `scout`, `maker`, `tester`, `reader`. Each has `tier`, the number of an existing tier. `effort` is optional: on the scale, not above `effort_cap`. `scout` also requires `retries` (an integer, 0 or more) and `then` (an object with only `tier`: an existing tier above `scout.tier`). |
 | `packs` | Exactly `skill`, `domain`, `model`; each a non-empty string. |
 | `messages_to_owner` | Exactly `max_lines` and `status_update_max_lines`, each an integer, 1 or more; `status_update_max_lines` is not above `max_lines`. `max_lines` is the most lines any message to the owner may have. `status_update_max_lines` is the most lines a progress update to the owner may have. |
 
@@ -64,11 +65,10 @@ limits on messages to the owner).
 
 ## Loading
 
-`load_setup [ref]` in `lib/setup.sh` prints the setup as compact JSON, as committed at `ref`
-(default `HEAD`); it never reads the working tree. A missing file, a file that is not JSON and a file
+Every command that reads the setup reads it as committed at a ref (default `HEAD`), never from the working tree. A missing file, a file that is not JSON and a file
 that breaks a rule above each stop the command with exit 2 and a message that says what to fix.
 
-`check` also reads the base branch's setup (`load_baseline` in `lib/setup.sh`), but only `base`, `cap`,
+`check` also reads the base branch's setup, but only `base`, `cap`,
 `check` and `environment` (validated for their type only). Those four fields must be identical to the slice's: any
 difference is refused, because a branch must not choose its own checks; the owner merges setup changes on the base
 first. Nothing else in the base file is looked at, so the schema can grow. A base without a setup file prints a

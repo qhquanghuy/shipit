@@ -44,5 +44,4 @@ else: the store is not shared, and a CI run rechecks the work and trusts none.
 
 ## In code
 
-`lib/store.sh` has `store_path <relative path>`, which prints the absolute path and creates
-nothing, and `write_json_atomic <path>`, which reads JSON on stdin and writes it as above.
+`src/edge/store.rs` finds the store folder (it creates nothing) and writes each file as above.
