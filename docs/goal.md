@@ -57,7 +57,7 @@ functional.
 | roadmap | Slices are complete, never broken pieces; each fits the cap and one session. Plan what runs in parallel; parallel slices only add files. Mark which slices need a test drive. |
 | build plan | Say how each part is verified before making. Fix interfaces; leave bodies to the maker. Reviewed by a higher rank first. |
 | make | Cheapest capable model, one task at a time, no review mid-way. Code is written for its reviewer. Use the machine's tools; never install globally. |
-| check | Tools enforce, not prose. Runs once per exact version and leaves a receipt. A slice cannot change its own checks. |
+| check | Tools enforce, not prose. Runs once per exact version and leaves a receipt. A slice cannot change its own checks; only a setup-only change (no other files) may. |
 | review | Informed review and second opinion, ranked above the maker; the teach-back reader is a signal. Findings are fixed or written down as known issues. |
 | test drive | Use it as its audience would, from the goal only, never the code. Checklist first, then exploration. |
 | fix rounds | Limited (2 by default). Past the limit, the lead decides and records it. |
