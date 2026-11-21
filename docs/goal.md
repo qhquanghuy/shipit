@@ -58,7 +58,7 @@ One command, in shell, kept in this repo. Hooks and CI call the same tool.
 | `shipit check` | Refuses a dirty tree. Measures the size against the cap. Runs the setup's check commands in order. On a full pass, writes a check receipt for this exact version of the work. |
 | `shipit verify [commit]` | Says whether a valid check receipt exists for the current version, or for the given commit. Fast: it only reads files and asks git. |
 | `shipit receipt` | Records a review or test-drive receipt: who, which model and tier, which exact input, the result. |
-| `shipit status` | Computes each slice's state from the roadmap, the receipts and the logbook, and names the next step. |
+| `shipit status` | Computes each slice's state from the roadmap, the receipts and the logbook, and names the next step. It can also print a short summary of a slice (receipts and known issues) for the pull request. |
 | `shipit log` | Appends one entry to a slice's logbook. |
 
 - **A receipt is keyed by the exact input of what it records.**
@@ -72,7 +72,7 @@ One command, in shell, kept in this repo. Hooks and CI call the same tool.
 - A check receipt is written only by `shipit check`. Review and test-drive receipts are records
   made by the lead: they say who claims what about which input. They are honest notes, not
   proof, which is why recheck and the owner come after them.
-- The tool checks rule 1 on every review receipt, for plans as well as for the work: the
+- The tool checks rule 1 on every review and test-drive receipt, for plans as well as for the work: the
   reviewer must rank above the author. Ranks come from the setup: first by model tier, then, for
   the same model, by effort level. So a reviewer on the same model meets rule 1 by working at a
   higher effort than the author, up to the setup's effort cap. A stand-in counts as the tier it
@@ -89,8 +89,7 @@ One command, in shell, kept in this repo. Hooks and CI call the same tool.
 | build plan ready | a build plan exists and has a valid review receipt |
 | made | the slice's branch has commits beyond the base |
 | checked | a valid check receipt exists for the current version |
-| reviewed | checked, and valid receipts exist for the informed review, the second opinion and, if marked, the test drive; every finding is fixed or is a known issue |
-| ready to ship | reviewed, and nothing has changed since |
+| ready to ship | checked, and valid receipts exist for the informed review, the second opinion and, if marked, the test drive; every finding is fixed or is a known issue |
 | shipped | the logbook holds a "shipped" entry naming the owner's merge |
 
 A slice only moves forward by gaining a receipt or a logbook entry. It moves back by itself when
@@ -124,6 +123,31 @@ fix-round limit, the effort cap, the packs in use, and the tiers with their mode
 Each skill is written as a function: its inputs, its one output, the effects it may cause, and
 every outcome with what follows it.
 
+**Every output has a template**, so each skill and each role is a function from named inputs to
+one output of a known shape. A template fixes:
+
+- the **outcomes**: a closed list, for example a scout returns `found`, `partial` or `not found`;
+- the **required parts** for each outcome, for example every fact a scout reports has a source;
+- a small machine-readable header that names the outcome and the input it answered.
+
+Templates exist for: the roadmap, the build plan, a scout's report, a review (informed or second
+opinion), a test drive, and a known issue. `shipit validate` checks a filled output against its
+template and refuses one with an unlisted outcome or a missing part. The lead hands an output to
+the next phase only after it validates.
+
+| Role | Output | Outcomes |
+|---|---|---|
+| scout | report | found, partial, not found |
+| planner | roadmap, build plan | ready for review |
+| reviewer | review | approve, approve after fixes, rework |
+| tester | test drive | pass, findings |
+
+A scout that returns `partial` or `not found` is asked once more with a narrower question and
+where it already looked. If that is still not enough, the question goes to a scout one tier up,
+and after that the requester reads the source itself. Each step is a logbook entry.
+
+The test drive has two passes: first every done-when item as a checklist, then free exploration.
+
 ### 4. Packs
 
 | Kind | First pack | Says |
@@ -142,7 +166,7 @@ and measures size as changed files. A pack interface for the tool waits for a se
 | Gate | When | Done by |
 |---|---|---|
 | Review needs a receipt | Before a reviewer of the work or a tester starts. Reviewers of a roadmap or a build plan are not gated, because no work exists yet. | A Claude Code hook that runs `shipit verify` for the slice's working copy. It never runs the checks itself. |
-| Push needs a receipt | Before `git push` of a slice branch. Other pushes pass. | A git `pre-push` hook that runs `shipit verify` on each pushed commit. |
+| Push needs a receipt | Before `git push` of a slice branch. Other pushes pass. | A git `pre-push` hook that runs `shipit verify` on the newest commit of each pushed branch. A slice branch is any branch other than the base branch. |
 | Recheck | On every pull request | CI runs `shipit check` from the start, at a pinned ShipIt commit, and trusts no receipt. |
 | Ship needs the owner | Before any ship command: merging a pull request, pushing to the base branch, pushing a tag, creating a release | A Claude Code hook that turns the command into a question the owner must answer, in every permission mode. The owner may say yes and let the agent carry it out. |
 
@@ -171,7 +195,7 @@ The goal is met when all of these are true.
    order, and writes a receipt only when every one passes.
 2. `shipit verify` passes only for the exact version that was checked. A new commit with changed
    content fails it; an amended commit with the same content passes.
-3. A malformed or missing setup file stops every command with a clear message. Nothing runs on a
+3. A malformed or missing setup file stops every command except `shipit init` with a clear message. Nothing runs on a
    guessed default.
 4. `shipit status` shows each slice's state and next step without any stored status field.
    Deleting a receipt changes the answer.
@@ -194,7 +218,9 @@ The goal is met when all of these are true.
 
 **Skills and packs**
 
-11. The four skills exist. Each states its inputs, output, allowed effects and outcomes.
+11. The four skills exist. Each states its inputs, output, allowed effects and outcomes. Every
+    output in the table of templates has a template, and `shipit validate` refuses a filled output
+    whose outcome is not listed or that misses a required part.
 12. A script fails the build when a skill or pack uses a rejected term, a model name outside the
     model pack, or a harness name outside the harness files.
 13. The Superpowers pack states every place where a ShipIt rule overrides a Superpowers default.
