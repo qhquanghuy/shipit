@@ -11,3 +11,13 @@ goal → roadmap → build plan → make → check → informed review + second 
 ```
 
 Status: design. Nothing to install yet.
+
+## Develop
+
+```
+nix develop      # bash, jq, git, bats, shellcheck, actionlint
+bats tests       # run the tests
+nix flake check  # shellcheck, bats and actionlint, as CI runs them
+```
+
+`nix flake check` sees only files git tracks: `git add` new files first.

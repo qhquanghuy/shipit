@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# The install root: the folder above bin/, found through any symlink.
+install_root() {
+  local self
+  self=$(readlink -f "${BASH_SOURCE[0]}")
+  dirname "$(dirname "$self")"
+}
+
+SHIPIT_ROOT=$(install_root)
+readonly SHIPIT_ROOT
+export SHIPIT_ROOT
+
+# shellcheck source=../lib/common.sh
+source "$SHIPIT_ROOT/lib/common.sh"
+
+readonly NAME_PATTERN='^[a-z][a-z-]*$'
+
+# list_commands: one command name per line, found by file name.
+list_commands() {
+  local file name
+  for file in "$SHIPIT_ROOT"/libexec/shipit-*; do
+    [[ -f $file ]] || continue
+    name=${file##*/shipit-}
+    [[ $name =~ $NAME_PATTERN ]] || continue
+    printf '%s\n' "$name"
+  done
+}
+
+usage() {
+  printf 'usage: shipit <command> [args]\n\ncommands:\n'
+  local name any=
+  while IFS= read -r name; do
+    printf '  %s\n' "$name"
+    any=1
+  done < <(list_commands)
+  [[ -n $any ]] || printf '  (none yet)\n'
+  printf '\nshipit --version prints the version.\n'
+}
+
+main() {
+  case "${1-help}" in
+    help | -h | --help)
+      usage
+      return 0
+      ;;
+    --version | -V)
+      local version
+      version=$(<"$SHIPIT_ROOT/VERSION")
+      printf 'shipit %s\n' "$version"
+      return 0
+      ;;
+  esac
+
+  local name=$1
+  shift
+  [[ $name =~ $NAME_PATTERN ]] ||
+    die 2 "'$name' is not a command name; run 'shipit help' to list the commands"
+  local file="$SHIPIT_ROOT/libexec/shipit-$name"
+  [[ -f $file ]] ||
+    die 2 "unknown command '$name'; run 'shipit help' to list the commands"
+  exec bash "$file" "$@"
+}
+
+main "$@"
