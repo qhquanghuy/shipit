@@ -200,6 +200,61 @@ pub(crate) fn origin_branch_of(git: &Git, goal: &GoalName) -> Result<Option<Stri
     Ok((!name.is_empty()).then_some(name))
 }
 
+// The paths of the coverage maps committed at the revision.
+pub(crate) fn map_paths_at(git: &Git, rev: &OsStr) -> Result<Vec<String>, Failure> {
+    let bytes = git
+        .output(&[
+            OsStr::new("ls-tree"),
+            OsStr::new("-r"),
+            OsStr::new("-z"),
+            OsStr::new("--name-only"),
+            OsStr::new("--end-of-options"),
+            rev,
+            OsStr::new("--"),
+            OsStr::new(".shipit/coverage/"),
+        ])
+        .map_err(|_why| Failure::usage("cannot list the coverage maps"))?;
+    Ok(bytes
+        .split(|byte| *byte == 0)
+        .filter(|name| !name.is_empty())
+        .map(|name| String::from_utf8_lossy(name).into_owned())
+        .collect())
+}
+
+// (status, path) of every file the change touches; a rename is a deletion and an addition.
+pub(crate) fn changed_with_status(
+    git: &Git,
+    from: &Oid,
+    to: &OsStr,
+) -> Result<Vec<(char, String)>, Failure> {
+    let bytes = git
+        .output(&[
+            OsStr::new("diff"),
+            OsStr::new("--name-status"),
+            OsStr::new("-z"),
+            OsStr::new("--no-renames"),
+            OsStr::new("--no-ext-diff"),
+            OsStr::new("--ignore-submodules=none"),
+            OsStr::new("--end-of-options"),
+            OsStr::new(from.as_str()),
+            to,
+        ])
+        .map_err(|_why| Failure::usage(format!("cannot list the changes since {from}")))?;
+    let mut fields = bytes
+        .split(|byte| *byte == 0)
+        .filter(|field| !field.is_empty());
+    let mut changes = Vec::new();
+    while let (Some(status), Some(path)) = (fields.next(), fields.next()) {
+        if let Some(letter) = status.first() {
+            changes.push((
+                char::from(*letter),
+                String::from_utf8_lossy(path).into_owned(),
+            ));
+        }
+    }
+    Ok(changes)
+}
+
 // What `shipit check` judged: the base it used (its short name), the commit where the work left
 // it, and the id of the change since.
 #[derive(Debug, PartialEq, Eq)]

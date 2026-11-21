@@ -37,6 +37,13 @@ pub(crate) fn logbook_path(store: &Path, goal: &GoalName) -> PathBuf {
     goal_dir(store, goal).join("logbook.jsonl")
 }
 
+pub(crate) fn coverage_record_path(store: &Path, tree: &Oid) -> PathBuf {
+    store
+        .join("receipts")
+        .join("coverage")
+        .join(format!("{tree}.json"))
+}
+
 pub(crate) fn metrics_path(store: &Path, goal: &GoalName) -> PathBuf {
     store.join("metrics").join(format!("{goal}.toml"))
 }

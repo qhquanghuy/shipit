@@ -10,6 +10,7 @@ tracks them:
   receipts/review/<patch id>/<kind>.json        kind: informed-review | second-opinion
   receipts/test-drive/<tree>.json
   receipts/plan-review/<file hash>.json         review of a roadmap or a build plan
+  receipts/coverage/<tree>.json                 shipit coverage, run by shipit check
   goals/<goal>/goal.vN.md                      one folder per named goal; a changed goal is a new version
   goals/<goal>/roadmap.vN.md                   the goal's roadmap, versioned the same way
   goals/<goal>/logbook.jsonl                   append-only; one per goal, each entry names its slice
@@ -17,8 +18,10 @@ tracks them:
   metrics/<goal>.toml                          kept metrics: one table per slice, numbers only
 ```
 
-Only `receipts/check/` is written today. The other paths are reserved for later commands, which
-add files and never change this layout. Receipts are keyed by the work and not by a goal, so they
+`shipit check` writes `receipts/check/`; `shipit receipt` writes the review, test-drive and
+plan-review receipts; `shipit receipt`, `shipit log` and `shipit start` append to the logbook of a
+goal; `shipit coverage` writes `receipts/coverage/`. The goal files, the roadmaps and the build plans
+are put there by hand. Later commands add files and never change this layout. Receipts are keyed by the work and not by a goal, so they
 stay at the root. The coverage map of a slice is not here: it is committed in the project, at
 `.shipit/coverage/<goal>/<slice>.toml`.
 
@@ -33,7 +36,7 @@ stay at the root. The coverage map of a slice is not here: it is committed in th
 - Review, test-drive and plan-review receipts are never overwritten: a new one is made under a temporary name and
   hard-linked to its final name, which fails if the name is taken.
 - Logbooks are appended, never rewritten.
-- Check receipts and the metrics file are replaced atomically (the rename above).
+- Check receipts, coverage records and the metrics file are replaced atomically (the rename above).
 - Every receipt is one JSON object with `kind`, `version`, `key`, `time` (UTC, ISO 8601) and
   `tool` (`shipit <version>`).
 
@@ -59,6 +62,20 @@ design (`shipit check --base <own branch>` compares the slice with itself, and a
 without it reads as not given, and `shipit verify` names the ref of a given base. When the slice changed only the setup file (docs/setup.md), the receipt also has
 `"setup_change": true` and `"setup_fields": ["gate.check"]` (the changed field paths, in the setup's key order, then other keys by name),
 placed after `commands`; `shipit verify` says so. Receipts without a setup change have neither key.
+
+## Coverage record
+
+`receipts/coverage/<tree>.json`, written by `shipit coverage` when it runs as a check command of
+`shipit check` on a `slice/*` branch, and replaced by a rerun:
+
+```json
+{"kind": "coverage", "version": 1, "key": "<tree hash>", "check": "<the check command>",
+ "maps": {"demo/beta": {"DW2": ["a test name", "another test name"]}},
+ "time": "2026-11-21T10:00:00Z", "tool": "shipit 0.1.0"}
+```
+
+`maps` holds every map committed at `.shipit/coverage/<goal>/<slice>.toml`, read from git at the
+checked commit, with the tests of each done-when item; every one of them ran.
 
 ## In code
 

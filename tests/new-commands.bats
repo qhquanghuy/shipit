@@ -11,6 +11,7 @@ COMMANDS=(
   "log beta note --text a-note"
   "status"
   "start alpha"
+  "coverage -- true"
 )
 
 @test "new commands: a missing setup stops each" {

@@ -1,0 +1,16 @@
+DW3 = ["new commands: a missing setup stops each"]
+DW4 = ["the_state_is_the_longest_chain_that_holds", "status: a slice walks from planned to shipped",
+       "status: deleting each receipt lowers the state", "status: writes nothing and creates no folder"]
+DW5 = ["rank_is_tier_then_effort", "any_effort_above_the_cap_is_refused",
+       "a_pass_with_the_same_real_model_and_effort_needs_fresh_top_tier_and_cap",
+       "receipt: a reviewer not above the planner is refused and nothing is written",
+       "receipt: the tiers come from the base branch's setup"]
+DW16 = ["summary: lists every receipt, known issue, done-when item and metric"]
+DW18 = ["status: shows every goal; status --goal shows one and still counts the cap over all goals",
+        "start: the cap counts across goals", "start: the branch is slice/<goal>/<slice>",
+        "status: ids are qualified as <goal>:DWn", "status: a roadmap whose goal differs from its folder exits 2",
+        "status: a branch of a goal with no folder shows as unknown goal and counts toward the cap"]
+DW19 = ["complete: without --confirm it prints the plan and changes nothing",
+        "complete: a goal with an unshipped slice exits 1 and changes nothing",
+        "complete: confirmed, it keeps only the metrics, makes the issues and deletes the rest",
+        "complete: a failing gh deletes nothing and names the issues created"]
