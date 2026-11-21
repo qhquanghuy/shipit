@@ -82,3 +82,68 @@ DW3: no slice' ]
   [ "$status" -eq 2 ]
   [ "$stderr" = "shipit: usage: shipit format <roadmap|map|findings> …" ]
 }
+
+COVERAGE="$SHIPIT_SRC/tests/fixtures/coverage.toml"
+
+@test "format map: prints the items of a file and of a build-plan block" {
+  want='{"DW2":["a single test"],"DW10":["status: a slice walks from planned to shipped","the_state_is_the_longest_chain_that_holds"]}'
+  run --separate-stderr "$SHIPIT_BIN" format map "$COVERAGE"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$want" ]
+
+  {
+    printf '# Build plan\n\n## Done-when coverage\n\n```toml\n'
+    cat "$COVERAGE"
+    printf '```\n'
+  } >plan.md
+  run --separate-stderr "$SHIPIT_BIN" format map plan.md
+  [ "$status" -eq 0 ]
+  [ "$output" = "$want" ]
+
+  printf '## Done-when coverage\n\n```toml\n```\n' >none.md
+  run --separate-stderr "$SHIPIT_BIN" format map none.md
+  [ "$status" -eq 0 ]
+  [ "$output" = '{}' ]
+}
+
+@test "format map: a bad map exits 2 with every problem" {
+  printf 'DW4 = ["dw4 works"]\nnope = ["a"]\n' >bad.toml
+  run --separate-stderr "$SHIPIT_BIN" format map bad.toml
+  [ "$status" -eq 2 ]
+  [ "$stderr" = 'shipit: bad.toml is invalid:
+.DW4[0]: a test name must not carry a done-when id
+.nope: must be a done-when id such as "DW4"' ]
+
+  printf '# Plan\n' >plan.md
+  run --separate-stderr "$SHIPIT_BIN" format map plan.md
+  [ "$status" -eq 2 ]
+  [ "$stderr" = 'shipit: plan.md has no toml block under "## Done-when coverage"' ]
+}
+
+@test "format findings: prints the result and the parsed findings" {
+  run --separate-stderr "$SHIPIT_BIN" format findings review approve-after-fixes \
+    "issue (blocking, security): a hole" "question: why?"
+  [ "$status" -eq 0 ]
+  [ "$output" = '{"result":"approve-after-fixes","findings":[{"id":"F1","label":"issue","class":"must fix","perspectives":["security"],"text":"a hole"},{"id":"F2","label":"question","class":"must answer","perspectives":[],"text":"why?"}]}' ]
+}
+
+@test "format findings: a rework without a must-fix finding exits 2" {
+  run --separate-stderr "$SHIPIT_BIN" format findings review rework "nitpick: a name"
+  [ "$status" -eq 2 ]
+  [ "$stderr" = "shipit: rework needs a must-fix finding" ]
+}
+
+@test "format findings: every refused finding and result is named" {
+  run --separate-stderr "$SHIPIT_BIN" format findings review approve "oops" "issue: x"
+  [ "$status" -eq 2 ]
+  [ "$stderr" = 'shipit: finding "oops": must start with issue, suggestion, question or nitpick, then ": "
+finding "issue: x": issue and suggestion need (blocking) or (non-blocking)' ]
+
+  run --separate-stderr "$SHIPIT_BIN" format findings test-drive approve
+  [ "$status" -eq 2 ]
+  [ "$stderr" = "shipit: approve is a review result" ]
+
+  run --separate-stderr "$SHIPIT_BIN" format findings review maybe
+  [ "$status" -eq 2 ]
+  [ "$stderr" = 'shipit: "maybe" is not a result: approve, approve-after-fixes, rework, pass or findings' ]
+}

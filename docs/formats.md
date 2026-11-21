@@ -113,3 +113,80 @@ Reads the setup (for `gate.base`) from `HEAD`, then the files given, relative to
 | `<file> has no toml block under "## Slices"` | no block |
 | `<file> is not valid TOML: <why>` | the block does not parse |
 | `<file> is invalid:` and one problem per line | any problem above, including the goal checks |
+
+## Done-when map
+
+A committed file `.shipit/coverage/<slice>.toml`, and the same table in the build plan under `## Done-when coverage`. It
+says which tests prove each done-when item the change meets.
+
+```toml
+DW4 = ["status: a slice walks from planned to shipped", "the_state_is_the_longest_chain_that_holds"]
+```
+
+Each key is a done-when id; each value is a non-empty array of distinct, non-empty test names. A test name must not
+carry a done-when id (`dw` in any case, then a digit): ids live in the plan, not in the code. An empty table is valid: it
+says the change meets no done-when item. Problems are in file order.
+
+| Path | Message |
+|---|---|
+| `.<key>` | `must be a done-when id such as "DW4"` |
+| `.DW4` | `must be an array of non-empty strings`, `must list at least one test name` |
+| `.DW4[j]` | `must be a non-empty string` |
+| `.DW4[j]` | `a test name must not carry a done-when id` |
+| `.DW4[j]` | `"<name>" is listed twice` |
+
+`shipit format map <file>` reads a TOML file or, for a name ending `.md`, the block under `## Done-when coverage`. It
+prints the map as compact JSON in number order (`{"DW2": […], "DW10": […]}`).
+
+| Message | When |
+|---|---|
+| `usage: shipit format map <file>` | other arguments |
+| `<file> has no toml block under "## Done-when coverage"` | a `.md` file without the block |
+| `<file> is not valid TOML: <why>` | the file or block does not parse |
+| `<file> is invalid:` and one problem per line | any problem above |
+
+## Findings
+
+A finding is one line, `<label> [(<decorations>)]: <text>` (Conventional Comments). Labels: `issue`, `suggestion`,
+`question`, `nitpick`. Decorations are comma-separated: `blocking`, `non-blocking`, or a perspective (lowercase letters
+and `-`, such as `security`).
+
+| Label | Decoration | Class |
+|---|---|---|
+| `issue`, `suggestion` | exactly one `blocking` | must fix |
+| `issue`, `suggestion` | exactly one `non-blocking` | nice to fix |
+| `nitpick` | no `blocking` | nice to fix |
+| `question` | neither | must answer |
+
+Ids are `F1…Fn` in the order given. Every refusal is `finding "<finding>": <why>`:
+
+| Why | When |
+|---|---|
+| `must start with issue, suggestion, question or nitpick, then ": "` | no known label, or no `: ` after it and its decorations |
+| `"<word>" is not a decoration` | a decoration that is not `blocking`, `non-blocking` or a perspective |
+| `issue and suggestion need (blocking) or (non-blocking)` | neither, or both |
+| `a nitpick is never blocking` | `nitpick (blocking)` |
+| `a question is neither blocking nor non-blocking` | `question (blocking)` or `question (non-blocking)` |
+| `the text after ": " is empty` | nothing after `: ` |
+
+## Results
+
+Review results are `approve`, `approve-after-fixes`, `rework`; test-drive results are `pass`, `findings`. A review or a
+test drive is accepted only with a result of its own kind. The blocking rule: `approve` and `pass` allow no must-fix
+finding; `approve-after-fixes`, `rework` and `findings` need at least one. Must-answer findings go with any result, and
+nice-to-fix findings never decide one.
+
+| Message | When |
+|---|---|
+| `<result> is a test-drive result` | a review with `pass` or `findings` |
+| `<result> is a review result` | a test drive with `approve`, `approve-after-fixes` or `rework` |
+| `<result> needs a must-fix finding` | `approve-after-fixes`, `rework` or `findings` without one |
+| `<result> allows no must-fix finding` | `approve` or `pass` with one |
+
+`shipit format findings <review|test-drive> <result> [<finding>…]` prints `{"result": …, "findings": […]}`. Findings
+that cannot be read are all named, one per line, before the result is judged.
+
+| Message | When |
+|---|---|
+| `usage: shipit format findings <review\|test-drive> <result> [<finding>…]` | missing arguments, or a kind that is not `review` or `test-drive` |
+| `"<word>" is not a result: approve, approve-after-fixes, rework, pass or findings` | an unknown result |
