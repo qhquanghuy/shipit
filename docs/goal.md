@@ -58,7 +58,16 @@ Every question to the owner, and every decision point, has the same three parts:
 3. **Recommendation**: the options when there are several, each with its trade-off, and which one
    the lead recommends and why.
 
-The decision-point template enforces this form.
+**Every question stands on its own.** The owner may be working on several things at once. A
+question or decision point starts with a short label of where it belongs (project, slice, phase),
+for example `[firectl · slice A · review]`, and its context gives what the owner needs to decide
+without remembering earlier messages.
+
+**Always say what is next.** Every message to the owner ends with a short "Next" part: what
+happens next, who does it, and what the owner must do, or "nothing until …". `shipit status` names
+the next step for each slice, and every skill's outcomes say what follows.
+
+The decision-point template enforces this form: label, What, Context, Recommendation, Next.
 
 ## What gets built (version 1)
 
@@ -217,8 +226,8 @@ The goal is met when all of these are true.
    order, and writes a receipt only when every one passes.
 2. `shipit verify` passes only for the exact version that was checked. A new commit with changed
    content fails it; an amended commit with the same content passes.
-3. A malformed or missing setup file stops every command except `shipit init` with a clear message. Nothing runs on a
-   guessed default.
+3. A malformed or missing setup file stops every command that uses it (all except `shipit init`
+   and `shipit verify`) with a clear message. Nothing runs on a guessed default.
 4. `shipit status` shows each slice's state and next step without any stored status field.
    Deleting a receipt changes the answer.
 5. A review receipt from a reviewer who does not rank above the author is refused: same model and
