@@ -166,15 +166,15 @@ clone_of_main() {
   git config commit.gpgsign false
 }
 
-@test "local main ahead of origin/main: local main is used" {
-  clone_of_main "$(fixture_with 'gate.check=[]' 'gate.max_files=6')"
+@test "local main ahead of origin/main: origin/main is used" {
+  clone_of_main "$(fixture_with 'gate.check=[]' 'gate.max_files=9')"
   commit_files 5 m
   git checkout -q -b feature
   commit_files 3 f
   # against local main: 3 files; against origin/main: 8 files
   run_check
   [ "$status" -eq 0 ]
-  [[ $output == *"size: 3 files (cap 6)"* ]]
+  [[ $output == *"size: 8 files (cap 9)"* ]]
 }
 
 @test "local main and origin/main diverged: origin/main is used" {
@@ -197,14 +197,15 @@ clone_of_main() {
   [[ $output == *"size: 3 files (cap 6)"* ]]
 }
 
-@test "an unpushed setup change on the local base is the baseline" {
+@test "an unpushed setup change on the local base is not the baseline while origin/main exists" {
   clone_of_main "$(fixture_with 'gate.check=[]')"
   write_setup "$(fixture_with 'gate.check=[]' 'gate.max_files=40')"
   git checkout -q -b feature
   commit_files 2
   run_check
-  [ "$status" -eq 0 ]
-  [[ $output == *"size: 2 files (cap 40)"* ]]
+  [ "$status" -eq 1 ]
+  [ "$stderr" = "$(changed_msg gate.max_files)" ]
+  no_receipt
 }
 
 @test "no base branch at all: exit 2 with the message" {

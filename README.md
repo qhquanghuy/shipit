@@ -46,8 +46,8 @@ and the one whose setup the slice is compared with. It comes from `gate.base` in
 which wins; CI passes the pull request's base branch there, because the setup is the branch's own word. A base is a branch
 name, as `git check-ref-format --branch` accepts it: never a revision such as `HEAD~1`, and never a tag. ShipIt asks git for
 the full refs `refs/heads/<base>` and `refs/remotes/origin/<base>` only, so a tag with the same name cannot stand in for the
-branch. The ref used for `<base>`: the local branch if it has everything `origin/<base>` has (so an owner's unpushed setup
-change counts), else `origin/<base>`, else the local branch; if none exists, exit 2. The receipt records the full ref
+branch. The ref used for `<base>`: `origin/<base>` when it exists, else the local branch; if neither exists, exit 2. A
+setup change is approved by merging it, so it is on `origin` before it judges anything. The receipt records the full ref
 (`base_ref`) and the commit it was at (`base_commit`).
 
 The slice's own `gate.base` never judges the slice: if the branch it names has a setup whose `gate.base` is another branch,

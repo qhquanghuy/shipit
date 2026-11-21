@@ -97,7 +97,12 @@
               }
             );
 
-            test = craneLib.cargoTest checkArgs;
+            test = craneLib.cargoTest (
+              checkArgs
+              // {
+                nativeBuildInputs = [ pkgs.git ];
+              }
+            );
 
             doc = craneLib.cargoDoc (
               checkArgs

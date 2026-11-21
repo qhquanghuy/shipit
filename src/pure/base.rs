@@ -70,19 +70,15 @@ impl fmt::Display for BaseRef {
     }
 }
 
-// A local branch that has everything origin has (ahead or equal, so the owner's unpushed work
-// counts) wins; with both and the local behind or diverged, origin.
-pub(crate) fn choose_base_ref(
-    base: &BranchName,
-    origin: bool,
-    local: bool,
-    local_has_origin: bool,
-) -> Option<BaseRef> {
-    match (origin, local) {
-        (true, true) if local_has_origin => Some(BaseRef::Local(base.clone())),
-        (true, _) => Some(BaseRef::Origin(base.clone())),
-        (false, true) => Some(BaseRef::Local(base.clone())),
-        (false, false) => None,
+// Owner's decision (2026-11-21): origin wins whenever it exists, so a commit on the local base
+// never silently becomes the base.
+pub(crate) fn choose_base_ref(base: &BranchName, origin: bool, local: bool) -> Option<BaseRef> {
+    if origin {
+        Some(BaseRef::Origin(base.clone()))
+    } else if local {
+        Some(BaseRef::Local(base.clone()))
+    } else {
+        None
     }
 }
 
@@ -199,28 +195,16 @@ mod tests {
         }
 
         #[test]
-        fn the_ref_is_chosen_from_what_exists(
-            origin in any::<bool>(),
-            local in any::<bool>(),
-            local_has_origin in any::<bool>(),
-        ) {
+        fn origin_wins_whenever_it_exists(origin in any::<bool>(), local in any::<bool>()) {
             let main = name("main");
-            let chosen = choose_base_ref(&main, origin, local, local_has_origin);
-            prop_assert_eq!(chosen.is_none(), !origin && !local);
-            if !local {
-                prop_assert_eq!(&chosen, &origin.then(|| BaseRef::Origin(main.clone())));
-            }
-            if !origin {
-                prop_assert_eq!(&chosen, &local.then(|| BaseRef::Local(main.clone())));
-            }
-            if origin && local {
-                let expected = if local_has_origin {
-                    BaseRef::Local(main)
-                } else {
-                    BaseRef::Origin(main)
-                };
-                prop_assert_eq!(chosen, Some(expected));
-            }
+            let expected = if origin {
+                Some(BaseRef::Origin(main.clone()))
+            } else if local {
+                Some(BaseRef::Local(main.clone()))
+            } else {
+                None
+            };
+            prop_assert_eq!(choose_base_ref(&main, origin, local), expected);
         }
 
         #[test]

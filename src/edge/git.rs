@@ -57,10 +57,15 @@ fn rev_path(rev: &OsStr, path: &str) -> OsString {
 
 impl Git {
     pub(crate) fn find() -> Result<Self, Failure> {
+        Self::at(Path::new("."))
+    }
+
+    pub(crate) fn at(dir: &Path) -> Result<Self, Failure> {
         let not_a_repository =
             || Failure::usage("not inside a git repository; run shipit from inside the project");
         let output = Command::new("git")
             .args(["rev-parse", "--show-toplevel"])
+            .current_dir(dir)
             .stdin(Stdio::null())
             .stderr(Stdio::null())
             .output()
@@ -188,17 +193,6 @@ impl Git {
             .filter(|name| !name.is_empty())
     }
 
-    pub(crate) fn is_ancestor(&self, ancestor: &OsStr, descendant: &OsStr) -> bool {
-        self.output(&[
-            OsStr::new("merge-base"),
-            OsStr::new("--is-ancestor"),
-            OsStr::new("--end-of-options"),
-            ancestor,
-            descendant,
-        ])
-        .is_ok()
-    }
-
     pub(crate) fn merge_base_with_head(&self, rev: &OsStr) -> Option<Oid> {
         let bytes = self
             .output(&[
@@ -267,5 +261,47 @@ impl Git {
         ])
         .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
         .map_err(|_why| Failure::usage("cannot list the changed paths"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::*;
+    use crate::edge::testing::scratch;
+
+    fn init(dir: &Path) {
+        let status = Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(dir)
+            .status()
+            .expect("git runs");
+        assert!(status.success());
+    }
+
+    #[test]
+    fn at_a_subfolder_gives_the_top() {
+        let top = scratch("git-at-sub");
+        init(&top);
+        let sub = top.join("a").join("b");
+        fs::create_dir_all(&sub).expect("a subfolder");
+        let git = Git::at(&sub).expect("inside a repository");
+        assert_eq!(
+            fs::canonicalize(git.top()).expect("canonical"),
+            fs::canonicalize(&top).expect("canonical")
+        );
+        fs::remove_dir_all(&top).ok();
+    }
+
+    #[test]
+    fn at_a_folder_outside_a_repository_fails_like_find() {
+        let dir = scratch("git-at-outside");
+        let failure = Git::at(&dir).expect_err("not a repository");
+        assert_eq!(
+            failure,
+            Failure::usage("not inside a git repository; run shipit from inside the project")
+        );
+        fs::remove_dir_all(&dir).ok();
     }
 }
