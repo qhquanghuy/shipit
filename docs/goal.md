@@ -1,6 +1,6 @@
 # ShipIt: goal
 
-Status: draft, waiting for the owner's approval. Terms are defined in [vocab.md](vocab.md).
+Status: approved by the owner on 2026-11-21; later owner decisions are folded in. Terms are defined in [vocab.md](vocab.md).
 
 ## Goal
 

@@ -44,6 +44,7 @@ Flow: goal → roadmap → build plan → make → check → informed review + s
 | maker | does make | tier 2, high effort |
 | reviewer | informed review or second opinion; one tier above whoever made the thing | Opus reviewing Sonnet |
 | tester | does the test drive | fresh isolated agent |
+| reader | teach-back: explains the diff without the plan, as a signal for the informed reviewer | tier 1 agent, ranked below the maker |
 
 ## Four rules
 1. Someone else confirms your work, one tier up.
