@@ -383,6 +383,51 @@ refused() {
   refused '.packs.domain = 5' '.packs.domain'
 }
 
+
+@test "messages_to_owner is accepted when valid, with the update limit equal to max_lines" {
+  in_repo "$(mutated '.messages_to_owner = {"max_lines": 5, "status_update_max_lines": 5}')"
+  stub_run
+  [ "$status" -eq 0 ]
+}
+
+@test "messages_to_owner is required" {
+  refused 'del(.messages_to_owner)' '.messages_to_owner'
+}
+
+@test "messages_to_owner needs max_lines" {
+  refused 'del(.messages_to_owner.max_lines)' '.messages_to_owner.max_lines'
+}
+
+@test "messages_to_owner needs status_update_max_lines" {
+  refused 'del(.messages_to_owner.status_update_max_lines)' '.messages_to_owner.status_update_max_lines'
+}
+
+@test "messages_to_owner max_lines must be at least 1" {
+  refused '.messages_to_owner.max_lines = 0 | .messages_to_owner.status_update_max_lines = 1' '.messages_to_owner.max_lines'
+}
+
+@test "messages_to_owner status_update_max_lines must be at least 1" {
+  refused '.messages_to_owner.status_update_max_lines = 0' '.messages_to_owner.status_update_max_lines'
+}
+
+@test "messages_to_owner values must be integers" {
+  refused '.messages_to_owner.max_lines = "30"' '.messages_to_owner.max_lines'
+  refused '.messages_to_owner.status_update_max_lines = 2.5' '.messages_to_owner.status_update_max_lines'
+}
+
+@test "messages_to_owner status_update_max_lines must not be above max_lines" {
+  refused '.messages_to_owner.status_update_max_lines = 31' '.messages_to_owner.status_update_max_lines'
+}
+
+@test "messages_to_owner refuses an unknown key" {
+  refused '.messages_to_owner.extra = 1' '.messages_to_owner.extra'
+}
+
+@test "a wrong-typed messages_to_owner" {
+  refused '.messages_to_owner = "x"' '.messages_to_owner'
+  refused '.messages_to_owner = null' '.messages_to_owner'
+}
+
 @test "null in place of every value is reported, never a crash" {
   in_repo "$(mutated 'with_entries(.value = null)')"
   stub_run

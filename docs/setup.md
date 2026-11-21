@@ -25,7 +25,8 @@ environment variable changes any value in it. The schema is checked in full, by
     "maker":  {"tier": 2, "effort": "high"},
     "tester": {"tier": 3, "effort": "medium"}
   },
-  "packs": {"skill": "superpowers", "domain": "coding", "model": "claude"}
+  "packs": {"skill": "superpowers", "domain": "coding", "model": "claude"},
+  "messages_to_owner": {"max_lines": 30, "status_update_max_lines": 10}
 }
 ```
 
@@ -50,6 +51,7 @@ not list. Every problem is reported at once, each with its path (for example
 | `tiers` | A non-empty array of objects. The `tier` values are exactly 1 to n, in order. `model` is a non-empty string. `stand_in` is optional; if present it has both `model` (a non-empty string) and `effort` (on the scale, not above `effort_cap`). |
 | `roles` | Exactly `scout`, `maker`, `tester`. Each has `tier`, the number of an existing tier. `effort` is optional: on the scale, not above `effort_cap`. `scout` also requires `retries` (an integer, 0 or more) and `then` (an object with only `tier`: an existing tier above `scout.tier`). |
 | `packs` | Exactly `skill`, `domain`, `model`; each a non-empty string. |
+| `messages_to_owner` | Exactly `max_lines` and `status_update_max_lines`, each an integer, 1 or more; `status_update_max_lines` is not above `max_lines`. `max_lines` is the most lines any message to the owner may have. `status_update_max_lines` is the most lines a progress update to the owner may have. |
 
 ## Loading
 

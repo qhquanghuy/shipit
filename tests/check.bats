@@ -303,6 +303,43 @@ LOG="$BATS_TEST_TMPDIR/log"
   commit_files 2
   run_check --cap-from nosetup
   [ "$status" -eq 0 ]
-  [[ $output == *"no setup file at nosetup; using this one"* ]]
+  [[ $stderr == *"no setup file at nosetup; using this one"* ]]
+  [[ $output != *"no setup file"* ]]
   [[ $output == *"size: 2 files (cap 60)"* ]]
+}
+
+# rename_files <count>: rename <count> committed files on the feature branch.
+rename_files() {
+  local i
+  for i in $(seq 1 "$1"); do
+    git mv "f$i" "g$i"
+  done
+  git commit -q -m "rename files"
+}
+
+@test "renaming 3 files counts 3, not 6" {
+  start_repo
+  git checkout -q main
+  commit_files 3
+  git checkout -q feature
+  git merge -q --ff-only main
+  git checkout -q -b renamed
+  rename_files 3
+  run_check
+  [ "$status" -eq 0 ]
+  [[ $output == *"size: 3 files (cap 60)"* ]]
+}
+
+@test "renames count once even when diff.renames is false" {
+  start_repo
+  git checkout -q main
+  commit_files 3
+  git checkout -q feature
+  git merge -q --ff-only main
+  git checkout -q -b renamed
+  git config diff.renames false
+  rename_files 3
+  run_check
+  [ "$status" -eq 0 ]
+  [[ $output == *"size: 3 files (cap 60)"* ]]
 }

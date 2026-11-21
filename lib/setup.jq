@@ -114,10 +114,21 @@ def packs_errors:
         | at($k; ".packs"; non_empty_string; "must be a non-empty string")] | add));
 
 # The errors of one setup object.
+# The messages_to_owner object on input: two line limits, the update limit within the first.
+def messages_errors:
+  object_at(".messages_to_owner";
+    shape(".messages_to_owner"; ["max_lines", "status_update_max_lines"]; [])
+    + ([("max_lines", "status_update_max_lines") as $k
+        | at($k; ".messages_to_owner"; is_int_min(1); "must be an integer of at least 1")] | add)
+    + (if (.max_lines | is_int_min(1)) and (.status_update_max_lines | is_int_min(1))
+          and .status_update_max_lines > .max_lines
+       then [".messages_to_owner.status_update_max_lines: must not be above max_lines"]
+       else [] end));
+
 def setup_object_errors:
   effort_rank(.effort_cap) as $cap
   | (if (.tiers | type) == "array" then .tiers | length else null end) as $count
-  | shape(""; ["version", "base", "cap", "check", "fix_rounds", "effort_cap", "tiers", "roles", "packs"]; [])
+  | shape(""; ["version", "base", "cap", "check", "fix_rounds", "effort_cap", "tiers", "roles", "packs", "messages_to_owner"]; [])
   + at("version"; ""; . == 1; "must be the integer 1")
   + at("base"; ""; non_empty_string; "must be a non-empty string")
   + at("cap"; ""; is_int_min(1); "must be an integer of at least 1")
@@ -126,7 +137,8 @@ def setup_object_errors:
   + (if has("check") then .check | check_errors else [] end)
   + (if has("tiers") then .tiers | tiers_errors($cap) else [] end)
   + (if has("roles") then .roles | roles_errors($cap; $count) else [] end)
-  + (if has("packs") then .packs | packs_errors else [] end);
+  + (if has("packs") then .packs | packs_errors else [] end)
+  + (if has("messages_to_owner") then .messages_to_owner | messages_errors else [] end);
 
 def setup_errors:
   if length != 1 then

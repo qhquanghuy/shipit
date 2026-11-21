@@ -63,7 +63,7 @@ main() {
     if git cat-file -e "$cap_from:$SETUP_PATH" 2>/dev/null; then
       cap_json=$(load_setup "$cap_from")
     else
-      printf 'no setup file at %s; using this one\n' "$cap_from"
+      printf 'shipit: no setup file at %s; using this one\n' "$cap_from" >&2
     fi
   fi
 

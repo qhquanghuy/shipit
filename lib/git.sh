@@ -23,8 +23,9 @@ merge_base() {
 
 # changed_files_count <merge base>: print how many files HEAD changes since
 # <merge base>. Counted from NUL-separated names, so any file name counts as
-# one. Renames are not detected: the old and the new name each count.
+# one. A rename counts as one file (-M, so the user's diff.renames setting does
+# not matter).
 changed_files_count() {
-  git diff -z --name-only --no-renames "$1" HEAD | tr -cd '\0' | wc -c | tr -d '[:space:]'
+  git diff -z --name-only -M "$1" HEAD | tr -cd '\0' | wc -c | tr -d '[:space:]'
   printf '\n'
 }
