@@ -41,8 +41,8 @@ load_setup() {
   printf '%s\n' "$docs" | jq -c '.[0]'
 }
 
-# load_baseline <ref>: print {"cap": …, "check": […]} from the setup committed
-# at <ref>, a base branch. Only those two fields are validated, so a change of
+# load_baseline <ref>: print {"base", "cap", "check", "environment"} from the setup committed
+# at <ref>, a base branch. Only those four fields are validated, so a change of
 # the schema never breaks it. Prints "null" (and a notice on stderr) when <ref>
 # has no setup file. Dies 2 when the file is there but those fields are wrong.
 load_baseline() {
@@ -58,5 +58,5 @@ load_baseline() {
     die 2 "$label is not valid JSON"
   errors=$(printf '%s\n' "$docs" | jq_lib -r 'include "check"; baseline_errors | .[]') || exit
   [[ -z $errors ]] || die 2 "$label is invalid:"$'\n'"$errors"
-  printf '%s\n' "$docs" | jq -c '.[0] | {cap, check}'
+  printf '%s\n' "$docs" | jq -c '.[0] | {base, cap, check, environment}'
 }

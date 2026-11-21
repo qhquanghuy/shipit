@@ -1,17 +1,39 @@
 # shellcheck shell=bash
 # Git facts about the work and its base. Needs lib/common.sh (die).
 
-# base_ref <base>: print origin/<base> if it resolves, else <base> if it
-# resolves; otherwise die 2.
+# ref_commit <ref>: print the commit <ref> names; fail quietly when there is none.
+ref_commit() {
+  git rev-parse --verify --quiet --end-of-options "$1^{commit}"
+}
+
+# base_ref <base>: print the ref the work is measured against. A local <base>
+# that has everything origin/<base> has (it is ahead or equal, so the owner's
+# unpushed work counts) wins; else origin/<base> if it resolves, else <base>
+# if it resolves; otherwise die 2.
 base_ref() {
   local base=$1
-  if git rev-parse --verify --quiet --end-of-options "origin/$base^{commit}" >/dev/null; then
+  local has_origin='' has_local=''
+  ref_commit "origin/$base" >/dev/null && has_origin=1
+  ref_commit "$base" >/dev/null && has_local=1
+  if [[ -n $has_origin && -n $has_local ]]; then
+    if git merge-base --is-ancestor --end-of-options "origin/$base" "$base"; then
+      printf '%s\n' "$base"
+    else
+      printf 'origin/%s\n' "$base"
+    fi
+  elif [[ -n $has_origin ]]; then
     printf 'origin/%s\n' "$base"
-  elif git rev-parse --verify --quiet --end-of-options "$base^{commit}" >/dev/null; then
+  elif [[ -n $has_local ]]; then
     printf '%s\n' "$base"
   else
     die 2 "base branch \"$base\" not found (looked for origin/$base and $base)"
   fi
+}
+
+# current_branch: print the name of the checked-out branch; nothing when HEAD is
+# detached.
+current_branch() {
+  git symbolic-ref --quiet --short HEAD || true
 }
 
 # merge_base <ref>: print the merge base of <ref> and HEAD; die 2 if they share
@@ -38,4 +60,48 @@ changed_files_count() {
 hidden_edit_paths() {
   git ls-files -v -z | tr '\0' '\n' | sed -n -E 's/^[a-zS] //p' ||
     die 2 "cannot list the tracked files"
+}
+
+# refuse_hidden_edits <exit code>: die with <exit code> when a tracked file is
+# marked skip-worktree or assume-unchanged.
+refuse_hidden_edits() {
+  local hidden hidden_line
+  hidden=$(hidden_edit_paths) || exit
+  [[ -z $hidden ]] && return 0
+  hidden_line=$(printf '%s\n' "$hidden" | first_lines) || exit
+  die "$1" "tracked files are marked skip-worktree or assume-unchanged, which hides edits from git ($hidden_line); clear the flag with 'git update-index --no-skip-worktree --no-assume-unchanged <file>' and run shipit again"
+}
+
+# refuse_sparse_checkout: die 2 when the repository is a sparse checkout, where
+# files outside the pattern are missing and checks would not see them.
+refuse_sparse_checkout() {
+  local sparse
+  sparse=$(git config --get --type=bool core.sparseCheckout || true)
+  [[ $sparse != true ]] ||
+    die 2 "sparse checkout is not supported: checks would not see every file"
+}
+
+# first_lines: read lines on stdin; print the first few on one line.
+first_lines() {
+  sed -n '1,5p' | paste -sd, - | sed 's/,/, /g'
+}
+
+# dirty_paths: the first few paths `git status` lists, on one line, read from
+# the NUL-separated form so a rename lists both of its paths plainly and no
+# name is quoted or split.
+dirty_paths() {
+  local entry path skip_next='' count=0 out=''
+  while IFS= read -r -d '' entry; do
+    if [[ -n $skip_next ]]; then
+      skip_next=''
+      path=$entry
+    else
+      path=${entry:3}
+      [[ ${entry:0:2} == *[RC]* ]] && skip_next=1
+    fi
+    ((count += 1))
+    ((count <= 5)) || continue
+    out+="${out:+, }$path"
+  done < <(git status --porcelain -z --untracked-files=normal)
+  printf '%s\n' "$out"
 }

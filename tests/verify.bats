@@ -188,27 +188,60 @@ receipt_file() {
   [ "$status" -eq 1 ]
 }
 
-@test "a missing setup file exits 2 with exactly one message" {
+@test "verify needs no setup file: a commit without one has no receipt, and says so" {
   start_repo
   do_check
   git rm -q .config/shipit.json
   git commit -q -m "drop setup"
   run_verify
-  [ "$status" -eq 2 ]
-  [ "$stderr" = "shipit: no setup file at .config/shipit.json (see docs/setup.md)" ]
+  [ "$status" -eq 1 ]
+  [[ $stderr == "shipit: no receipt for this content"* ]]
   run_verify HEAD~1
   [ "$status" -eq 0 ]
 }
 
-@test "verify of a commit reads the setup committed there, never the working tree" {
+@test "verify never reads the setup: a receipt is valid for its tree even if the setup is broken" {
   start_repo
   do_check
+  local receipt tree
+  receipt=$(receipt_file)
+  git checkout -q -b broken
+  write_setup '{"version": 2'
+  tree=$(git rev-parse 'HEAD^{tree}')
+  jq -c --arg key "$tree" '.key = $key' "$receipt" >"${receipt%/*}/$tree.json"
+  run_verify
+  [ "$status" -eq 0 ]
+  [ "$output" = "valid receipt for $(short_tree)" ]
+  run_verify feature
+  [ "$status" -eq 0 ]
   echo '{' >.config/shipit.json
   run_verify HEAD
   [ "$status" -eq 0 ]
+}
+
+@test "verify with no argument refuses a skip-worktree file, like check" {
+  start_repo
+  do_check
+  git update-index --skip-worktree f1
+  echo hidden >>f1
   run_verify
   [ "$status" -eq 1 ]
-  [[ $stderr == "shipit: uncommitted changes"* ]]
+  [[ $stderr == *"marked skip-worktree or assume-unchanged"*"(f1)"*"git update-index --no-skip-worktree --no-assume-unchanged"* ]]
+  run_verify HEAD
+  [ "$status" -eq 0 ]
+}
+
+@test "verify with no argument refuses an assume-unchanged file with the same message as check" {
+  start_repo
+  do_check
+  git update-index --assume-unchanged f1
+  run_verify
+  [ "$status" -eq 1 ]
+  local verify_msg="$stderr"
+  run --separate-stderr "$SHIPIT_SRC/bin/shipit" check
+  [ "$status" -eq 3 ]
+  [ "$stderr" = "$verify_msg" ]
+  [[ $verify_msg == *"(f1)"* ]]
 }
 
 @test "an empty commit argument is a usage error" {
@@ -216,18 +249,6 @@ receipt_file() {
   run_verify ""
   [ "$status" -eq 2 ]
   [[ $stderr == *"usage: shipit verify [commit]"* ]]
-}
-
-@test "an invalid setup at the commit exits 2" {
-  start_repo
-  do_check
-  git checkout -q -b broken
-  write_setup '{"version": 2}'
-  run_verify
-  [ "$status" -eq 2 ]
-  [[ $stderr == "shipit: .config/shipit.json is invalid:"* ]]
-  run_verify feature
-  [ "$status" -eq 0 ]
 }
 
 @test "verify with no receipts leaves no shipit folder behind" {

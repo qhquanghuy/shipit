@@ -57,9 +57,10 @@ not list. Every problem is reported at once, each with its path (for example
 
 ## Who reads what
 
-`shipit check` and `shipit verify` read `base`, `cap`, `check` and `environment`. `tiers`, `roles`, `packs`, `fix_rounds`, `effort_cap` and `messages_to_owner` are validated now but read by later
-parts of ShipIt (the roles that make and review work, the packs they use, the limits on messages
-to the owner).
+`shipit check` reads `base`, `cap`, `check` and `environment`. `shipit verify` reads no setup at all: a receipt is
+valid for a tree and nothing else. `tiers`, `roles`, `packs`, `fix_rounds`, `effort_cap` and `messages_to_owner` are
+validated now but read by later parts of ShipIt (the roles that make and review work, the packs they use, the
+limits on messages to the owner).
 
 ## Loading
 
@@ -67,7 +68,8 @@ to the owner).
 (default `HEAD`); it never reads the working tree. A missing file, a file that is not JSON and a file
 that breaks a rule above each stop the command with exit 2 and a message that says what to fix.
 
-`check` also reads the base branch's setup (`load_baseline` in `lib/setup.sh`), but only `cap` (an
-integer, 1 or more) and `check` (an array of strings): it refuses a slice whose `cap` is larger or
-that drops a check command the base has. Nothing else in the base file is looked at, so the schema can grow.
-A base without a setup file prints a notice and nothing is compared.
+`check` also reads the base branch's setup (`load_baseline` in `lib/setup.sh`), but only `base`, `cap`,
+`check` and `environment` (validated for their type only). Those four fields must be identical to the slice's: any
+difference is refused, because a branch must not choose its own checks; the owner merges setup changes on the base
+first. Nothing else in the base file is looked at, so the schema can grow. A base without a setup file prints a
+notice and nothing is compared. `shipit check --base <name>` names the base instead of the setup's `base`.

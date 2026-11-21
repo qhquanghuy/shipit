@@ -53,3 +53,26 @@ with_common() {
   [ -z "$output" ]
   [ "$stderr" = "shipit: boom" ]
 }
+
+@test "require_bash refuses a bash older than 4.4 with the version found" {
+  run --separate-stderr with_common 'require_bash 3 2 57'
+  [ "$status" -eq 2 ]
+  [ "$stderr" = "shipit: shipit needs bash 4.4 or newer (found 3.2.57)" ]
+  run --separate-stderr with_common 'require_bash 4 3 48'
+  [ "$status" -eq 2 ]
+  [ "$stderr" = "shipit: shipit needs bash 4.4 or newer (found 4.3.48)" ]
+}
+
+@test "require_bash accepts 4.4 and newer, comparing numbers (4.10 is newer than 4.4)" {
+  run with_common 'require_bash 4 4 0; require_bash 4 10 0; require_bash 5 0 17; require_bash 5 3 9'
+  [ "$status" -eq 0 ]
+}
+
+@test "common.sh checks the bash version before it asks for inherit_errexit" {
+  local check_line shopt_line
+  check_line=$(grep -n '^require_bash "\${BASH_VERSINFO\[0\]}"' "$SHIPIT_SRC/lib/common.sh" | cut -d: -f1)
+  shopt_line=$(grep -n '^shopt -s inherit_errexit' "$SHIPIT_SRC/lib/common.sh" | cut -d: -f1)
+  [ -n "$check_line" ]
+  [ -n "$shopt_line" ]
+  [ "$check_line" -lt "$shopt_line" ]
+}

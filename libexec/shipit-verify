@@ -2,15 +2,16 @@
 set -euo pipefail
 
 # shipit verify [commit]: say whether a check receipt exists for the content of
-# a commit. With no argument: HEAD, and the working tree must be clean. The
-# setup is the one committed at that commit. Exit 0 valid receipt, 1 no valid
-# receipt or uncommitted changes, 2 usage or setup error. Writes and creates
+# a commit. It needs no setup file: a receipt is valid for a tree and nothing
+# else. With no argument: HEAD, and the working tree must be clean and free of
+# hidden-edit flags. Exit 0 valid receipt, 1 no valid receipt, uncommitted
+# changes or hidden edits, 2 usage error or not a commit. Writes and creates
 # nothing.
 
 # shellcheck source=../lib/common.sh
 source "$SHIPIT_ROOT/lib/common.sh"
-# shellcheck source=../lib/setup.sh
-source "$SHIPIT_ROOT/lib/setup.sh"
+# shellcheck source=../lib/git.sh
+source "$SHIPIT_ROOT/lib/git.sh"
 # shellcheck source=../lib/store.sh
 source "$SHIPIT_ROOT/lib/store.sh"
 
@@ -46,9 +47,9 @@ main() {
 
   git rev-parse --verify --quiet --end-of-options "$target^{commit}" >/dev/null ||
     die 2 "'$target' is not a commit; give a branch, tag or commit"
-  load_setup "$target" >/dev/null || exit
 
   if [[ -z $explicit ]]; then
+    refuse_hidden_edits 1
     local dirty
     dirty=$(git status --porcelain --untracked-files=normal) || die 2 "cannot read the git status"
     [[ -z $dirty ]] ||
