@@ -1,0 +1,75 @@
+use crate::pure::template::{Outcome, Spec};
+use crate::pure::text::comma_list;
+
+// Sorted by kind; the blank forms are data/templates/<kind>.md.
+pub(crate) const KINDS: &[Spec] = &[Spec {
+    kind: "decision-point",
+    outcomes: &[Outcome {
+        name: "waiting-for-the-owner",
+        parts: &["What", "Context", "Recommendation", "Next"],
+    }],
+    owner_message: true,
+}];
+
+pub(crate) fn kind(name: &str) -> Option<&'static Spec> {
+    KINDS.iter().find(|spec| spec.kind == name)
+}
+
+pub(crate) fn kind_names() -> String {
+    comma_list(KINDS.iter().map(|spec| spec.kind))
+}
+
+pub(crate) fn form(name: &str) -> Option<&'static str> {
+    let key = format!("templates/{name}.md");
+    crate::DATA
+        .iter()
+        .find(|(path, _)| *path == key)
+        .map(|(_, text)| *text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pure::markdown::lines;
+    use crate::pure::template::{header, parts};
+
+    #[test]
+    fn the_kinds_are_sorted_and_the_forms_are_exactly_the_kinds() {
+        let names: Vec<&str> = KINDS.iter().map(|spec| spec.kind).collect();
+        let mut sorted = names.clone();
+        sorted.sort_unstable();
+        assert_eq!(names, sorted);
+        let forms: Vec<&str> = crate::DATA
+            .iter()
+            .filter_map(|(path, _)| path.strip_prefix("templates/")?.strip_suffix(".md"))
+            .collect();
+        assert_eq!(forms, names);
+    }
+
+    #[test]
+    fn every_form_agrees_with_its_spec() {
+        for spec in KINDS {
+            let text = form(spec.kind).expect("a form for every kind");
+            let head = header(spec.kind, text).expect("the form's header is valid");
+            assert_eq!(head.kind, spec.kind);
+            let listed: Vec<&str> = head.outcome.split(" | ").collect();
+            let wanted: Vec<&str> = spec.outcomes.iter().map(|outcome| outcome.name).collect();
+            assert_eq!(listed, wanted, "{}", spec.kind);
+            let found = parts(spec, lines(text).expect("closed fences"));
+            for name in spec.part_names() {
+                assert!(
+                    found.iter().any(|part| part.name == name),
+                    "{}: no marker for {name}",
+                    spec.kind
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_role_output_has_a_kind() {
+        assert_eq!(kind_names(), "decision-point");
+        assert!(kind("decision-point").is_some());
+        assert!(kind("review").is_none());
+    }
+}
