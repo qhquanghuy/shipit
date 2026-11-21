@@ -130,7 +130,7 @@ one output of a known shape. A template fixes:
 - the **required parts** for each outcome, for example every fact a scout reports has a source;
 - a small machine-readable header that names the outcome and the input it answered.
 
-Templates exist for: the roadmap, the build plan, a scout's report, a review (informed or second
+Templates exist for: the roadmap, the build plan, a scout's report, model advice, a review (informed or second
 opinion), a test drive, and a known issue. `shipit validate` checks a filled output against its
 template and refuses one with an unlisted outcome or a missing part. The lead hands an output to
 the next phase only after it validates.
@@ -141,12 +141,20 @@ the next phase only after it validates.
 | planner | roadmap, build plan | ready for review |
 | reviewer | review | approve, approve after fixes, rework |
 | tester | test drive | pass, findings |
+| researcher | model advice | ready for the owner |
 
 A scout that returns `partial` or `not found` is asked once more with a narrower question and
 where it already looked. If that is still not enough, the question goes to a scout one tier up,
 and after that the requester reads the source itself. Each step is a logbook entry.
 
 The test drive has two passes: first every done-when item as a checklist, then free exploration.
+
+**Model advice at setup.** When a project adopts ShipIt, and again whenever the owner asks (for
+example after new models come out), a researcher looks up current models, prices and published
+results on the web and recommends a model and effort for each role, with sources, expected cost
+and trade-offs. Its output follows the model-advice template. It is a decision point: the owner
+picks, and only then are the values written into the setup file, where the rank rule checks them.
+The tool itself never goes online; research is done by an agent through the skill.
 
 ### 4. Packs
 
