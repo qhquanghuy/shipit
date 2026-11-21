@@ -1,6 +1,6 @@
 # ShipIt: goal
 
-Status: approved by the owner on 2026-11-21; later owner decisions are folded in. Terms are defined in [vocab.md](vocab.md).
+Status: version 2, approved by the owner on 2026-11-21 (v1 approved 2026-11-21). Terms are defined in [vocab.md](vocab.md).
 
 ## Goal
 
@@ -76,6 +76,10 @@ The human reviewer reads the change, so the code must be simple to read:
 A **reader** (a low-rank model) explains the change without seeing the build plan. The informed
 reviewer compares that explanation with the goal. It is a signal, not a gate.
 
+## Keep a file only if a tool reads it or a test checks it against the code
+
+Keep a file only if a tool reads it or a test checks it against the code. Prose that restates code drifts and misleads agents.
+
 ## Talking to the owner
 
 Everything the owner reads must be simple and easy to understand: plain words, short sentences,
@@ -106,14 +110,7 @@ The decision-point template enforces this form: label, What, Context, Recommenda
 One command, a Rust program, kept in this repo. It runs git as a process and needs only git, and
 bash to run the check commands, at run time. Hooks and CI call the same tool.
 
-| Command | What it does |
-|---|---|
-| `shipit init` | Writes a starting setup file in a project, prints the CI job to add, and installs the `pre-push` hook in this clone. |
-| `shipit check` | Refuses a dirty tree. Measures the size against the cap. Runs the setup's check commands in order. On a full pass, writes a check receipt for this exact version of the work. |
-| `shipit verify [commit]` | Says whether a valid check receipt exists for the current version, or for the given commit. Fast: it only reads files and asks git. |
-| `shipit receipt` | Records a review or test-drive receipt: who, which model and tier, which exact input, the result. |
-| `shipit status` | Computes each slice's state from the roadmap, the receipts and the logbook, and names the next step. It can also print a short summary of a slice (receipts and known issues) for the pull request. |
-| `shipit log` | Appends one entry to a slice's logbook. |
+The commands, their usage and their exit codes are printed by `shipit help` and `shipit help <command>`.
 
 - **A receipt is keyed by the exact input of what it records.**
   - A check and a test drive judge the whole work, so their key is the git tree hash. An amended
@@ -128,13 +125,14 @@ bash to run the check commands, at run time. Hooks and CI call the same tool.
   made by the lead: they say who claims what about which input. They are honest notes, not
   proof, which is why recheck and the owner come after them.
 - The tool checks rule 1 on every review and test-drive receipt, for plans as well as for the work: the
-  reviewer must rank above the author. Ranks come from the setup: first by model tier, then, for
+  reviewer must rank above the author. Ranks come from the base branch's setup, so a slice cannot change the ranks it is judged by: first by model tier, then, for
   the same model, by effort level. So a reviewer on the same model meets rule 1 by working at a
   higher effort than the author, up to the setup's effort cap. A stand-in counts as the tier it
   stands in for, and the receipt records that a stand-in was used.
-- The roadmap has a machine-readable part: each slice's name, order, parallel group, test-drive
-  mark and branch. `shipit status` reads it, so a slice with no receipts yet still shows.
+- The roadmap has a machine-readable part: each slice's and proof step's name, `after` (what it follows), `meets` (the done-when items it
+  proves), `owns` (what it owns), test-drive mark and branch. `shipit status` reads it, so a slice with no receipts yet still shows.
 - All working copies of a project see the same roadmap, logbook and receipts.
+- `.shipit/coverage/<goal>/<slice>.toml` is committed evidence of which done-when items a slice covers.
 
 **Slice states.** The list is fixed, and each state is computed, never set:
 
@@ -152,8 +150,10 @@ the work changes: the receipts no longer match, so the computed state drops.
 
 ### 2. The setup file
 
-One committed file per project, `.config/shipit.toml`. It holds the cap, the check commands, the
-fix-round limit, the effort cap, the packs in use, and the tiers with their models and stand-ins.
+One committed file per project, `.config/shipit.toml`. It holds the cap (`gate.max_files`), the check commands, the
+fix-round limit (`agents.max_fix_rounds`), the effort cap (`agents.effort_cap`), the tiers with their models and stand-ins, the roles
+(scout, `planner`, maker, tester, reader), the packs in use and the limits on messages to the owner. `[agents.parallel]` names
+`slices` and `agents`: how many slices and how many agents may run at once.
 
 - There is no environment override. Changing a value means changing the committed file, so the
   change shows up in the diff the owner reviews.
@@ -171,7 +171,7 @@ fix-round limit, the effort cap, the packs in use, and the tiers with their mode
 | Skill | Started by | Input | Output |
 |---|---|---|---|
 | `shipit` | owner or lead | none | Explains the flow, rules, roles and terms. Routes to the others. |
-| `shipit-roadmap` | lead | goal with done-when | A reviewed roadmap: slices under the cap, their order, parallel groups, which need a test drive. Stops at a decision point for the owner. |
+| `shipit-roadmap` | lead | goal with done-when | A reviewed roadmap: slices under the cap, their order (`after`), which need a test drive. Stops at a decision point for the owner. |
 | `shipit-slice` | lead, once per slice | roadmap, one slice | A slice ready to ship: build plan, its review, the work, receipts, known issues. Stops before ship. |
 | `shipit-test-drive` | tester | goal, done-when, the finished result | Findings and a test-drive result. The tester never sees how the work was made. |
 
@@ -299,6 +299,8 @@ The goal is met when all of these are true.
     ships. The pull request shows its receipts and its known issues.
 17. Test drive of ShipIt itself: a fresh agent that has only the README and the docs sets ShipIt
     up in a sample project and takes one small slice to "ready to ship".
+18. Several goals run at the same time. Each has a short name; its slices use branches `slice/<goal>/<slice>`, its done-when items are written `<goal>:DW<n>` where goals meet, and the slice cap counts across all goals.
+19. When every slice and proof step of a goal has shipped, `shipit complete <goal>` keeps only the data a tool reads (each slice's metrics), turns the goal's open known issues into GitHub issues after the owner confirms, and deletes the goal's own files (goal, roadmap, build plans, logbook).
 
 ## Non-goals (version 1)
 

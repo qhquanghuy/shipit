@@ -70,19 +70,27 @@ impl fmt::Display for BaseRef {
     }
 }
 
-// A local branch that has everything origin has (ahead or equal, so the owner's unpushed work
-// counts) wins; with both and the local behind or diverged, origin.
-pub(crate) fn choose_base_ref(
-    base: &BranchName,
-    origin: bool,
-    local: bool,
-    local_has_origin: bool,
-) -> Option<BaseRef> {
-    match (origin, local) {
-        (true, true) if local_has_origin => Some(BaseRef::Local(base.clone())),
-        (true, _) => Some(BaseRef::Origin(base.clone())),
-        (false, true) => Some(BaseRef::Local(base.clone())),
-        (false, false) => None,
+// Owner's decision (2026-11-21): origin wins whenever it exists, so a commit on the local base
+// never silently becomes the base.
+pub(crate) fn choose_base_ref(base: &BranchName, origin: bool, local: bool) -> Option<BaseRef> {
+    if origin {
+        Some(BaseRef::Origin(base.clone()))
+    } else if local {
+        Some(BaseRef::Local(base.clone()))
+    } else {
+        None
+    }
+}
+
+// The refusals about the setup say "merge or rebase", which does not help when origin is stale or
+// the owner has not pushed: this line says what to do instead. A local base that is merely behind
+// origin is the usual state after a fetch and gets no line.
+pub(crate) fn origin_notice(base_ref: &BaseRef, local_has_extra: bool) -> Option<String> {
+    match base_ref {
+        BaseRef::Origin(name) if local_has_extra => Some(format!(
+            "comparing with origin/{name}; the local {name} is at another commit (fetch or push if that is not wanted)"
+        )),
+        BaseRef::Origin(_) | BaseRef::Local(_) => None,
     }
 }
 
@@ -158,6 +166,40 @@ mod tests {
     }
 
     #[test]
+    fn origin_wins_whenever_it_exists() {
+        let main = name("main");
+        let origin = Some(BaseRef::Origin(main.clone()));
+        let local = Some(BaseRef::Local(main.clone()));
+        for (has_origin, has_local, expected) in [
+            (true, true, &origin),
+            (true, false, &origin),
+            (false, true, &local),
+            (false, false, &None),
+        ] {
+            assert_eq!(
+                &choose_base_ref(&main, has_origin, has_local),
+                expected,
+                "origin {has_origin}, local {has_local}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_notice_only_when_origin_is_used_and_the_local_base_has_commits_it_lacks() {
+        let origin = BaseRef::Origin(name("main"));
+        let local = BaseRef::Local(name("main"));
+        assert_eq!(
+            origin_notice(&origin, true).as_deref(),
+            Some(
+                "comparing with origin/main; the local main is at another commit (fetch or push if that is not wanted)"
+            )
+        );
+        assert_eq!(origin_notice(&origin, false), None);
+        assert_eq!(origin_notice(&local, true), None);
+        assert_eq!(origin_notice(&local, false), None);
+    }
+
+    #[test]
     fn the_reasons_read_as_the_shell_said_them() {
         assert_eq!(
             SelfBase::TheBranch.to_string(),
@@ -196,31 +238,6 @@ mod tests {
             ]),
         ) {
             prop_assert_eq!(BranchName::parse(&shape.replace('X', &x)), None);
-        }
-
-        #[test]
-        fn the_ref_is_chosen_from_what_exists(
-            origin in any::<bool>(),
-            local in any::<bool>(),
-            local_has_origin in any::<bool>(),
-        ) {
-            let main = name("main");
-            let chosen = choose_base_ref(&main, origin, local, local_has_origin);
-            prop_assert_eq!(chosen.is_none(), !origin && !local);
-            if !local {
-                prop_assert_eq!(&chosen, &origin.then(|| BaseRef::Origin(main.clone())));
-            }
-            if !origin {
-                prop_assert_eq!(&chosen, &local.then(|| BaseRef::Local(main.clone())));
-            }
-            if origin && local {
-                let expected = if local_has_origin {
-                    BaseRef::Local(main)
-                } else {
-                    BaseRef::Origin(main)
-                };
-                prop_assert_eq!(chosen, Some(expected));
-            }
         }
 
         #[test]

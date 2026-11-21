@@ -83,7 +83,7 @@ LOG="$BATS_TEST_TMPDIR/log"
   run_check
   [ "$status" -eq 0 ]
   [[ $output == *"size: 2 files (cap 2)"* ]]
-  jq -e '.size.files == 2' "$(store)"/receipts/check/*.json
+  jq -e '.size.files == 2 and .base_given == false' "$(store)"/receipts/check/*.json
 }
 
 @test "commands run in order" {
@@ -92,6 +92,45 @@ LOG="$BATS_TEST_TMPDIR/log"
   run_check
   [ "$status" -eq 0 ]
   [ "$(cat "$LOG")" = $'one\ntwo\nthree' ]
+}
+
+@test "check: each command sees SHIPIT_MERGE_BASE and SHIPIT_CHECK" {
+  local one="printf '%s|%s\\n' \"\$SHIPIT_MERGE_BASE\" \"\$SHIPIT_CHECK\" >> '$LOG'"
+  local two="printf '%s|%s\\n' \"\$SHIPIT_MERGE_BASE\" \"\$SHIPIT_CHECK\" >> '$LOG' # second"
+  start_repo "gate.check=$(checks "$one" "$two")"
+  commit_files 1
+  run_check
+  [ "$status" -eq 0 ]
+  local base
+  base=$(git merge-base main HEAD)
+  [ "$(cat "$LOG")" = "$base|$one"$'\n'"$base|$two" ]
+}
+
+@test "check ignores git's repository variables, for itself and for its commands" {
+  local other
+  other=$(make_repo)
+  start_repo "gate.check=$(checks "git rev-parse HEAD >> '$LOG'")"
+  commit_files 1
+  GIT_DIR="$other/.git" GIT_COMMON_DIR="$other/.git" run_check
+  [ "$status" -eq 0 ]
+  [ "$(cat "$LOG")" = "$(git rev-parse HEAD)" ]
+  [ -f "$(store)"/receipts/check/"$(git rev-parse 'HEAD^{tree}')".json ]
+}
+
+@test "check reads the setup file at HEAD once" {
+  start_repo
+  commit_files 1
+  local shim="$BATS_TEST_TMPDIR/shim"
+  mkdir -p "$shim"
+  cat >"$shim/git" <<SHIM
+#!/bin/sh
+printf '%s\n' "\$*" >> "$LOG"
+exec "$(command -v git)" "\$@"
+SHIM
+  chmod +x "$shim/git"
+  PATH="$shim:$PATH" run_check
+  [ "$status" -eq 0 ]
+  [ "$(grep -c -- 'HEAD:.config/shipit.toml' "$LOG")" -eq 1 ]
 }
 
 @test "the first failing command stops the run: exit 1, named, no receipt" {
@@ -166,15 +205,28 @@ clone_of_main() {
   git config commit.gpgsign false
 }
 
-@test "local main ahead of origin/main: local main is used" {
-  clone_of_main "$(fixture_with 'gate.check=[]' 'gate.max_files=6')"
+# What a check says when it compares with origin/main while the local main is elsewhere.
+NOTICE="shipit: comparing with origin/main; the local main is at another commit (fetch or push if that is not wanted)"
+
+@test "local main ahead of origin/main: origin/main is used" {
+  clone_of_main "$(fixture_with 'gate.check=[]' 'gate.max_files=9')"
   commit_files 5 m
   git checkout -q -b feature
   commit_files 3 f
   # against local main: 3 files; against origin/main: 8 files
   run_check
   [ "$status" -eq 0 ]
-  [[ $output == *"size: 3 files (cap 6)"* ]]
+  [[ $output == *"size: 8 files (cap 9)"* ]]
+  [ "$stderr" = "$NOTICE" ]
+}
+
+@test "origin/main at the same commit as local main: no notice" {
+  clone_of_main "$(fixture_with 'gate.check=[]')"
+  git checkout -q -b feature
+  commit_files 1
+  run_check
+  [ "$status" -eq 0 ]
+  [ -z "$stderr" ]
 }
 
 @test "local main and origin/main diverged: origin/main is used" {
@@ -195,16 +247,18 @@ clone_of_main() {
   run_check
   [ "$status" -eq 0 ]
   [[ $output == *"size: 3 files (cap 6)"* ]]
+  [ "$stderr" = "$NOTICE" ]
 }
 
-@test "an unpushed setup change on the local base is the baseline" {
+@test "an unpushed setup change on the local base is not the baseline while origin/main exists" {
   clone_of_main "$(fixture_with 'gate.check=[]')"
   write_setup "$(fixture_with 'gate.check=[]' 'gate.max_files=40')"
   git checkout -q -b feature
   commit_files 2
   run_check
-  [ "$status" -eq 0 ]
-  [[ $output == *"size: 2 files (cap 40)"* ]]
+  [ "$status" -eq 1 ]
+  [ "$stderr" = "$NOTICE"$'\n'"$(changed_msg gate.max_files)" ]
+  no_receipt
 }
 
 @test "no base branch at all: exit 2 with the message" {
@@ -291,16 +345,16 @@ changed_msg() {
   no_receipt
 }
 
-@test "every changed field is named, in the order gate.base, gate.max_files, gate.check, gate.environment" {
+@test "every changed field is named, in the setup's order" {
   start_repo "gate.check=$(checks 'echo one')"
-  write_setup "$(fixture_with 'gate.check=[]' 'gate.max_files=61' 'gate.environment.prefix=["env"]')"
+  write_setup "$(fixture_with 'gate.check=[]' 'gate.max_files=61' 'gate.environment.prefix=["env"]' 'agents.max_fix_rounds=3')"
   commit_files 1
   run_check
   [ "$status" -eq 1 ]
-  [ "$stderr" = "$(changed_msg 'gate.max_files, gate.check, gate.environment')" ]
+  [ "$stderr" = "$(changed_msg 'gate.max_files, gate.check, gate.environment, agents.max_fix_rounds')" ]
 }
 
-@test "a base setup with a bad gate.base, max_files, check or environment is refused: exit 2" {
+@test "a base setup without a base string is refused: exit 2" {
   start_repo
   git checkout -q main
   write_setup $'version = 1\n[gate]\nbase = 1\nmax_files = "60"\ncheck = [1]\n[gate.environment]\nprefix = [2]'
@@ -309,7 +363,7 @@ changed_msg() {
   write_setup "$(fixture_with 'gate.check=[]')"
   run_check
   [ "$status" -eq 2 ]
-  [[ $stderr == "shipit: main:.config/shipit.toml is invalid:"$'\n'".gate.base: must be a non-empty string"$'\n'".gate.max_files: must be an integer of at least 1"$'\n'".gate.check: must be an array of strings"$'\n'".gate.environment.prefix: must be an array of strings" ]]
+  [[ $stderr == "shipit: main:.config/shipit.toml is invalid:"$'\n'".gate.base: must be a non-empty string" ]]
   git checkout -q main
   write_setup 'cap ='
   git checkout -q feature
@@ -356,7 +410,7 @@ changed_msg() {
   run_check
   [ "$status" -eq 1 ]
   [ "$stderr" = "shipit: no setup file on old; nothing to compare
-$(changed_msg 'gate.base, gate.max_files, gate.check, gate.environment' old)" ]
+$(changed_msg 'version, gate.base, gate.max_files, gate.check, gate.environment, agents.max_fix_rounds, agents.effort_cap, agents.tiers, agents.roles, packs.skill, packs.domain, packs.model, owner.max_lines, owner.status_update_max_lines' old)" ]
   [ ! -e "$LOG" ]
   no_receipt
 }
@@ -662,6 +716,37 @@ rename_files() {
   git sparse-checkout disable
   run_check
   [ "$status" -eq 0 ]
+}
+
+@test "check: a slice that changes tiers together with code is refused" {
+  start_repo
+  write_setup "$(fixture_with 'gate.check=[]' | sed 's/^model = "haiku"/model = "other"/')"
+  commit_files 1
+  run_check
+  [ "$status" -eq 1 ]
+  [ "$stderr" = "$(changed_msg agents.tiers)" ]
+  no_receipt
+}
+
+@test "check: a setup-only change of effort_cap is allowed and marked in the receipt" {
+  start_repo
+  write_setup "$(fixture_with 'gate.check=[]' 'agents.effort_cap="xhigh"')"
+  run_check
+  [ "$status" -eq 0 ]
+  [ "$stderr" = "shipit: this slice changes the checks (agents.effort_cap); setup change: the owner approves it by merging" ]
+  jq -e '.setup_change == true and .setup_fields == ["agents.effort_cap"]' "$(store)"/receipts/check/*.json
+}
+
+@test "check: a base tip that changed max_fix_rounds since the fork asks to merge or rebase" {
+  start_repo
+  commit_files 1
+  git checkout -q main
+  write_setup "$(fixture_with 'gate.check=[]' 'agents.max_fix_rounds=3')"
+  git checkout -q feature
+  run_check
+  [ "$status" -eq 1 ]
+  [ "$stderr" = "$(changed_msg agents.max_fix_rounds)" ]
+  no_receipt
 }
 
 @test "a slice that edits only the setup file may change the checks: a notice, a marked receipt, verify says so" {

@@ -5,6 +5,7 @@ edition = "2024"
 license = "MIT"
 description = "Checks and receipts for agent work"
 publish = false
+rust-version = "1.89"
 
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }

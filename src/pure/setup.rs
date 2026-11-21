@@ -14,9 +14,15 @@ const ONE_OF: &str = "must be one of low, medium, high, xhigh, max";
 const TIER_REF: &str = "must be the number of an existing tier";
 const NOT_EMPTY: &str = "must be a non-empty string";
 const BRANCH: &str = "must be a branch name (see git check-ref-format --branch)";
-const TOP_KEYS: [&str; 5] = ["version", "gate", "agents", "packs", "owner"];
-const GATE_KEYS: [&str; 4] = ["base", "max_files", "check", "environment"];
-const AGENTS_KEYS: [&str; 4] = ["max_fix_rounds", "effort_cap", "tiers", "roles"];
+pub(crate) const TOP_KEYS: [&str; 5] = ["version", "gate", "agents", "packs", "owner"];
+pub(crate) const GATE_KEYS: [&str; 4] = ["base", "max_files", "check", "environment"];
+pub(crate) const AGENTS_KEYS: [&str; 4] = ["max_fix_rounds", "effort_cap", "tiers", "roles"];
+pub(crate) const AGENTS_OPTIONAL: [&str; 1] = ["parallel"];
+pub(crate) const PACKS_KEYS: [&str; 3] = ["skill", "domain", "model"];
+pub(crate) const OWNER_KEYS: [&str; 2] = ["max_lines", "status_update_max_lines"];
+const PARALLEL_OPTIONAL: [&str; 2] = ["slices", "agents"];
+const DEFAULT_SLICES: u64 = 3;
+const DEFAULT_AGENTS: u64 = 4;
 const ROLE_NAMES: [&str; 5] = ["scout", "planner", "maker", "tester", "reader"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -30,7 +36,7 @@ pub(crate) enum Effort {
 }
 
 impl Effort {
-    fn parse(text: &str) -> Option<Self> {
+    pub(crate) fn parse(text: &str) -> Option<Self> {
         match text {
             "low" => Some(Self::Low),
             "medium" => Some(Self::Medium),
@@ -85,9 +91,56 @@ impl Cap {
 #[serde(transparent)]
 pub(crate) struct Lines(u64);
 
+impl From<&Lines> for u64 {
+    fn from(lines: &Lines) -> Self {
+        lines.0
+    }
+}
+
 #[derive(Debug, PartialEq, Eq, Serialize)]
 #[serde(transparent)]
 pub(crate) struct TierNumber(u64);
+
+impl From<&TierNumber> for u64 {
+    fn from(tier: &TierNumber) -> Self {
+        tier.0
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub(crate) struct SliceCap(u64);
+
+impl From<&SliceCap> for u64 {
+    fn from(cap: &SliceCap) -> Self {
+        cap.0
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub(crate) struct AgentCap(u64);
+
+impl From<&AgentCap> for u64 {
+    fn from(cap: &AgentCap) -> Self {
+        cap.0
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+pub(crate) struct Parallel {
+    pub(crate) slices: SliceCap,
+    pub(crate) agents: AgentCap,
+}
+
+impl Default for Parallel {
+    fn default() -> Self {
+        Self {
+            slices: SliceCap(DEFAULT_SLICES),
+            agents: AgentCap(DEFAULT_AGENTS),
+        }
+    }
+}
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
 pub(crate) struct Environment {
@@ -166,6 +219,7 @@ pub(crate) struct Agents {
     pub(crate) effort_cap: Effort,
     pub(crate) tiers: Vec<Tier>,
     pub(crate) roles: Roles,
+    pub(crate) parallel: Parallel,
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
@@ -421,7 +475,7 @@ fn parse_packs(value: &Value) -> Parsed<Packs> {
     let path = ".packs";
     let object = object_at(value, path)?;
     let mut problems = Problems::default();
-    problems.add(shape(path, object, &["skill", "domain", "model"], &[]));
+    problems.add(shape(path, object, &PACKS_KEYS, &[]));
     let skill = problems.take(at(object, "skill", path, non_empty_value, NOT_EMPTY));
     let domain = problems.take(at(object, "domain", path, non_empty_value, NOT_EMPTY));
     let model = problems.take(at(object, "model", path, non_empty_value, NOT_EMPTY));
@@ -442,12 +496,7 @@ fn parse_owner(value: &Value) -> Parsed<Owner> {
     let path = ".owner";
     let object = object_at(value, path)?;
     let mut problems = Problems::default();
-    problems.add(shape(
-        path,
-        object,
-        &["max_lines", "status_update_max_lines"],
-        &[],
-    ));
+    problems.add(shape(path, object, &OWNER_KEYS, &[]));
     let message = "must be an integer of at least 1";
     let max_lines = problems.take(at(object, "max_lines", path, lines, message));
     let status = problems.take(at(object, "status_update_max_lines", path, lines, message));
@@ -500,6 +549,34 @@ fn parse_gate(value: &Value) -> Parsed<Gate> {
     })
 }
 
+fn at_least_one<T>(value: &Value, path: &str, make: fn(u64) -> T) -> Parsed<T> {
+    whole(value)
+        .filter(|n| *n >= 1)
+        .map(make)
+        .ok_or_else(|| vec![Problem::new(path, "must be an integer of at least 1")])
+}
+
+// The table and each cap are optional: a setup written before the table existed means the
+// defaults, so the schema grows without a break.
+fn parse_parallel(value: &Value) -> Parsed<Parallel> {
+    let path = ".agents.parallel";
+    let object = object_at(value, path)?;
+    let mut problems = Problems::default();
+    problems.add(shape(path, object, &[], &PARALLEL_OPTIONAL));
+    let slices = problems.take(optional(object, "slices", |value| {
+        at_least_one(value, &format!("{path}.slices"), SliceCap)
+    }));
+    let agents = problems.take(optional(object, "agents", |value| {
+        at_least_one(value, &format!("{path}.agents"), AgentCap)
+    }));
+    problems.finish(|| {
+        Some(Parallel {
+            slices: slices?.unwrap_or(SliceCap(DEFAULT_SLICES)),
+            agents: agents?.unwrap_or(AgentCap(DEFAULT_AGENTS)),
+        })
+    })
+}
+
 fn parse_agents(value: &Value) -> Parsed<Agents> {
     let path = ".agents";
     let object = object_at(value, path)?;
@@ -514,7 +591,7 @@ fn parse_agents(value: &Value) -> Parsed<Agents> {
             .and_then(|tiers| u64::try_from(tiers.len()).ok()),
     };
     let mut problems = Problems::default();
-    problems.add(shape(path, object, &AGENTS_KEYS, &[]));
+    problems.add(shape(path, object, &AGENTS_KEYS, &AGENTS_OPTIONAL));
     let max_fix_rounds = problems.take(at(
         object,
         "max_fix_rounds",
@@ -535,12 +612,14 @@ fn parse_agents(value: &Value) -> Parsed<Agents> {
     let roles = problems.take(present(object, "roles", |value| {
         parse_roles(value, context)
     }));
+    let parallel = problems.take(optional(object, "parallel", parse_parallel));
     problems.finish(|| {
         Some(Agents {
             max_fix_rounds: max_fix_rounds?,
             effort_cap: effort_cap?,
             tiers: tiers?,
             roles: roles?,
+            parallel: parallel?.unwrap_or_default(),
         })
     })
 }
@@ -729,12 +808,29 @@ mod tests {
     const SCALE: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 
     #[test]
-    fn the_fixture_parses_and_serializes_back_to_itself() {
+    fn the_fixture_parses_and_serializes_back_to_itself_with_the_default_caps() {
         let setup = parse_setup(fixture().as_table().unwrap()).unwrap();
+        let mut expected = fixture();
+        put(
+            &mut expected,
+            "/agents/parallel",
+            Value::Table(Table::new()),
+        );
+        put(&mut expected, "/agents/parallel/slices", int(3));
+        put(&mut expected, "/agents/parallel/agents", int(4));
         assert_eq!(
             serde_json::to_value(&setup).unwrap(),
-            serde_json::to_value(fixture()).unwrap()
+            serde_json::to_value(expected).unwrap()
         );
+    }
+
+    #[test]
+    fn a_parallel_table_that_is_not_an_object_is_refused() {
+        for wrong in kinds().into_iter().filter(|kind| !kind.is_table()) {
+            let mut value = fixture();
+            put(&mut value, "/agents/parallel", wrong);
+            assert_eq!(lines_of(&value), [".agents.parallel: must be an object"]);
+        }
     }
 
     #[test]
@@ -958,7 +1054,12 @@ mod tests {
             proptest::collection::vec(arb_text(), 0..3),
         );
         let strings = (arb_text(), arb_text(), arb_text());
-        let limits = (1_u64..50, 0_u64..50);
+        let limits = (
+            1_u64..50,
+            0_u64..50,
+            1_u64..=i64::MAX.unsigned_abs(),
+            1_u64..=i64::MAX.unsigned_abs(),
+        );
         (scalars, strings, limits, arb_effort(), 2_u64..=5)
             .prop_flat_map(|(scalars, strings, limits, cap, n)| {
                 let tiers = proptest::collection::vec(
@@ -999,7 +1100,7 @@ mod tests {
                     (scout_tier, offset, scout_effort, retries),
                     (planner, maker, tester, reader),
                 )| {
-                    let (max_lines, update_offset) = limits;
+                    let (max_lines, update_offset, slices, agents) = limits;
                     let then_tier = scout_tier + 1 + offset % (n - scout_tier);
                     Setup {
                         version: Version,
@@ -1039,6 +1140,10 @@ mod tests {
                                 maker,
                                 tester,
                                 reader,
+                            },
+                            parallel: Parallel {
+                                slices: SliceCap(slices),
+                                agents: AgentCap(agents),
                             },
                         },
                         packs: Packs {
@@ -1167,7 +1272,7 @@ mod tests {
             ),
             key in "[a-z_]{1,10}",
         ) {
-            prop_assume!(!["effort", "stand_in"].contains(&key.as_str()));
+            prop_assume!(![ "effort", "stand_in", "parallel"].contains(&key.as_str()));
             let mut value = fixture();
             prop_assume!(look(&value, &pointer).and_then(Value::as_table)
                 .is_some_and(|table| !table.contains_key(&key)));
@@ -1392,6 +1497,73 @@ mod tests {
                 }
             }
             prop_assert_eq!(lines_of(&value), expected);
+        }
+
+        #[test]
+        fn parallel_caps_accepted_iff_whole_at_least_1(
+            key in proptest::sample::select(vec!["slices", "agents"]),
+            cap in prop_oneof![integer().prop_map(int), proptest::sample::select(kinds())],
+        ) {
+            let mut value = fixture();
+            put(&mut value, "/agents/parallel", Value::Table(Table::new()));
+            put(&mut value, &format!("/agents/parallel/{key}"), cap.clone());
+            let accepted = whole(&cap).is_some_and(|n| n >= 1);
+            let expected = if accepted {
+                Vec::new()
+            } else {
+                vec![format!(".agents.parallel.{key}: must be an integer of at least 1")]
+            };
+            prop_assert_eq!(lines_of(&value), expected);
+        }
+
+        #[test]
+        fn no_parallel_table_means_3_and_4(
+            table in proptest::option::of((
+                proptest::option::of(1_i64..1000),
+                proptest::option::of(1_i64..1000),
+            )),
+        ) {
+            let mut value = fixture();
+            if let Some((slices, agents)) = table {
+                put(&mut value, "/agents/parallel", Value::Table(Table::new()));
+                if let Some(n) = slices {
+                    put(&mut value, "/agents/parallel/slices", int(n));
+                }
+                if let Some(n) = agents {
+                    put(&mut value, "/agents/parallel/agents", int(n));
+                }
+            }
+            let setup = parse_setup(value.as_table().unwrap()).unwrap();
+            let (slices, agents) = table.unwrap_or((None, None));
+            prop_assert_eq!(u64::from(&setup.agents.parallel.slices), slices.map_or(3, i64::unsigned_abs));
+            prop_assert_eq!(u64::from(&setup.agents.parallel.agents), agents.map_or(4, i64::unsigned_abs));
+        }
+
+        #[test]
+        fn unknown_key_in_parallel_refused(key in "[a-z_]{1,10}") {
+            prop_assume!(!["slices", "agents"].contains(&key.as_str()));
+            let mut value = fixture();
+            put(&mut value, "/agents/parallel", Value::Table(Table::new()));
+            put(&mut value, &format!("/agents/parallel/{key}"), int(1));
+            prop_assert_eq!(
+                lines_of(&value),
+                vec![format!(".agents.parallel.{key}: unknown key")]
+            );
+        }
+
+        #[test]
+        fn setup_numbers_read_back_as_u64(setup in arb_setup()) {
+            let json = serde_json::to_value(&setup).unwrap();
+            let number = |pointer: &str| json.pointer(pointer).and_then(serde_json::Value::as_u64);
+            prop_assert_eq!(number("/agents/roles/maker/tier"), Some(u64::from(&setup.agents.roles.maker.tier)));
+            prop_assert_eq!(number("/agents/tiers/0/tier"), setup.agents.tiers.first().map(|tier| u64::from(&tier.tier)));
+            prop_assert_eq!(number("/owner/max_lines"), Some(u64::from(&setup.owner.max_lines)));
+            prop_assert_eq!(
+                number("/owner/status_update_max_lines"),
+                Some(u64::from(&setup.owner.status_update_max_lines))
+            );
+            prop_assert_eq!(number("/agents/parallel/slices"), Some(u64::from(&setup.agents.parallel.slices)));
+            prop_assert_eq!(number("/agents/parallel/agents"), Some(u64::from(&setup.agents.parallel.agents)));
         }
 
         #[test]

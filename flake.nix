@@ -97,7 +97,12 @@
               }
             );
 
-            test = craneLib.cargoTest checkArgs;
+            test = craneLib.cargoTest (
+              checkArgs
+              // {
+                nativeBuildInputs = [ pkgs.git ];
+              }
+            );
 
             doc = craneLib.cargoDoc (
               checkArgs
@@ -134,10 +139,26 @@
                     pkgs.git
                     pkgs.jq
                     pkgs.bash
+                    pkgs.actionlint
+                    pkgs.shellcheck
+                    pkgs.pmd
+                    pkgs.python3Packages.lizard
                   ];
                   tests = fs.toSource {
                     root = ./.;
-                    fileset = ./tests;
+                    fileset = fs.unions [
+                      ./tests
+                      ./src
+                      ./CLAUDE.md
+                      (fs.maybeMissing ./.claude-plugin)
+                      (fs.maybeMissing ./hooks)
+                      (fs.maybeMissing ./agents)
+                      (fs.maybeMissing ./bin)
+                      (fs.maybeMissing ./scripts)
+                      (fs.maybeMissing ./harness)
+                      ./docs
+                      ./README.md
+                    ];
                   };
                 }
                 ''
@@ -164,6 +185,9 @@
                       ./tests
                       ./.github
                       ./.shellcheckrc
+                      (fs.maybeMissing ./data)
+                      (fs.maybeMissing ./bin)
+                      (fs.maybeMissing ./scripts)
                     ];
                   };
                 }
@@ -173,16 +197,20 @@
                   cd source
 
                   # Files are found by rule, never by a list: every file whose first line
-                  # is a bash shebang or `# shellcheck shell=bash` is shellchecked.
+                  # is a bash or sh shebang, or `# shellcheck shell=bash` or `shell=sh`, is
+                  # shellchecked.
                   bash_files=()
+                  sh_files=()
                   while IFS= read -r -d "" file; do
                     IFS= read -r first < "$file" || true
                     case $first in
                       '#!'*'/bash' | '#!'*'/bash '* | '#!'*' bash' | '#!'*' bash '* | '# shellcheck shell=bash') bash_files+=("$file") ;;
+                      '#!'*'/sh' | '#!'*'/sh '* | '#!'*' sh' | '#!'*' sh '* | '# shellcheck shell=sh') sh_files+=("$file") ;;
                     esac
                   done < <(find . -type f -print0)
                   if [ "''${#bash_files[@]}" -eq 0 ]; then echo "no bash files found" >&2; exit 1; fi
                   shellcheck "''${bash_files[@]}"
+                  if [ "''${#sh_files[@]}" -gt 0 ]; then shellcheck "''${sh_files[@]}"; fi
 
                   find .github/workflows -type f \( -name '*.yml' -o -name '*.yaml' \) -print0 | xargs -0 -r actionlint
 
@@ -204,6 +232,10 @@
               pkgs.jq
               pkgs.shellcheck
               pkgs.actionlint
+              pkgs.pmd
+              pkgs.python3Packages.lizard
+              pkgs.cargo-deny
+              pkgs.gitleaks
             ];
           };
         };

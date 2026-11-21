@@ -13,7 +13,9 @@ include!(concat!(env!("OUT_DIR"), "/modules.rs"));
 )]
 mod build_script;
 
-use crate::pure::dispatch::{Invocation, dispatch, unknown_command, usage};
+use crate::pure::dispatch::{
+    Described, Invocation, command_help, dispatch, unknown_command, usage,
+};
 use crate::pure::failure::Failure;
 
 type Run = fn(&[OsString], &mut dyn Write, &mut dyn Write) -> Result<(), Failure>;
@@ -21,19 +23,44 @@ type Run = fn(&[OsString], &mut dyn Write, &mut dyn Write) -> Result<(), Failure
 struct Command {
     name: &'static str,
     hidden: bool,
+    needs_setup: bool,
+    usage: &'static str,
+    summary: &'static str,
+    exits: [&'static str; 4],
     run: Run,
+}
+
+impl Command {
+    const fn described(&self) -> Described<'static> {
+        Described {
+            usage: self.usage,
+            summary: self.summary,
+            exits: self.exits,
+            needs_setup: self.needs_setup,
+        }
+    }
 }
 
 fn execute(args: &[OsString], out: &mut dyn Write, err: &mut dyn Write) -> Result<(), Failure> {
     let names: Vec<&str> = COMMANDS.iter().map(|command| command.name).collect();
     match dispatch(args, &names)? {
-        Invocation::Help => {
-            let visible: Vec<&str> = COMMANDS
+        Invocation::Help { command: None } => {
+            let visible: Vec<Described<'_>> = COMMANDS
                 .iter()
                 .filter(|command| !command.hidden)
-                .map(|command| command.name)
+                .map(Command::described)
                 .collect();
             write!(out, "{}", usage(&visible)).ok();
+            Ok(())
+        }
+        Invocation::Help {
+            command: Some(name),
+        } => {
+            let command = COMMANDS
+                .iter()
+                .find(|command| command.name == name)
+                .ok_or_else(|| unknown_command(name))?;
+            write!(out, "{}", command_help(&command.described())).ok();
             Ok(())
         }
         Invocation::Version => {
