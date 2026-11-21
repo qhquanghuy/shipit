@@ -79,6 +79,7 @@ not list. Every problem is reported at once, each with its path (for example
 `.agents.roles.maker.effort`). A value of the wrong type is a reported problem. TOML tells integers from
 floats: a float, even `60.0`, is the wrong type where an integer is needed. A TOML integer is at most
 9223372036854775807 (2^63 - 1); a larger one, or a key written twice, makes the file not valid TOML.
+An effort above the cap is reported as `must not be above agents.effort_cap`.
 
 | Path | Rule |
 |---|---|
@@ -123,7 +124,7 @@ its own code; the owner merges setup changes on the base first. Nothing else in 
 can grow. A base without a setup file prints a notice and nothing is compared, but the slice's diff must then be the setup file alone; with any other file in it the check is refused as for any setup change. `shipit check --base <name>` names the
 base instead of the setup's `gate.base` (a branch name too).
 
-The setup had another shape before (`base`, `cap`, `check`, `fix_rounds`, `environment.run`, `then`, `messages_to_owner` at the top level): that shape is refused key by key, each old key as `unknown key`. There is no migration.
+An old file gets one `unknown key` line for each old top-level key (`base`, `cap`, `check`, `fix_rounds`, `effort_cap`, `environment`, `tiers`, `roles`, `messages_to_owner`) and `missing` for `gate`, `agents` and `owner`. There is no migration.
 
 ## What a local check cannot stop
 

@@ -224,7 +224,7 @@ fn effort_value(value: &Value, path: &str, cap: Option<Effort>) -> Parsed<Effort
     match value.as_str().and_then(Effort::parse) {
         None => fail(path, ONE_OF),
         Some(effort) if cap.is_some_and(|cap| effort > cap) => {
-            fail(path, "must not be above effort_cap")
+            fail(path, "must not be above agents.effort_cap")
         }
         Some(effort) => Ok(effort),
     }
@@ -792,6 +792,32 @@ mod tests {
         );
     }
 
+    // The order of the messages inside `gate` and `agents` is the order the rules run in.
+    #[test]
+    fn every_value_inside_gate_and_agents_of_the_wrong_kind() {
+        let mut value = fixture();
+        for table in ["gate", "agents"] {
+            if let Some(Value::Table(inner)) = look_mut(&mut value, &format!("/{table}")) {
+                for (_key, slot) in inner {
+                    *slot = Value::Boolean(false);
+                }
+            }
+        }
+        assert_eq!(
+            lines_of(&value),
+            [
+                ".gate.base: must be a branch name (see git check-ref-format --branch)",
+                ".gate.max_files: must be an integer of at least 1",
+                ".gate.check: must be an array of non-empty strings",
+                ".gate.environment: must be an object",
+                ".agents.max_fix_rounds: must be an integer of at least 0",
+                ".agents.effort_cap: must be one of low, medium, high, xhigh, max",
+                ".agents.tiers: must be a non-empty array of objects",
+                ".agents.roles: must be an object",
+            ]
+        );
+    }
+
     #[test]
     fn several_broken_rules() {
         let mut value = fixture();
@@ -804,7 +830,7 @@ mod tests {
             [
                 ".gate.base: must be a branch name (see git check-ref-format --branch)",
                 ".gate.max_files: must be an integer of at least 1",
-                ".agents.roles.maker.effort: must not be above effort_cap",
+                ".agents.roles.maker.effort: must not be above agents.effort_cap",
                 ".packs.model: must be a non-empty string",
             ]
         );
@@ -1304,7 +1330,7 @@ mod tests {
             let expected = if effort <= cap {
                 Vec::new()
             } else {
-                vec![format!("{path}: must not be above effort_cap")]
+                vec![format!("{path}: must not be above agents.effort_cap")]
             };
             prop_assert_eq!(lines_of(&value), expected);
         }
