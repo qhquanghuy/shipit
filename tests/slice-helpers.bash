@@ -134,8 +134,8 @@ fake_gh() {
   mkdir -p "$bin"
   GH_LOG="$BATS_TEST_TMPDIR/gh.log"
   export GH_LOG
-  cat >"$bin/gh" <<'GH'
-#!/usr/bin/env bash
+  printf '#!%s\n' "$BASH" >"$bin/gh"
+  cat >>"$bin/gh" <<'GH'
 printf '%s %s %s\n' "$1" "$2" "$4" >>"$GH_LOG"
 n=$(wc -l <"$GH_LOG")
 if [[ ${GH_FAIL_AT:-} == "$n" ]]; then
