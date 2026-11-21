@@ -105,6 +105,19 @@ pub(crate) fn kept_metrics(store: &Path) -> (Vec<KeptMetrics>, Vec<GoalName>) {
     (kept, skipped)
 }
 
+// The receipt file of a kind and a key; None when it is missing or is not one document.
+pub(crate) fn receipt_doc(store: &Path, kind: &str, key: &str) -> Option<Value> {
+    let docs = json_values(
+        &fs::read(receipt_path(
+            store,
+            ReceiptKind::parse(kind)?,
+            &Oid::parse(key)?,
+        ))
+        .ok()?,
+    )?;
+    <[Value; 1]>::try_from(docs).ok().map(|[doc]| doc)
+}
+
 pub(crate) fn metrics_path(store: &Path, goal: &GoalName) -> PathBuf {
     store.join("metrics").join(format!("{goal}.toml"))
 }
@@ -224,7 +237,20 @@ pub(crate) fn write_new(path: &Path, value: &impl Serialize) -> Result<(), Write
     let cannot = || WriteNew::Cannot(Failure::usage(format!("cannot write in {}", dir.display())));
     let mut text = serde_json::to_vec_pretty(value).map_err(|_why| cannot())?;
     text.push(b'\n');
-    fs::create_dir_all(dir).map_err(|_why| cannot())?;
+    let temporary = write_temporary(dir, &text).map_err(|_why| cannot())?;
+    let linked = fs::hard_link(&temporary, path);
+    fs::remove_file(&temporary).ok();
+    match linked {
+        Ok(()) => Ok(()),
+        Err(why) if why.kind() == ErrorKind::AlreadyExists => Err(WriteNew::Exists),
+        Err(_why) => Err(cannot()),
+    }
+}
+
+// The text under a name no other writer uses, in the folder it is meant for; a stale file of a
+// crashed run is skipped, never reused.
+fn write_temporary(dir: &Path, text: &[u8]) -> std::io::Result<PathBuf> {
+    fs::create_dir_all(dir)?;
     let (temporary, mut file) = (0_u32..)
         .find_map(|n| {
             let temporary = dir.join(format!(".tmp.{}.{n}", std::process::id()));
@@ -238,17 +264,31 @@ pub(crate) fn write_new(path: &Path, value: &impl Serialize) -> Result<(), Write
                 Err(why) => Some(Err(why)),
             }
         })
-        .ok_or_else(cannot)?
-        .map_err(|_why| cannot())?;
-    let written = file.write_all(&text).and_then(|()| file.flush());
+        .ok_or_else(|| std::io::Error::from(ErrorKind::AlreadyExists))??;
+    let written = file.write_all(text).and_then(|()| file.flush());
     drop(file);
-    let linked = written.and_then(|()| fs::hard_link(&temporary, path));
-    fs::remove_file(&temporary).ok();
-    match linked {
-        Ok(()) => Ok(()),
-        Err(why) if why.kind() == ErrorKind::AlreadyExists => Err(WriteNew::Exists),
-        Err(_why) => Err(cannot()),
+    if let Err(why) = written {
+        fs::remove_file(&temporary).ok();
+        return Err(why);
     }
+    Ok(temporary)
+}
+
+// A reader sees the old text or the whole new text.
+pub(crate) fn write_text_atomic(path: &Path, text: &str) -> Result<(), Failure> {
+    let dir = path.parent().unwrap_or(Path::new("."));
+    let cannot = || Failure::usage(format!("cannot write in {}", dir.display()));
+    let temporary = write_temporary(dir, text.as_bytes()).map_err(|_why| cannot())?;
+    fs::rename(&temporary, path).map_err(|_why| {
+        fs::remove_file(&temporary).ok();
+        cannot()
+    })
+}
+
+pub(crate) fn remove_goal(store: &Path, goal: &GoalName) -> Result<(), Failure> {
+    let dir = goal_dir(store, goal);
+    fs::remove_dir_all(&dir)
+        .map_err(|_why| Failure::usage(format!("cannot delete {}", dir.display())))
 }
 
 // A goal without a logbook yet has no entries; a damaged line stops the reader, naming it.

@@ -101,6 +101,7 @@ ship_entry() {
 
 # the_line <slice> [goal]: the status line of one slice, from $output.
 the_line() {
+  # shellcheck disable=SC2154 # `output` is set by bats `run`
   grep -F "${2:-demo}/$1:" <<<"$output"
 }
 
@@ -124,4 +125,25 @@ commit_map() {
   printf '%s\n' "$3" >".shipit/coverage/$1/$2.toml"
   git add .shipit
   git commit -q -m "a map"
+}
+
+# fake_gh: a gh first on PATH. It logs `issue create <title>` for each call to $GH_LOG and prints
+# an issue address that carries the number of the call; GH_FAIL_AT=<n> makes the n-th call fail.
+fake_gh() {
+  local bin="$BATS_TEST_TMPDIR/ghbin"
+  mkdir -p "$bin"
+  GH_LOG="$BATS_TEST_TMPDIR/gh.log"
+  export GH_LOG
+  cat >"$bin/gh" <<'GH'
+#!/usr/bin/env bash
+printf '%s %s %s\n' "$1" "$2" "$4" >>"$GH_LOG"
+n=$(wc -l <"$GH_LOG")
+if [[ ${GH_FAIL_AT:-} == "$n" ]]; then
+  echo "gh: something went wrong" >&2
+  exit 1
+fi
+echo "https://example.invalid/issues/$n"
+GH
+  chmod +x "$bin/gh"
+  PATH="$bin:$PATH"
 }

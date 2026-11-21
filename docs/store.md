@@ -21,7 +21,8 @@ tracks them:
 
 `shipit check` writes `receipts/check/`; `shipit receipt` writes the review, test-drive and
 plan-review receipts; `shipit receipt`, `shipit log` and `shipit start` append to the logbook of a
-goal; `shipit coverage` writes `receipts/coverage/` and `shipit metric` writes `receipts/metric/`. The goal files, the roadmaps and the build plans
+goal; `shipit coverage` writes `receipts/coverage/` and `shipit metric` writes `receipts/metric/`; `shipit complete` writes `metrics/<goal>.toml` and then
+deletes the folder `goals/<goal>/`. The goal files, the roadmaps and the build plans
 are put there by hand. Later commands add files and never change this layout. Receipts are keyed by the work and not by a goal, so they
 stay at the root. The coverage map of a slice is not here: it is committed in the project, at
 `.shipit/coverage/<goal>/<slice>.toml`.
@@ -92,6 +93,26 @@ checked commit, with the tests of each done-when item; every one of them ran.
 branch. `value` is a finite number, not negative. The history an outlier is judged against is the newest
 record of each other slice that has one, and, for a goal that has completed, the numbers in
 `metrics/<goal>.toml`: one `[<slice>]` table of `<name> = <number>` lines for each slice.
+
+## Kept metrics
+
+`metrics/<goal>.toml`, written by `shipit complete <goal> --confirm` when every slice and proof step of the
+goal has shipped. It is all that stays of the goal in the store: the goal's own folder, with its roadmap,
+build plans and logbook, is deleted after it is written. Receipts and records are keyed by the work, so they
+stay.
+
+```toml
+[alpha]
+clone-ratio = 3
+
+[complete]
+issues = ["https://example.invalid/issues/1"]
+```
+
+Each `[<slice>]` table holds numbers only, the newest record of each metric of that slice. `[complete]`
+holds the addresses of the GitHub issues made for the goal's open known issues, in order; it is written
+before anything is deleted, so a rerun after a failure creates only the missing ones. A goal name is
+never used again: `shipit start` refuses a goal whose `metrics/<goal>.toml` exists.
 
 ## In code
 

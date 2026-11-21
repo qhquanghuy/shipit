@@ -9,7 +9,7 @@ use crate::commands::setup::load_setup_table;
 use crate::edge::git::Git;
 use crate::edge::records::{
     build_plan_path, coverage_record_path, kept_metrics, load_goals, metric_records,
-    newest_roadmap, read_logbook, receipt_path, store_dir,
+    newest_roadmap, read_logbook, receipt_doc, receipt_path, store_dir,
 };
 use crate::edge::slice_git::{
     branch_tip, commits_beyond, file_hash, load_policy, slice_branches, tip_of,
@@ -263,12 +263,6 @@ fn short(text: &str) -> String {
     text.get(..12).unwrap_or(text).to_owned()
 }
 
-fn doc_of(store: &Path, kind: &str, key: &str) -> Option<Value> {
-    let key = Oid::parse(key)?;
-    let docs = read_json(&receipt_path(store, ReceiptKind::parse(kind)?, &key))?;
-    <[Value; 1]>::try_from(docs).ok().map(|[doc]| doc)
-}
-
 fn check_row(reading: &Reading<'_>) -> Option<CheckRow> {
     let work = reading.fact.work.as_ref().filter(|work| work.checked)?;
     let tree = Oid::parse(&work.tree)?;
@@ -365,7 +359,7 @@ fn rows_of(reading: &Reading<'_>) -> Vec<Row> {
         else {
             continue;
         };
-        let doc = doc_of(&store, kind, key);
+        let doc = receipt_doc(&store, kind, key);
         let flag = |name: &str| {
             let doc = doc.as_ref()?;
             doc.get(name)?.as_bool()
@@ -407,7 +401,7 @@ fn known_issues(reading: &Reading<'_>) -> (Vec<Known>, Vec<Answered>) {
                 reason,
                 by,
             } => {
-                let found = doc_of(&store, kind, key)
+                let found = receipt_doc(&store, kind, key)
                     .as_ref()
                     .and_then(stored_findings)
                     .and_then(|all| all.into_iter().find(|stored| stored.id == *finding));

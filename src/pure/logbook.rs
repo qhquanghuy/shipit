@@ -163,6 +163,16 @@ pub(crate) fn read_entries(text: &str) -> Result<Vec<Logged>, String> {
         .collect()
 }
 
+pub(crate) fn is_shipped_by(entries: &[Logged], slice: &SliceName) -> bool {
+    entries.iter().any(|logged| {
+        logged.slice == *slice
+            && matches!(
+                logged.entry,
+                Entry::ShippedMerge { .. } | Entry::ShippedProof { .. }
+            )
+    })
+}
+
 // The findings of one receipt (its kind and key) that a known issue or an answer closed.
 pub(crate) fn closed(entries: &[Logged], slice: &SliceName, kind: &str, key: &str) -> Vec<String> {
     entries

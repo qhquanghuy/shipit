@@ -186,10 +186,10 @@ copy_docs() {
   printf 'The `shipit complete` command, planned, with `gate.max_files`.\n' >>"$BATS_TEST_TMPDIR/docs/docs/goal.md"
   run check_docs "$BATS_TEST_TMPDIR/docs"
   [ "$status" -eq 0 ]
-  printf 'Also `gate.max_file` and --confirm and SHIPIT_NOTHING.\n' >>"$BATS_TEST_TMPDIR/docs/docs/goal.md"
+  printf 'Also `gate.max_file` and --no-such-flag and SHIPIT_NOTHING.\n' >>"$BATS_TEST_TMPDIR/docs/docs/goal.md"
   run check_docs "$BATS_TEST_TMPDIR/docs"
   [ "$status" -eq 1 ]
   [[ $output == *"setup key: gate.max_file"* ]]
-  [[ $output == *"flag: --confirm"* ]]
+  [[ $output == *"flag: --no-such-flag"* ]]
   [[ $output == *"variable: SHIPIT_NOTHING"* ]]
 }
