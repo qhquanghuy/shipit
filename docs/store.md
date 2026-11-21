@@ -9,6 +9,8 @@ tracks them:
   receipts/check/<tree>.json                    shipit check
   receipts/review/<patch id>/<kind>.json        kind: informed-review | second-opinion
   receipts/test-drive/<tree>.json
+  receipts/coverage/<tree>.json
+  receipts/metric/<tree>/<name>.json
   receipts/plan-review/<file hash>.json         review of a roadmap or a build plan
   logbooks/<slice>.jsonl                        append-only
   roadmap/roadmap.md                            the roadmap
@@ -18,6 +20,8 @@ tracks them:
 Slice 1 writes only `receipts/check/`. The other paths are reserved for later slices, which
 add files and never change this layout.
 
+Each slice adds its own paths here. A path that is listed is reserved: no other slice writes it.
+
 ## Rules
 
 - `<tree>` is the git tree hash (`git rev-parse HEAD^{tree}`): a receipt belongs to the
@@ -26,6 +30,10 @@ add files and never change this layout.
   rename: a reader sees the old file or the whole new one. The data is not synced to disk first, so after a crash or power
   loss the receipt may be missing or empty: verify then says there is no receipt, and the check is run again.
 - Reading never creates folders.
+- Review, test-drive and plan-review receipts are never overwritten: a new one is made under a temporary name and
+  hard-linked to its final name, which fails if the name is taken.
+- Logbooks are appended, never rewritten.
+- Check, coverage and metric records are replaced atomically (the rename above).
 - Every receipt is one JSON object with `kind`, `version`, `key`, `time` (UTC, ISO 8601) and
   `tool` (`shipit <version>`).
 

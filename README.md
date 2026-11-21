@@ -23,7 +23,7 @@ nix run github:qhquanghuy/shipit -- check
 From a clone, `cargo build --release` and run `target/release/shipit` (for example `shipit check` from
 inside your project). On x86_64 Linux, `nix build .#static` builds a static binary that runs anywhere.
 
-Needs git 2.31 or newer, and bash (only to run the check commands) on the `PATH`.
+Needs git 2.39 or newer, and bash (only to run the check commands) on the `PATH`.
 
 ## Check and verify
 

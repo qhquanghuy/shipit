@@ -128,13 +128,14 @@ bash to run the check commands, at run time. Hooks and CI call the same tool.
   made by the lead: they say who claims what about which input. They are honest notes, not
   proof, which is why recheck and the owner come after them.
 - The tool checks rule 1 on every review and test-drive receipt, for plans as well as for the work: the
-  reviewer must rank above the author. Ranks come from the setup: first by model tier, then, for
+  reviewer must rank above the author. Ranks come from the base branch's setup, so a slice cannot change the ranks it is judged by: first by model tier, then, for
   the same model, by effort level. So a reviewer on the same model meets rule 1 by working at a
   higher effort than the author, up to the setup's effort cap. A stand-in counts as the tier it
   stands in for, and the receipt records that a stand-in was used.
-- The roadmap has a machine-readable part: each slice's name, order, parallel group, test-drive
-  mark and branch. `shipit status` reads it, so a slice with no receipts yet still shows.
+- The roadmap has a machine-readable part: each slice's and proof step's name, `after` (what it follows), `meets` (the done-when items it
+  proves), `owns` (what it owns), test-drive mark and branch. `shipit status` reads it, so a slice with no receipts yet still shows.
 - All working copies of a project see the same roadmap, logbook and receipts.
+- `.shipit/coverage/<slice>.toml` is committed evidence of which done-when items a slice covers.
 
 **Slice states.** The list is fixed, and each state is computed, never set:
 
@@ -152,8 +153,10 @@ the work changes: the receipts no longer match, so the computed state drops.
 
 ### 2. The setup file
 
-One committed file per project, `.config/shipit.toml`. It holds the cap, the check commands, the
-fix-round limit, the effort cap, the packs in use, and the tiers with their models and stand-ins.
+One committed file per project, `.config/shipit.toml`. It holds the cap (`gate.max_files`), the check commands, the
+fix-round limit (`agents.max_fix_rounds`), the effort cap (`agents.effort_cap`), the tiers with their models and stand-ins, the roles
+(scout, `planner`, maker, tester, reader), the packs in use and the limits on messages to the owner. `[agents.parallel]` names
+`slices` and `agents`: how many slices and how many agents may run at once.
 
 - There is no environment override. Changing a value means changing the committed file, so the
   change shows up in the diff the owner reviews.
@@ -171,7 +174,7 @@ fix-round limit, the effort cap, the packs in use, and the tiers with their mode
 | Skill | Started by | Input | Output |
 |---|---|---|---|
 | `shipit` | owner or lead | none | Explains the flow, rules, roles and terms. Routes to the others. |
-| `shipit-roadmap` | lead | goal with done-when | A reviewed roadmap: slices under the cap, their order, parallel groups, which need a test drive. Stops at a decision point for the owner. |
+| `shipit-roadmap` | lead | goal with done-when | A reviewed roadmap: slices under the cap, their order (`after`), which need a test drive. Stops at a decision point for the owner. |
 | `shipit-slice` | lead, once per slice | roadmap, one slice | A slice ready to ship: build plan, its review, the work, receipts, known issues. Stops before ship. |
 | `shipit-test-drive` | tester | goal, done-when, the finished result | Findings and a test-drive result. The tester never sees how the work was made. |
 
