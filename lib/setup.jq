@@ -76,7 +76,7 @@ def scout_errors($count):
   .tier as $tier
   | at("retries"; ".roles.scout"; is_int_min(0); "must be an integer of at least 0")
   + (if has("then") then
-      .then
+      .["then"]
       | object_at(".roles.scout.then";
           shape(".roles.scout.then"; ["tier"]; [])
           + (if has("tier") then
@@ -102,10 +102,16 @@ def roles_errors($cap; $count):
       shape(".roles"; $names; [])
       + ([$names[] as $n | select(has($n)) | .[$n] | role_errors($n; $cap; $count)] | add // []));
 
-def check_errors:
-  if type != "array" then [".check: must be an array of non-empty strings"]
+def strings_errors($path):
+  if type != "array" then ["\($path): must be an array of non-empty strings"]
   else [to_entries[] | select(.value | non_empty_string | not)
-        | ".check[\(.key)]: must be a non-empty string"] end;
+        | "\($path)[\(.key)]: must be a non-empty string"] end;
+
+# The environment object on input: the command prefix every check runs behind.
+def environment_errors:
+  object_at(".environment";
+    shape(".environment"; ["run"]; [])
+    + (if has("run") then .run | strings_errors(".environment.run") else [] end));
 
 def packs_errors:
   object_at(".packs";
@@ -128,13 +134,14 @@ def messages_errors:
 def setup_object_errors:
   effort_rank(.effort_cap) as $cap
   | (if (.tiers | type) == "array" then .tiers | length else null end) as $count
-  | shape(""; ["version", "base", "cap", "check", "fix_rounds", "effort_cap", "tiers", "roles", "packs", "messages_to_owner"]; [])
+  | shape(""; ["version", "base", "cap", "check", "environment", "fix_rounds", "effort_cap", "tiers", "roles", "packs", "messages_to_owner"]; [])
   + at("version"; ""; . == 1; "must be the integer 1")
   + at("base"; ""; non_empty_string; "must be a non-empty string")
   + at("cap"; ""; is_int_min(1); "must be an integer of at least 1")
   + at("fix_rounds"; ""; is_int_min(0); "must be an integer of at least 0")
   + at("effort_cap"; ""; effort_rank(.) != null; "must be one of \(efforts | join(", "))")
-  + (if has("check") then .check | check_errors else [] end)
+  + (if has("check") then .check | strings_errors(".check") else [] end)
+  + (if has("environment") then .environment | environment_errors else [] end)
   + (if has("tiers") then .tiers | tiers_errors($cap) else [] end)
   + (if has("roles") then .roles | roles_errors($cap; $count) else [] end)
   + (if has("packs") then .packs | packs_errors else [] end)

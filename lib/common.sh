@@ -1,6 +1,10 @@
 # shellcheck shell=bash
 # Shared helpers. Sourced by bin/shipit and by libexec scripts.
 
+# A failure inside $(...) must end that substitution, so a die in a function
+# called as x=$(f) stops it before it can print a second message. Needs bash 4.4.
+shopt -s inherit_errexit
+
 # die <code> <message>: print "shipit: <message>" to stderr and exit.
 die() {
   local code=$1

@@ -20,10 +20,13 @@
             runHook preInstall
             root=$out/share/shipit
             mkdir -p "$root" $out/bin
-            cp -r bin libexec lib VERSION "$root"/
-            patchShebangs "$root/bin"
+            # The whole source tree ships, so a later slice's folders need no edit here.
+            cp -r . "$root"
+            chmod -R u+w "$root"
+            rm -rf "$root/tests" "$root/.github" "$root/notes" "$root/docs"
+            patchShebangs "$root"
             makeWrapper "$root/bin/shipit" $out/bin/shipit \
-              --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.bash pkgs.jq pkgs.git pkgs.coreutils ]}
+              --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.bash pkgs.jq pkgs.git pkgs.coreutils pkgs.gnused ]}
             runHook postInstall
           '';
           meta.mainProgram = "shipit";
@@ -48,10 +51,18 @@
             cd source
             patchShebangs .
 
-            # Files are found by rule, never by a list.
-            find bin libexec -type f ! -name .keep -print0 | xargs -0 -r shellcheck
-            find lib -type f -name '*.sh' -print0 | xargs -0 -r shellcheck
-            find tests -type f -name '*.bash' -print0 | xargs -0 -r shellcheck
+            # Files are found by rule, never by a list: every file whose first line
+            # is a bash shebang (patchShebangs wrote its store path) or
+            # `# shellcheck shell=bash` is shellchecked.
+            bash_files=()
+            while IFS= read -r -d "" file; do
+              IFS= read -r first < "$file" || true
+              case $first in
+                '#!'*'/bash' | '#!'*'/bash '* | '#!'*' bash' | '#!'*' bash '* | '# shellcheck shell=bash') bash_files+=("$file") ;;
+              esac
+            done < <(find . -type f -print0)
+            if [ "''${#bash_files[@]}" -eq 0 ]; then echo "no bash files found" >&2; exit 1; fi
+            shellcheck "''${bash_files[@]}"
 
             bats tests
 

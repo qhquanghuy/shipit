@@ -27,6 +27,11 @@ add files and never change this layout.
 - Every receipt is one JSON object with `kind`, `version`, `key`, `time` (UTC, ISO 8601) and
   `tool` (`shipit <version>`).
 
+## Trust
+
+A receipt proves only that this machine ran the checks. Receipts are trusted locally and nowhere
+else: the store is not shared, and a CI run rechecks the work and trusts none.
+
 ## Check receipt
 
 `receipts/check/<tree>.json`, written by `shipit check`:

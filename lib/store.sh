@@ -20,9 +20,9 @@ store_path() {
 # is moved into place, so a reader never sees half a file.
 write_json_atomic() {
   local path=$1 dir tmp
-  dir=$(dirname "$path")
+  dir=$(dirname "$path") || die 2 "bad store path (a bug in shipit)"
   mkdir -p "$dir"
-  tmp=$(mktemp "$dir/.tmp.XXXXXX")
+  tmp=$(mktemp "$dir/.tmp.XXXXXX") || die 2 "cannot write in $dir"
   if ! jq . >"$tmp"; then
     rm -f "$tmp"
     die 2 "refused to write $path: the text is not JSON (a bug in shipit)"

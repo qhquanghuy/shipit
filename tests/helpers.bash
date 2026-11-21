@@ -26,6 +26,7 @@ valid_setup() {
   "base": "main",
   "cap": 60,
   "check": ["nix flake check --print-build-logs"],
+  "environment": {"run": []},
   "fix_rounds": 2,
   "effort_cap": "high",
   "tiers": [

@@ -42,3 +42,14 @@ with_common() {
   [ "$status" -eq 0 ]
   [ "$output" = "42" ]
 }
+
+@test "a die inside a nested command substitution stops the caller after one message" {
+  run --separate-stderr with_common '
+    inner() { die 2 "boom"; }
+    outer() { local x; x=$(inner); echo "outer went on"; }
+    y=$(outer)
+    echo "main went on"'
+  [ "$status" -eq 2 ]
+  [ -z "$output" ]
+  [ "$stderr" = "shipit: boom" ]
+}

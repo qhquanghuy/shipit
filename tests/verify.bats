@@ -188,14 +188,46 @@ receipt_file() {
   [ "$status" -eq 1 ]
 }
 
-@test "a missing setup file exits 2" {
+@test "a missing setup file exits 2 with exactly one message" {
   start_repo
   do_check
   git rm -q .config/shipit.json
   git commit -q -m "drop setup"
   run_verify
   [ "$status" -eq 2 ]
-  [[ $stderr == *"no setup file"* ]]
+  [ "$stderr" = "shipit: no setup file at .config/shipit.json (see docs/setup.md)" ]
+  run_verify HEAD~1
+  [ "$status" -eq 0 ]
+}
+
+@test "verify of a commit reads the setup committed there, never the working tree" {
+  start_repo
+  do_check
+  echo '{' >.config/shipit.json
+  run_verify HEAD
+  [ "$status" -eq 0 ]
+  run_verify
+  [ "$status" -eq 1 ]
+  [[ $stderr == "shipit: uncommitted changes"* ]]
+}
+
+@test "an empty commit argument is a usage error" {
+  start_repo
+  run_verify ""
+  [ "$status" -eq 2 ]
+  [[ $stderr == *"usage: shipit verify [commit]"* ]]
+}
+
+@test "an invalid setup at the commit exits 2" {
+  start_repo
+  do_check
+  git checkout -q -b broken
+  write_setup '{"version": 2}'
+  run_verify
+  [ "$status" -eq 2 ]
+  [[ $stderr == "shipit: .config/shipit.json is invalid:"* ]]
+  run_verify feature
+  [ "$status" -eq 0 ]
 }
 
 @test "verify with no receipts leaves no shipit folder behind" {

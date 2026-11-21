@@ -3,12 +3,13 @@ set -euo pipefail
 
 # The install root: the folder above bin/, found through any symlink.
 install_root() {
-  local self
-  self=$(readlink -f "${BASH_SOURCE[0]}")
-  dirname "$(dirname "$self")"
+  local self dir
+  self=$(readlink -f "${BASH_SOURCE[0]}") || exit 2
+  dir=$(dirname "$self") || exit 2
+  dirname "$dir"
 }
 
-SHIPIT_ROOT=$(install_root)
+SHIPIT_ROOT=$(install_root) || exit 2
 readonly SHIPIT_ROOT
 export SHIPIT_ROOT
 
@@ -47,7 +48,7 @@ main() {
       ;;
     --version | -V)
       local version
-      version=$(<"$SHIPIT_ROOT/VERSION")
+      version=$(<"$SHIPIT_ROOT/VERSION") || die 2 "cannot read $SHIPIT_ROOT/VERSION"
       printf 'shipit %s\n' "$version"
       return 0
       ;;

@@ -92,9 +92,10 @@ refused() {
   repo=$(make_repo)
   cd "$repo"
   git rm -q .config/shipit.json
+  git commit -q -m "drop setup"
   stub_run
   [ "$status" -eq 2 ]
-  [ "$stderr" = "shipit: no setup file at .config/shipit.json (run shipit init)" ]
+  [ "$stderr" = "shipit: no setup file at .config/shipit.json (see docs/setup.md)" ]
 }
 
 @test "an empty file is refused with exit 2" {
@@ -466,10 +467,18 @@ refused() {
   [ "$status" -eq 0 ]
 }
 
-@test "load_setup <ref> reads the committed file, not the working copy" {
+@test "load_setup reads the committed file, never the working copy" {
   repo=$(make_repo)
   cd "$repo"
   echo '{"not": "the setup"}' >.config/shipit.json
+  stub_run
+  [ "$status" -eq 0 ]
+  [ "$output" = "$(jq -c . "$FIXTURE")" ]
+  stub_run HEAD
+  [ "$status" -eq 0 ]
+  git checkout -q -- .config/shipit.json
+  git checkout -q -b other
+  write_setup '{"not": "the setup"}'
   stub_run main
   [ "$status" -eq 0 ]
   [ "$output" = "$(jq -c . "$FIXTURE")" ]
@@ -488,7 +497,7 @@ refused() {
   [[ $stderr == "shipit: other:.config/shipit.json is invalid:"* ]]
   stub_run nonesuch
   [ "$status" -eq 2 ]
-  [ "$stderr" = "shipit: no setup file at nonesuch:.config/shipit.json (run shipit init)" ]
+  [ "$stderr" = "shipit: no setup file at nonesuch:.config/shipit.json (see docs/setup.md)" ]
 }
 
 @test "load_setup <ref> reports malformed JSON with the ref" {
@@ -508,4 +517,48 @@ refused() {
   GIT_CEILING_DIRECTORIES="$BATS_TEST_TMPDIR" run --separate-stderr "$tool/bin/shipit" stub
   [ "$status" -eq 2 ]
   [[ $stderr == "shipit: not inside a git repository"* ]]
+}
+
+@test "environment.run accepts a prefix and an empty list" {
+  in_repo "$(mutated '.environment.run = ["nix", "develop", "--command"]')"
+  stub_run
+  [ "$status" -eq 0 ]
+  in_repo "$(mutated '.environment.run = []')"
+  stub_run
+  [ "$status" -eq 0 ]
+}
+
+@test "environment is required" {
+  refused 'del(.environment)' '.environment'
+}
+
+@test "environment needs run" {
+  refused '.environment = {}' '.environment.run'
+}
+
+@test "environment refuses an unknown key" {
+  refused '.environment.extra = 1' '.environment.extra'
+}
+
+@test "environment.run must be an array" {
+  refused '.environment.run = "nix develop"' '.environment.run'
+  refused '.environment.run = null' '.environment.run'
+}
+
+@test "environment.run holds only non-empty strings" {
+  refused '.environment.run = ["nix", ""]' '.environment.run[1]'
+  refused '.environment.run = ["nix", 3]' '.environment.run[1]'
+}
+
+@test "a wrong-typed environment" {
+  refused '.environment = "x"' '.environment'
+  refused '.environment = null' '.environment'
+  refused '.environment = ["nix"]' '.environment'
+}
+
+@test "no jq module uses a keyword as a field name (jq before 1.7 cannot parse it)" {
+  # A field after a dot, not inside a string, not after another name.
+  run grep -nE '(^|[^A-Za-z0-9_"])\.(then|else|elif|end|if|and|or|as|def|reduce|foreach|try|catch|label|import|include)\b' \
+    "$SHIPIT_SRC"/lib/*.jq
+  [ "$status" -eq 1 ]
 }

@@ -12,6 +12,7 @@ environment variable changes any value in it. The schema is checked in full, by
   "base": "main",
   "cap": 60,
   "check": ["nix flake check --print-build-logs"],
+  "environment": {"run": []},
   "fix_rounds": 2,
   "effort_cap": "high",
   "tiers": [
@@ -46,6 +47,7 @@ not list. Every problem is reported at once, each with its path (for example
 | `base` | A non-empty string: the base branch. |
 | `cap` | An integer, 1 or more: the size cap for one change. |
 | `check` | An array of non-empty strings: the check commands. It may be empty (a new project's first day). |
+| `environment` | Exactly `run`: an array of non-empty strings, the command prefix that enters the project's tool environment (for example `["nix", "develop", "--command"]`, `["mise", "exec", "--"]`, `["devbox", "run", "--"]`); an empty array means none. Each check runs as `<run…> bash -c "<command>"`. |
 | `fix_rounds` | An integer, 0 or more. |
 | `effort_cap` | On the effort scale: `low`, `medium`, `high`, `xhigh`, `max`, in that order. |
 | `tiers` | A non-empty array of objects. The `tier` values are exactly 1 to n, in order. `model` is a non-empty string. `stand_in` is optional; if present it has both `model` (a non-empty string) and `effort` (on the scale, not above `effort_cap`). |
@@ -53,9 +55,19 @@ not list. Every problem is reported at once, each with its path (for example
 | `packs` | Exactly `skill`, `domain`, `model`; each a non-empty string. |
 | `messages_to_owner` | Exactly `max_lines` and `status_update_max_lines`, each an integer, 1 or more; `status_update_max_lines` is not above `max_lines`. `max_lines` is the most lines any message to the owner may have. `status_update_max_lines` is the most lines a progress update to the owner may have. |
 
+## Who reads what
+
+`shipit check` and `shipit verify` read `base`, `cap`, `check` and `environment`. `tiers`, `roles`, `packs`, `fix_rounds`, `effort_cap` and `messages_to_owner` are validated now but read by later
+parts of ShipIt (the roles that make and review work, the packs they use, the limits on messages
+to the owner).
+
 ## Loading
 
-`load_setup [ref]` in `lib/setup.sh` prints the setup as compact JSON. Without `ref` it reads
-the working tree; with `ref` it reads the file as committed at that ref. A missing file, a
-file that is not JSON and a file that breaks a rule above each stop the command with exit 2
-and a message that says what to fix.
+`load_setup [ref]` in `lib/setup.sh` prints the setup as compact JSON, as committed at `ref`
+(default `HEAD`); it never reads the working tree. A missing file, a file that is not JSON and a file
+that breaks a rule above each stop the command with exit 2 and a message that says what to fix.
+
+`check` also reads the base branch's setup (`load_baseline` in `lib/setup.sh`), but only `cap` (an
+integer, 1 or more) and `check` (an array of strings): it refuses a slice whose `cap` is larger or
+that drops a check command the base has. Nothing else in the base file is looked at, so the schema can grow.
+A base without a setup file prints a notice and nothing is compared.

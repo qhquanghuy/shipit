@@ -260,52 +260,239 @@ LOG="$BATS_TEST_TMPDIR/log"
   [ -f "$(store)/receipts/check/$(git rev-parse 'HEAD^{tree}').json" ]
 }
 
-@test "a missing setup file exits 2 and names shipit init" {
+@test "a missing setup file exits 2 with exactly one message" {
   start_repo
   git rm -q .config/shipit.json
   git commit -q -m "drop setup"
   run_check
   [ "$status" -eq 2 ]
-  [[ $stderr == *"shipit init"* ]]
+  [ "$stderr" = "shipit: no setup file at .config/shipit.json (see docs/setup.md)" ]
 }
 
-@test "unknown arguments and a bare --cap-from exit 2" {
+@test "arguments exit 2, including the removed --cap-from" {
   start_repo
   run_check --nope
   [ "$status" -eq 2 ]
-  run_check --cap-from
+  [ "$stderr" = "shipit: unknown argument '--nope'; usage: shipit check" ]
+  run_check --cap-from main
   [ "$status" -eq 2 ]
-  run_check --cap-from no-such-ref
-  [ "$status" -eq 2 ]
-  [[ $stderr == *"not a commit"* ]]
+  [ "$stderr" = "shipit: unknown argument '--cap-from'; usage: shipit check" ]
 }
 
-@test "--cap-from main uses main's cap when the branch raised it" {
+@test "a failing size count exits 2 with exactly one message and no receipt" {
   start_repo
-  write_setup "$(jq -c '.check = [] | .cap = 100' "$FIXTURE")"
-  commit_files 61
+  commit_files 1
+  local shim="$BATS_TEST_TMPDIR/shim" real
+  real=$(command -v git)
+  mkdir "$shim"
+  printf '#!%s\n[[ $1 == diff ]] && exit 128\nexec %q "$@"\n' "$BASH" "$real" >"$shim/git"
+  chmod +x "$shim/git"
+  PATH="$shim:$PATH" run_check
+  [ "$status" -eq 2 ]
+  [[ $stderr == "shipit: cannot count the changed files since "* ]]
+  [ "$(printf '%s\n' "$stderr" | wc -l)" -eq 1 ]
+  [[ $output != *"size:"* ]]
+  no_receipt
+}
+
+@test "a branch that raises the cap is refused: exit 1, no command, no receipt" {
+  start_repo ".check = $(checks "echo ran >> '$LOG'")"
+  write_setup "$(jq -c ".check = $(checks "echo ran >> '$LOG'") | .cap = 100" "$FIXTURE")"
+  run_check
+  [ "$status" -eq 1 ]
+  [ "$stderr" = "shipit: this slice weakens the checks (cap raised from 60 to 100); the owner must merge that setup change on main first" ]
+  [ ! -e "$LOG" ]
+  no_receipt
+}
+
+@test "a branch that drops a check command is refused" {
+  start_repo ".check = $(checks 'echo one' 'echo two')"
+  write_setup "$(jq -c ".check = $(checks 'echo two')" "$FIXTURE")"
+  run_check
+  [ "$status" -eq 1 ]
+  [ "$stderr" = "shipit: this slice weakens the checks (check command removed: echo one); the owner must merge that setup change on main first" ]
+  no_receipt
+}
+
+@test "a branch that raises the cap and drops a check names both" {
+  start_repo ".check = $(checks 'echo one')"
+  write_setup "$(jq -c '.check = [] | .cap = 61' "$FIXTURE")"
+  run_check
+  [ "$status" -eq 1 ]
+  [[ $stderr == *"(cap raised from 60 to 61; check command removed: echo one)"* ]]
+}
+
+@test "a branch that lowers the cap, adds a check or reorders them is fine" {
+  start_repo ".check = $(checks 'echo one' 'echo two')"
+  write_setup "$(jq -c ".check = $(checks 'echo two' 'echo extra' 'echo one') | .cap = 50" "$FIXTURE")"
+  commit_files 1
   run_check
   [ "$status" -eq 0 ]
-  git reset -q --hard HEAD
-  run_check --cap-from main
-  [ "$status" -eq 1 ]
-  [[ $stderr == *"62 files (cap 60)"* ]]
+  [[ $output == *"size: 2 files (cap 50)"* ]]
 }
 
-@test "--cap-from a ref without a setup file prints a notice and uses this cap" {
+@test "the cap in the receipt is the branch's own" {
   start_repo
-  git checkout -q --orphan nosetup
-  git rm -rq -f .
+  write_setup "$(jq -c '.check = [] | .cap = 40' "$FIXTURE")"
+  run_check
+  [ "$status" -eq 0 ]
+  jq -e '.size.cap == 40' "$(store)"/receipts/check/*.json
+}
+
+@test "a base setup of another schema is compared on cap and check only" {
+  start_repo
+  git checkout -q main
+  write_setup '{"cap": 60, "check": [], "from_the_future": {"a": 1}}'
+  git checkout -q feature
+  git merge -q --ff-only main
+  write_setup "$(jq -c '.check = []' "$FIXTURE")"
+  run_check
+  [ "$status" -eq 0 ]
+}
+
+@test "a base setup with a bad cap or check is refused: exit 2" {
+  start_repo
+  git checkout -q main
+  write_setup '{"cap": "60", "check": [1]}'
+  git checkout -q feature
+  git merge -q --ff-only main
+  write_setup "$(jq -c '.check = []' "$FIXTURE")"
+  run_check
+  [ "$status" -eq 2 ]
+  [[ $stderr == "shipit: main:.config/shipit.json is invalid:"$'\n'".cap: must be an integer of at least 1"$'\n'".check: must be an array of strings" ]]
+  git checkout -q main
+  write_setup '{"cap": 60'
+  git checkout -q feature
+  run_check
+  [ "$status" -eq 2 ]
+  [[ $stderr == "shipit: main:.config/shipit.json is not valid JSON" ]]
+}
+
+@test "a base without a setup file: a notice on stderr, then the check goes on" {
+  local repo
+  repo=$(mktemp -d "$BATS_TEST_TMPDIR/repo.XXXXXX")
+  cd "$repo"
+  git init -q -b main
+  git config user.name t
+  git config user.email t@example.invalid
+  git config commit.gpgsign false
   echo readme >README
   git add README
-  git commit -q -m "no setup here"
-  git checkout -q feature
+  git commit -q -m "first"
+  git checkout -q -b feature
+  write_setup "$(jq -c '.check = []' "$FIXTURE")"
   commit_files 2
-  run_check --cap-from nosetup
+  run_check
   [ "$status" -eq 0 ]
-  [[ $stderr == *"no setup file at nosetup; using this one"* ]]
-  [[ $output != *"no setup file"* ]]
-  [[ $output == *"size: 2 files (cap 60)"* ]]
+  [ "$stderr" = "shipit: no setup file on main; nothing to compare" ]
+  [[ $output == *"size: 3 files (cap 60)"* ]]
+}
+
+@test "the base setup is read from origin/<base> when it exists" {
+  local up
+  up=$(make_repo)
+  cd "$up"
+  write_setup "$(jq -c '.check = [] | .cap = 20' "$FIXTURE")"
+  git clone -q "$up" "$BATS_TEST_TMPDIR/clone"
+  cd "$BATS_TEST_TMPDIR/clone"
+  git config user.name t
+  git config user.email t@example.invalid
+  git config commit.gpgsign false
+  git checkout -q -b feature
+  write_setup "$(jq -c '.check = [] | .cap = 30' "$FIXTURE")"
+  git checkout -q main
+  write_setup "$(jq -c '.check = [] | .cap = 100' "$FIXTURE")"
+  git checkout -q feature
+  run_check
+  [ "$status" -eq 1 ]
+  [[ $stderr == *"cap raised from 20 to 30"* ]]
+}
+
+@test "weakenings and the change verdict are decided in lib/check.jq" {
+  run jq -L "$SHIPIT_SRC/lib" -nc 'include "check";
+    [({base: {cap: 5, check: ["a", "b", "a"]}, branch: {cap: 5, check: ["b"]}} | weakenings),
+     ({base: {cap: 5, check: []}, branch: {cap: 6, check: ["x"]}} | weakenings)]'
+  [ "$output" = '[["check command removed: a"],["cap raised from 5 to 6"]]' ]
+  run jq -L "$SHIPIT_SRC/lib" -nc 'include "check";
+    {dirty: false, tree_before: "t", tree_after: "t", commit_before: "c", commit_after: "c"} as $ok
+    | [$ok, ($ok | .dirty = true), ($ok | .tree_after = "u"), ($ok | .commit_after = "d"),
+       ($ok | .dirty = true | .tree_after = "u")] | map(change_verdict | .kind)'
+  [ "$output" = '["none","dirty","committed","moved_head","dirty"]' ]
+}
+
+@test "a skip-worktree file with local edits exits 3 and names the file" {
+  start_repo
+  commit_files 2
+  git update-index --skip-worktree f1
+  echo hidden >>f1
+  [ -z "$(git status --porcelain)" ]
+  run_check
+  [ "$status" -eq 3 ]
+  [[ $stderr == *"marked skip-worktree or assume-unchanged"*"(f1)"*"git update-index --no-skip-worktree --no-assume-unchanged"* ]]
+  no_receipt
+}
+
+@test "an assume-unchanged file with local edits exits 3 and names the file" {
+  start_repo
+  commit_files 2
+  git update-index --assume-unchanged f2
+  echo hidden >>f2
+  run_check
+  [ "$status" -eq 3 ]
+  [[ $stderr == *"(f2)"* ]]
+  no_receipt
+}
+
+@test "a skip-worktree setup file cannot change what check reads" {
+  start_repo
+  commit_files 1
+  git update-index --skip-worktree .config/shipit.json
+  jq '.check = ["touch ran"] | .cap = 1000' "$FIXTURE" >.config/shipit.json
+  run_check
+  [ "$status" -eq 3 ]
+  [ ! -e ran ]
+  no_receipt
+}
+
+@test "after the flag is cleared, check passes again" {
+  start_repo
+  commit_files 1
+  git update-index --skip-worktree f1
+  run_check
+  [ "$status" -eq 3 ]
+  git update-index --no-skip-worktree f1
+  run_check
+  [ "$status" -eq 0 ]
+}
+
+@test "the setup commands run behind environment.run, one prefix call per command" {
+  local wrap="$BATS_TEST_TMPDIR/wrap dir/wrap"
+  mkdir -p "${wrap%/*}"
+  printf '#!%s\nprintf "%%s\\n" "wrapped: $*" >>"%s"\nexec "${@:2}"\n' "$BASH" "$LOG" >"$wrap"
+  chmod +x "$wrap"
+  start_repo ".check = $(checks 'echo one' 'echo two') | .environment.run = $(checks "$wrap" skipme)"
+  commit_files 1
+  run_check
+  [ "$status" -eq 0 ]
+  [ "$(cat "$LOG")" = $'wrapped: skipme bash -c echo one\nwrapped: skipme bash -c echo two' ]
+  [[ $output == *"check: echo one"* ]]
+}
+
+@test "a failing prefix fails the check and writes no receipt" {
+  start_repo ".check = $(checks 'echo one') | .environment.run = $(checks false)"
+  commit_files 1
+  run_check
+  [ "$status" -eq 1 ]
+  [[ $stderr == *"check failed (exit 1): echo one"* ]]
+  no_receipt
+}
+
+@test "an empty environment.run runs the command as plain bash -c" {
+  start_repo ".check = $(checks "echo \"\$0 \$#\" >> '$LOG'") | .environment.run = []"
+  commit_files 1
+  run_check
+  [ "$status" -eq 0 ]
+  [ "$(cat "$LOG")" = "bash 0" ]
 }
 
 # rename_files <count>: rename <count> committed files on the feature branch.
@@ -342,4 +529,22 @@ rename_files() {
   run_check
   [ "$status" -eq 0 ]
   [[ $output == *"size: 3 files (cap 60)"* ]]
+}
+
+@test "a base branch named like an option is passed to git as a name" {
+  start_repo
+  git update-ref refs/heads/-x main
+  write_setup "$(jq -c '.check = [] | .base = "-x"' "$FIXTURE")"
+  commit_files 2
+  run_check
+  [ "$status" -eq 0 ]
+  [[ $output == *"size: 3 files (cap 60)"* ]]
+}
+
+@test "a check that moves HEAD without changing the content is named" {
+  start_repo ".check = $(checks 'git commit -q --allow-empty -m sneaky')"
+  commit_files 1
+  run_check
+  [ "$status" -eq 1 ]
+  [ "$stderr" = "shipit: a check changed the work: it moved HEAD to a new commit" ]
 }
