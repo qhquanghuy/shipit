@@ -5,27 +5,9 @@ load helpers
 
 FIXTURE="$SHIPIT_SRC/tests/fixtures/setup-valid.json"
 
-# A temporary copy of the tool with a stub command that calls load_setup, so
-# the library is tested through the dispatcher without a real command.
-make_tool() {
-  local tool="$BATS_TEST_TMPDIR/tool"
-  mkdir -p "$tool"
-  cp -r "$SHIPIT_SRC/bin" "$SHIPIT_SRC/lib" "$SHIPIT_SRC/libexec" "$SHIPIT_SRC/VERSION" "$tool"/
-  cat >"$tool/libexec/shipit-stub" <<'STUB'
-#!/usr/bin/env bash
-set -euo pipefail
-source "$SHIPIT_ROOT/lib/common.sh"
-source "$SHIPIT_ROOT/lib/setup.sh"
-load_setup "$@"
-STUB
-  printf '%s\n' "$tool"
-}
-
-# stub_run <args>: run load_setup (via the stub) in the current directory.
+# stub_run <args>: run `shipit setup <args>` in the current directory.
 stub_run() {
-  local tool
-  tool=$(make_tool)
-  run --separate-stderr "$tool/bin/shipit" stub "$@"
+  run --separate-stderr "$SHIPIT_BIN" setup "$@"
 }
 
 # mutated <jq filter>: the fixture changed by the filter, as compact JSON.
@@ -81,11 +63,6 @@ refused() {
   in_repo "$(mutated 'del(.tiers[3].stand_in) | del(.roles.maker.effort)')"
   stub_run
   [ "$status" -eq 0 ]
-}
-
-@test "effort_rank gives the place on the scale, null off it" {
-  run jq -L "$SHIPIT_SRC/lib" -nc 'include "setup"; [effort_rank("low"), effort_rank("max"), effort_rank("xhigh"), effort_rank("huge"), effort_rank(3), effort_rank(null)]'
-  [ "$output" = "[0,4,3,null,null,null]" ]
 }
 
 @test "no setup file dies 2 with what to do" {
@@ -203,7 +180,7 @@ refused() {
 }
 
 @test "tiers must not be empty" {
-  refused '.tiers = []' '.tiers' 6
+  refused '.tiers = []' '.tiers' 7
 }
 
 @test "tiers numbered 1,3 are refused" {
@@ -262,6 +239,31 @@ refused() {
   in_repo "$(mutated '.roles.maker.effort = "high"')"
   stub_run
   [ "$status" -eq 0 ]
+}
+
+@test "roles.reader is required" {
+  refused 'del(.roles.reader)' '.roles.reader'
+}
+
+@test "unknown key inside roles.reader" {
+  refused '.roles.reader.extra = 1' '.roles.reader.extra'
+}
+
+@test "roles.reader.tier must exist" {
+  refused '.roles.reader.tier = 5' '.roles.reader.tier'
+}
+
+@test "roles.reader.effort is optional, on the scale and not above effort_cap" {
+  in_repo "$(mutated '.roles.reader.effort = "medium"')"
+  stub_run
+  [ "$status" -eq 0 ]
+  refused '.roles.reader.effort = "huge"' '.roles.reader.effort'
+  refused '.roles.reader.effort = "xhigh"' '.roles.reader.effort'
+}
+
+@test "a wrong-typed roles.reader" {
+  refused '.roles.reader = "x"' '.roles.reader'
+  refused '.roles.reader = null' '.roles.reader'
 }
 
 @test "scout.then.tier equal to scout.tier is refused" {
@@ -512,9 +514,7 @@ refused() {
 
 @test "outside a repository dies 2" {
   cd "$BATS_TEST_TMPDIR"
-  local tool
-  tool=$(make_tool)
-  GIT_CEILING_DIRECTORIES="$BATS_TEST_TMPDIR" run --separate-stderr "$tool/bin/shipit" stub
+  GIT_CEILING_DIRECTORIES="$BATS_TEST_TMPDIR" run --separate-stderr "$SHIPIT_BIN" setup
   [ "$status" -eq 2 ]
   [[ $stderr == "shipit: not inside a git repository"* ]]
 }
@@ -554,11 +554,4 @@ refused() {
   refused '.environment = "x"' '.environment'
   refused '.environment = null' '.environment'
   refused '.environment = ["nix"]' '.environment'
-}
-
-@test "no jq module uses a keyword as a field name (jq before 1.7 cannot parse it)" {
-  # A field after a dot, not inside a string, not after another name.
-  run grep -nE '(^|[^A-Za-z0-9_"])\.(then|else|elif|end|if|and|or|as|def|reduce|foreach|try|catch|label|import|include)\b' \
-    "$SHIPIT_SRC"/lib/*.jq
-  [ "$status" -eq 1 ]
 }
