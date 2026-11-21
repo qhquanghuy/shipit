@@ -72,9 +72,9 @@ receipt shows it. CI's `--base` is the real gate.
 
 ### Changing the checks
 
-`gate.base`, `gate.max_files`, `gate.check` and `gate.environment` in the setup are compared with the base branch's setup as it was where the slice
+The whole setup, field by field (`gate.max_files`, `agents.tiers`, `packs.model`, …), is compared with the base branch's setup as it was where the slice
 forked from it. If the base branch's setup has changed since the fork, the check is refused with "merge or rebase" (a
-stale base is never mistaken for the slice's own change; a slice whose four fields already equal the base tip's, as after a squash merge of its parent, is not refused). The slice's own change is refused, with one exception. If the
+stale base is never mistaken for the slice's own change; a slice whose fields already equal the base tip's, as after a squash merge of its parent, is not refused). The slice's own change is refused, with one exception. If the
 slice's diff against the base touches only `.config/shipit.toml`, `check` runs the slice's new checks with its new `gate.max_files` and
 environment, prints `shipit: this slice changes the checks (<fields>); setup change: the owner approves it by merging` on
 stderr, and writes the receipt with `"setup_change": true` and `"setup_fields"` (the changed fields). `shipit verify` then

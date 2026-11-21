@@ -14,10 +14,12 @@ const ONE_OF: &str = "must be one of low, medium, high, xhigh, max";
 const TIER_REF: &str = "must be the number of an existing tier";
 const NOT_EMPTY: &str = "must be a non-empty string";
 const BRANCH: &str = "must be a branch name (see git check-ref-format --branch)";
-const TOP_KEYS: [&str; 5] = ["version", "gate", "agents", "packs", "owner"];
-const GATE_KEYS: [&str; 4] = ["base", "max_files", "check", "environment"];
-const AGENTS_KEYS: [&str; 4] = ["max_fix_rounds", "effort_cap", "tiers", "roles"];
-const AGENTS_OPTIONAL: [&str; 1] = ["parallel"];
+pub(crate) const TOP_KEYS: [&str; 5] = ["version", "gate", "agents", "packs", "owner"];
+pub(crate) const GATE_KEYS: [&str; 4] = ["base", "max_files", "check", "environment"];
+pub(crate) const AGENTS_KEYS: [&str; 4] = ["max_fix_rounds", "effort_cap", "tiers", "roles"];
+pub(crate) const AGENTS_OPTIONAL: [&str; 1] = ["parallel"];
+pub(crate) const PACKS_KEYS: [&str; 3] = ["skill", "domain", "model"];
+pub(crate) const OWNER_KEYS: [&str; 2] = ["max_lines", "status_update_max_lines"];
 const PARALLEL_OPTIONAL: [&str; 2] = ["slices", "agents"];
 const DEFAULT_SLICES: u64 = 3;
 const DEFAULT_AGENTS: u64 = 4;
@@ -473,7 +475,7 @@ fn parse_packs(value: &Value) -> Parsed<Packs> {
     let path = ".packs";
     let object = object_at(value, path)?;
     let mut problems = Problems::default();
-    problems.add(shape(path, object, &["skill", "domain", "model"], &[]));
+    problems.add(shape(path, object, &PACKS_KEYS, &[]));
     let skill = problems.take(at(object, "skill", path, non_empty_value, NOT_EMPTY));
     let domain = problems.take(at(object, "domain", path, non_empty_value, NOT_EMPTY));
     let model = problems.take(at(object, "model", path, non_empty_value, NOT_EMPTY));
@@ -494,12 +496,7 @@ fn parse_owner(value: &Value) -> Parsed<Owner> {
     let path = ".owner";
     let object = object_at(value, path)?;
     let mut problems = Problems::default();
-    problems.add(shape(
-        path,
-        object,
-        &["max_lines", "status_update_max_lines"],
-        &[],
-    ));
+    problems.add(shape(path, object, &OWNER_KEYS, &[]));
     let message = "must be an integer of at least 1";
     let max_lines = problems.take(at(object, "max_lines", path, lines, message));
     let status = problems.take(at(object, "status_update_max_lines", path, lines, message));

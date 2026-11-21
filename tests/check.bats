@@ -304,16 +304,16 @@ changed_msg() {
   no_receipt
 }
 
-@test "every changed field is named, in the order gate.base, gate.max_files, gate.check, gate.environment" {
+@test "every changed field is named, in the setup's order" {
   start_repo "gate.check=$(checks 'echo one')"
-  write_setup "$(fixture_with 'gate.check=[]' 'gate.max_files=61' 'gate.environment.prefix=["env"]')"
+  write_setup "$(fixture_with 'gate.check=[]' 'gate.max_files=61' 'gate.environment.prefix=["env"]' 'agents.max_fix_rounds=3')"
   commit_files 1
   run_check
   [ "$status" -eq 1 ]
-  [ "$stderr" = "$(changed_msg 'gate.max_files, gate.check, gate.environment')" ]
+  [ "$stderr" = "$(changed_msg 'gate.max_files, gate.check, gate.environment, agents.max_fix_rounds')" ]
 }
 
-@test "a base setup with a bad gate.base, max_files, check or environment is refused: exit 2" {
+@test "a base setup without a base string is refused: exit 2" {
   start_repo
   git checkout -q main
   write_setup $'version = 1\n[gate]\nbase = 1\nmax_files = "60"\ncheck = [1]\n[gate.environment]\nprefix = [2]'
@@ -322,7 +322,7 @@ changed_msg() {
   write_setup "$(fixture_with 'gate.check=[]')"
   run_check
   [ "$status" -eq 2 ]
-  [[ $stderr == "shipit: main:.config/shipit.toml is invalid:"$'\n'".gate.base: must be a non-empty string"$'\n'".gate.max_files: must be an integer of at least 1"$'\n'".gate.check: must be an array of strings"$'\n'".gate.environment.prefix: must be an array of strings" ]]
+  [[ $stderr == "shipit: main:.config/shipit.toml is invalid:"$'\n'".gate.base: must be a non-empty string" ]]
   git checkout -q main
   write_setup 'cap ='
   git checkout -q feature
@@ -369,7 +369,7 @@ changed_msg() {
   run_check
   [ "$status" -eq 1 ]
   [ "$stderr" = "shipit: no setup file on old; nothing to compare
-$(changed_msg 'gate.base, gate.max_files, gate.check, gate.environment' old)" ]
+$(changed_msg 'version, gate.base, gate.max_files, gate.check, gate.environment, agents.max_fix_rounds, agents.effort_cap, agents.tiers, agents.roles, packs.skill, packs.domain, packs.model, owner.max_lines, owner.status_update_max_lines' old)" ]
   [ ! -e "$LOG" ]
   no_receipt
 }
@@ -675,6 +675,37 @@ rename_files() {
   git sparse-checkout disable
   run_check
   [ "$status" -eq 0 ]
+}
+
+@test "check: a slice that changes tiers together with code is refused" {
+  start_repo
+  write_setup "$(fixture_with 'gate.check=[]' | sed 's/^model = "haiku"/model = "other"/')"
+  commit_files 1
+  run_check
+  [ "$status" -eq 1 ]
+  [ "$stderr" = "$(changed_msg agents.tiers)" ]
+  no_receipt
+}
+
+@test "check: a setup-only change of effort_cap is allowed and marked in the receipt" {
+  start_repo
+  write_setup "$(fixture_with 'gate.check=[]' 'agents.effort_cap="xhigh"')"
+  run_check
+  [ "$status" -eq 0 ]
+  [ "$stderr" = "shipit: this slice changes the checks (agents.effort_cap); setup change: the owner approves it by merging" ]
+  jq -e '.setup_change == true and .setup_fields == ["agents.effort_cap"]' "$(store)"/receipts/check/*.json
+}
+
+@test "check: a base tip that changed max_fix_rounds since the fork asks to merge or rebase" {
+  start_repo
+  commit_files 1
+  git checkout -q main
+  write_setup "$(fixture_with 'gate.check=[]' 'agents.max_fix_rounds=3')"
+  git checkout -q feature
+  run_check
+  [ "$status" -eq 1 ]
+  [ "$stderr" = "$(changed_msg agents.max_fix_rounds)" ]
+  no_receipt
 }
 
 @test "a slice that edits only the setup file may change the checks: a notice, a marked receipt, verify says so" {

@@ -107,7 +107,7 @@ An effort above the cap is reported as `must not be above agents.effort_cap`.
 
 ## Who reads what
 
-`shipit check` reads `gate.base`, `gate.max_files`, `gate.check` and `gate.environment`. `shipit verify` reads no setup at all: a receipt is
+`shipit check` reads `gate.base`, `gate.max_files`, `gate.check` and `gate.environment` to judge and run the checks, and compares the whole setup with the base branch's, field by field. `shipit verify` reads no setup at all: a receipt is
 valid for a tree and nothing else. `agents` (`max_fix_rounds`, `effort_cap`, `tiers`, `roles`, `planner` included, `parallel`), `packs` and `owner` are
 validated now but read by later parts of ShipIt (the roles that make and review work, the packs they use, the
 limits on messages to the owner). `agents.parallel.slices` is read by `shipit start` and `shipit status`, and `agents.parallel.agents` by the plugin (its agent cap), both from the base branch's setup.
@@ -119,16 +119,14 @@ that breaks a rule above each stop the command with exit 2 and a message that sa
 a file that is not TOML is `shipit: .config/shipit.toml is not valid TOML: <the parser's message>` (the path takes a `<ref>:` prefix for a ref other than HEAD; for the base branch's file, there is no
 parser message). A setup file named `.config/shipit.json` is not read: there is no fallback.
 
-`check` also reads the base branch's setup, but only `gate.base`, `gate.max_files`,
-`gate.check` and `gate.environment` (validated for their type only). Those four fields are compared with the setup of the slice's merge base with that branch: the base branch's tip must
+`check` also reads the base branch's setup, which must only be TOML with a `gate.base` string (nothing else in it is validated, so the schema can grow). The whole setup, field by field, is compared with the setup of the slice's merge base with that branch (a field is a key inside a top-level table, such as `gate.max_files` or `agents.tiers`; `version` is one field): the base branch's tip must
 not differ from it (else: merge or rebase; a slice whose fields equal the tip's own is never refused for that), and the slice's fields must be identical to it, with one
 exception: when the slice's diff against the base touches only `.config/shipit.toml`, a change is allowed. `check` then
 runs the slice's new checks with its new cap (`gate.max_files`) and environment, prints `shipit: this slice changes the checks (<fields>);
 setup change: the owner approves it by merging` on stderr, and marks the receipt (`"setup_change": true`,
 `"setup_fields"`); `shipit verify` prints `valid receipt for <tree> (setup change)`. The owner's merge is the approval.
 With any other file in the diff, any difference is refused, because a branch must not choose its own checks along with
-its own code; the owner merges setup changes on the base first. Nothing else in the base file is looked at, so the schema
-can grow. A base without a setup file prints a notice and nothing is compared, but the slice's diff must then be the setup file alone; with any other file in it the check is refused as for any setup change. `shipit check --base <name>` names the
+its own code; the owner merges setup changes on the base first. A base without a setup file prints a notice and nothing is compared, but the slice's diff must then be the setup file alone; with any other file in it the check is refused as for any setup change. `shipit check --base <name>` names the
 base instead of the setup's `gate.base` (a branch name too).
 
 An old file gets one `unknown key` line for each old top-level key (`base`, `cap`, `check`, `fix_rounds`, `effort_cap`, `environment`, `tiers`, `roles`, `messages_to_owner`) and `missing` for `gate`, `agents` and `owner`. There is no migration.

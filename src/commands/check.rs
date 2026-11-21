@@ -1,6 +1,8 @@
 use std::ffi::{OsStr, OsString};
 use std::io::Write;
 
+use toml::Table;
+
 use crate::commands::setup::load_setup;
 use crate::edge::base::base_ref;
 use crate::edge::clock::now_utc;
@@ -9,7 +11,7 @@ use crate::edge::run::run_check;
 use crate::edge::store::{check_receipt_path, write_json_atomic};
 use crate::pure::base::{BaseRef, BranchName, SelfBase, base_verdict};
 use crate::pure::baseline::{
-    ALL_FIELDS, Flow, FlowField, SetupVerdict, parse_baseline, setup_only, setup_verdict,
+    Flow, SetupVerdict, parse_baseline, setup_changes, setup_only, setup_verdict,
 };
 use crate::pure::failure::Failure;
 use crate::pure::receipt::{BaseUsed, CheckReceipt, Oid};
@@ -140,7 +142,7 @@ pub(crate) fn settle_base(
     )))
 }
 
-fn changed_setup(fields: &[FlowField], base: &BranchName) -> Failure {
+fn changed_setup(fields: &[String], base: &BranchName) -> Failure {
     Failure::no(format!(
         "this slice changes the checks ({}); the owner merges setup changes on {base} first \
          (or merge/rebase {base} if it moved on)",
@@ -153,7 +155,7 @@ fn changed_setup(fields: &[FlowField], base: &BranchName) -> Failure {
 // marked in the receipt and approved by merging.
 fn approve_setup_change(
     git: &Git,
-    changes: &[FlowField],
+    changes: &[String],
     since: &Oid,
     base: &BranchName,
     err: &mut dyn Write,
@@ -168,12 +170,12 @@ fn approve_setup_change(
         comma_list(changes)
     )
     .ok();
-    Ok(changes.iter().map(ToString::to_string).collect())
+    Ok(changes.to_vec())
 }
 
 fn judge_setup(
     git: &Git,
-    setup: &Setup,
+    slice: &Flow,
     (tip, base): (Option<&Flow>, &BranchName),
     (base_ref, merge_base): (&BaseRef, &Oid),
     err: &mut dyn Write,
@@ -184,14 +186,17 @@ fn judge_setup(
         if setup_only(&git.changed_names(merge_base)?) {
             return Ok(None);
         }
-        return Err(changed_setup(&ALL_FIELDS, base));
+        return Err(changed_setup(
+            &setup_changes(&Table::new(), slice.table()),
+            base,
+        ));
     };
     // A broken setup at the merge base reads as none: every difference from the tip is then
     // refused, which is the safe side.
     let forked = read_flow(git, OsStr::new(merge_base.as_str()), &base_ref.to_string())
         .ok()
         .flatten();
-    match setup_verdict(tip, forked.as_ref(), &Flow::of(setup)) {
+    match setup_verdict(tip, forked.as_ref(), slice) {
         SetupVerdict::Same => Ok(None),
         SetupVerdict::Moved(fields) => Err(changed_setup(&fields, base)),
         SetupVerdict::Changed(fields) => {
@@ -309,9 +314,12 @@ pub(crate) fn run(
     let merge_base = git
         .merge_base_with_head(OsStr::new(&base_ref.full()))
         .ok_or_else(|| Failure::usage(format!("no shared history with {base_ref}")))?;
+    let slice = read_flow(&git, OsStr::new(HEAD), &setup_label(HEAD))?.ok_or_else(|| {
+        Failure::usage(format!("no setup file at {SETUP_PATH} (see docs/setup.md)"))
+    })?;
     let setup_fields = judge_setup(
         &git,
-        &setup,
+        &slice,
         (tip.as_ref(), &base),
         (&base_ref, &merge_base),
         err,
