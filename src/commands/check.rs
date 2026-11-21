@@ -78,7 +78,8 @@ fn notice_if_origin_differs(git: &Git, base_ref: &BaseRef, origin: &Oid, err: &m
         return;
     };
     let local = git.commit_of(OsStr::new(&BaseRef::Local(name.clone()).full()));
-    if let Some(text) = origin_notice(base_ref, origin, local.as_ref()) {
+    let has_extra = local.is_some_and(|local| !git.is_ancestor(&local, origin));
+    if let Some(text) = origin_notice(base_ref, has_extra) {
         writeln!(err, "shipit: {text}").ok();
     }
 }

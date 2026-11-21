@@ -3,19 +3,30 @@
 bats_require_minimum_version 1.5.0
 load helpers
 
-# A human doc is kept only if this test checks what it names against the code: every `shipit
-# <command>`, every --flag, every setup key path, every SHIPIT_ variable and every quoted
-# `shipit: …` message. The goal (docs/goal.md) is approved text, not a reference, and is left out.
-DOCS=(README.md docs/setup.md docs/store.md docs/vocab.md)
+# This test reads README.md and every file in docs/ and checks that what they name exists in the
+# code. A new doc is covered without editing this file.
+#
+# Checked, in every one of those files (docs/goal.md included):
+#   - each --flag is in the output of `shipit help`, or is one of the git, nix and cargo flags
+#     listed below;
+#   - each backticked setup key path (such as `gate.max_files`) is in the output of `shipit setup`;
+#   - each SHIPIT_ variable is in src/ or in tests/helpers.bash.
+# Checked, in every file except docs/goal.md (which names planned commands and is approved text):
+#   - each `shipit <word>` is a command `shipit help <word>` knows;
+#   - each backticked `shipit: …` message, read across line breaks, has every piece between its
+#     <placeholders> somewhere in the source of src/ (tests and comments included).
+# Not checked: what a doc says a command does, exit codes, which commands need no setup (all of
+# these come from `shipit help <command>`, which cannot drift), messages without the `shipit: `
+# prefix, receipt fields, store paths and default values.
 
 # Flags of git, nix and cargo that the docs mention; any other flag must be one of shipit's.
-EXTERNAL_FLAGS=(--all-targets --branch --command --ignore-submodules --print-build-logs --release)
+EXTERNAL_FLAGS=(--all-targets --branch --check --command --ignore-submodules --print-build-logs --release)
 
-# files_in <root>: the reference docs found under <root>.
+# files_in <root>: README.md and every file in docs/ under <root>.
 files_in() {
   local file
-  for file in "${DOCS[@]}"; do
-    [[ -f $1/$file ]] && printf '%s\n' "$1/$file"
+  for file in "$1"/README.md "$1"/docs/*.md; do
+    [[ -f $file ]] && printf '%s\n' "$file"
   done
   return 0
 }
@@ -38,15 +49,16 @@ setup_paths() {
 # check_docs <root>: print one line for each thing a doc names that the code does not have;
 # status 1 if there is any.
 check_docs() {
-  local root=$1 files word flag path var message piece full_help src paths bad=0
+  local root=$1 files others word flag path var message piece full_help src paths bad=0
   files=$(files_in "$root")
   [[ -n $files ]] || { echo "no docs under $root"; return 1; }
+  others=$(grep -v '/docs/goal\.md$' <<<"$files" || true)
   full_help=$("$SHIPIT_BIN" help)
   src=$(source_text)
   paths=$(setup_paths)
 
   # shellcheck disable=SC2086
-  for word in $(grep -ohE 'shipit [a-z][a-z-]*' $files | cut -d' ' -f2 | sort -u); do
+  for word in $(grep -ohE 'shipit [a-z][a-z-]*' $others | cut -d' ' -f2 | sort -u); do
     [[ $word == help ]] && continue
     "$SHIPIT_BIN" help "$word" >/dev/null 2>&1 || { echo "command: shipit $word"; bad=1; }
   done
@@ -71,7 +83,8 @@ check_docs() {
   done
 
   # A message is checked piece by piece: what stays between its <placeholders> must be in the
-  # source (the doc names the setup file where the code has the label of the ref).
+  # source (the doc names the setup file where the code has the label of the ref). The docs are
+  # joined into one line first, so a message broken over two lines is read whole.
   # shellcheck disable=SC2086
   while IFS= read -r message; do
     [[ -n $message ]] || continue
@@ -82,18 +95,16 @@ check_docs() {
       [[ -z $piece ]] && continue
       grep -qF -- "$piece" <<<"$src" || { echo "message: $piece"; bad=1; }
     done < <(sed -E 's/<[^>]*>/\n/g' <<<"$message")
-  done < <(grep -ohE '`shipit: [^`]*`' $files)
+  done < <(cat $others | tr '\n' ' ' | grep -ohE '`shipit: [^`]*`' | sed -E 's/  +/ /g')
 
   return "$bad"
 }
 
-# copy_docs <root>: a copy of the reference docs to break.
+# copy_docs <root>: a copy of README.md and docs/ to break.
 copy_docs() {
-  local file
-  for file in "${DOCS[@]}"; do
-    mkdir -p "$1/$(dirname "$file")"
-    cp "$SHIPIT_SRC/$file" "$1/$file"
-  done
+  mkdir -p "$1/docs"
+  cp "$SHIPIT_SRC/README.md" "$1/README.md"
+  cp "$SHIPIT_SRC"/docs/*.md "$1/docs/"
 }
 
 @test "everything the reference docs name exists in the code" {
@@ -151,4 +162,34 @@ copy_docs() {
   run check_docs "$BATS_TEST_TMPDIR/docs"
   [ "$status" -eq 1 ]
   [[ $output == *"message: "*"squashing"* ]]
+}
+
+@test "a message broken over two lines of a doc is read whole" {
+  copy_docs "$BATS_TEST_TMPDIR/docs"
+  sed -i 's/^setup change: the owner approves/setup changed: the owner approves/' "$BATS_TEST_TMPDIR/docs/docs/setup.md"
+  run check_docs "$BATS_TEST_TMPDIR/docs"
+  [ "$status" -eq 1 ]
+  [[ $output == *"message: "* ]]
+}
+
+@test "a doc added later is checked without editing the test" {
+  copy_docs "$BATS_TEST_TMPDIR/docs"
+  printf 'Run `shipit check --nope` and see `gate.nothing`.\n' >"$BATS_TEST_TMPDIR/docs/docs/later.md"
+  run check_docs "$BATS_TEST_TMPDIR/docs"
+  [ "$status" -eq 1 ]
+  [[ $output == *"flag: --nope"* ]]
+  [[ $output == *"setup key: gate.nothing"* ]]
+}
+
+@test "docs/goal.md is checked for keys, flags and variables, but may name planned commands" {
+  copy_docs "$BATS_TEST_TMPDIR/docs"
+  printf 'The `shipit complete` command, planned, with `gate.max_files`.\n' >>"$BATS_TEST_TMPDIR/docs/docs/goal.md"
+  run check_docs "$BATS_TEST_TMPDIR/docs"
+  [ "$status" -eq 0 ]
+  printf 'Also `gate.max_file` and --confirm and SHIPIT_NOTHING.\n' >>"$BATS_TEST_TMPDIR/docs/docs/goal.md"
+  run check_docs "$BATS_TEST_TMPDIR/docs"
+  [ "$status" -eq 1 ]
+  [[ $output == *"setup key: gate.max_file"* ]]
+  [[ $output == *"flag: --confirm"* ]]
+  [[ $output == *"variable: SHIPIT_NOTHING"* ]]
 }

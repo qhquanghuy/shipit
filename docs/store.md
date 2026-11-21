@@ -10,8 +10,8 @@ tracks them:
   receipts/review/<patch id>/<kind>.json        kind: informed-review | second-opinion
   receipts/test-drive/<tree>.json
   receipts/plan-review/<file hash>.json         review of a roadmap or a build plan
-  goals/<goal>/goal.md                         one folder per named goal
-  goals/<goal>/roadmap.md                      the goal's roadmap
+  goals/<goal>/goal.vN.md                      one folder per named goal; a changed goal is a new version
+  goals/<goal>/roadmap.vN.md                   the goal's roadmap, versioned the same way
   goals/<goal>/logbook.jsonl                   append-only; one per goal, each entry names its slice
   goals/<goal>/slices/<slice>/build-plan.md    one build plan per slice
   metrics/<goal>.toml                          kept metrics: one table per slice, numbers only

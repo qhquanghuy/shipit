@@ -12,6 +12,8 @@ use std::process::{Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::Duration;
 
+use crate::edge::git::LOCAL_ENV;
+
 const NOT_FOUND: i32 = 127;
 const NOT_STARTED: i32 = 126;
 const KILLED: i32 = 128;
@@ -30,9 +32,19 @@ fn exit_code(status: ExitStatus) -> i32 {
         .unwrap_or(NOT_STARTED)
 }
 
-// How long the output may stay silent after the program has exited. A background process that
-// kept the pipe open must not hold the caller up; what it writes later is lost.
+// After the program has exited the output is read until it ends, or until this long passes with
+// no data at all. A background process that kept the pipe open must not hold the caller up;
+// what it writes after that is lost.
 const SILENCE_AFTER_EXIT: Duration = Duration::from_millis(200);
+
+// Called for each silent period. The first one that finds the program gone is not the end: the
+// program may have written its last lines just before it exited, and they are still on their
+// way. Only a whole silent period after the exit stops the reading.
+fn stop_reading(seen_exit: &mut bool, exited: bool) -> bool {
+    let stop = *seen_exit;
+    *seen_exit = exited;
+    stop
+}
 
 // An interrupted read is read again; any other error is handed on and ends the copy.
 fn copy_chunks(mut reader: impl Read, mut send: impl FnMut(std::io::Result<Vec<u8>>) -> bool) {
@@ -74,6 +86,9 @@ pub(crate) fn run_words(
         message: format!("cannot run {}: {why}", program.to_string_lossy()),
     };
     let mut command = Command::new(program);
+    for variable in LOCAL_ENV {
+        command.env_remove(variable);
+    }
     command
         .args(args)
         .current_dir(top)
@@ -94,6 +109,7 @@ pub(crate) fn run_words(
     let mut kept = Vec::new();
     let mut unread = None;
     let mut exited = None;
+    let mut seen_exit = false;
     loop {
         match receiver.recv_timeout(SILENCE_AFTER_EXIT) {
             Ok(Ok(bytes)) => {
@@ -107,7 +123,7 @@ pub(crate) fn run_words(
                 if exited.is_none() {
                     exited = child.try_wait().map_err(|why| cannot_run(&why))?;
                 }
-                if exited.is_some() {
+                if stop_reading(&mut seen_exit, exited.is_some()) {
                     break;
                 }
             }
@@ -205,6 +221,24 @@ mod tests {
                 }
                 Err(why) => Err(why),
             }
+        }
+    }
+
+    // A program that is silent for 200 ms, writes its last line and exits just before the tick
+    // that asks whether it has exited: that tick finds it gone, and the line is still on its way.
+    #[test]
+    fn the_silence_that_finds_the_program_gone_does_not_stop_the_reading() {
+        let mut seen_exit = false;
+        assert!(!stop_reading(&mut seen_exit, false));
+        assert!(!stop_reading(&mut seen_exit, true));
+        assert!(stop_reading(&mut seen_exit, true));
+    }
+
+    #[test]
+    fn a_program_that_has_not_exited_never_stops_the_reading() {
+        let mut seen_exit = false;
+        for _tick in 0..5 {
+            assert!(!stop_reading(&mut seen_exit, false));
         }
     }
 

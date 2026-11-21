@@ -83,17 +83,14 @@ pub(crate) fn choose_base_ref(base: &BranchName, origin: bool, local: bool) -> O
 }
 
 // The refusals about the setup say "merge or rebase", which does not help when origin is stale or
-// the owner has not pushed: this line says what to do instead.
-pub(crate) fn origin_notice(
-    base_ref: &BaseRef,
-    origin: &Oid,
-    local: Option<&Oid>,
-) -> Option<String> {
-    match (base_ref, local) {
-        (BaseRef::Origin(name), Some(local)) if local != origin => Some(format!(
+// the owner has not pushed: this line says what to do instead. A local base that is merely behind
+// origin is the usual state after a fetch and gets no line.
+pub(crate) fn origin_notice(base_ref: &BaseRef, local_has_extra: bool) -> Option<String> {
+    match base_ref {
+        BaseRef::Origin(name) if local_has_extra => Some(format!(
             "comparing with origin/{name}; the local {name} is at another commit (fetch or push if that is not wanted)"
         )),
-        (BaseRef::Origin(_) | BaseRef::Local(_), Some(_) | None) => None,
+        BaseRef::Origin(_) | BaseRef::Local(_) => None,
     }
 }
 
@@ -188,19 +185,18 @@ mod tests {
     }
 
     #[test]
-    fn a_notice_only_when_origin_is_used_and_the_local_base_is_elsewhere() {
-        let (a, b) = (oid('a'), oid('b'));
+    fn a_notice_only_when_origin_is_used_and_the_local_base_has_commits_it_lacks() {
         let origin = BaseRef::Origin(name("main"));
         let local = BaseRef::Local(name("main"));
         assert_eq!(
-            origin_notice(&origin, &a, Some(&b)).as_deref(),
+            origin_notice(&origin, true).as_deref(),
             Some(
                 "comparing with origin/main; the local main is at another commit (fetch or push if that is not wanted)"
             )
         );
-        assert_eq!(origin_notice(&origin, &a, Some(&a)), None);
-        assert_eq!(origin_notice(&origin, &a, None), None);
-        assert_eq!(origin_notice(&local, &a, Some(&b)), None);
+        assert_eq!(origin_notice(&origin, false), None);
+        assert_eq!(origin_notice(&local, true), None);
+        assert_eq!(origin_notice(&local, false), None);
     }
 
     #[test]

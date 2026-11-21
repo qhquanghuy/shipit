@@ -300,7 +300,7 @@ The goal is met when all of these are true.
 17. Test drive of ShipIt itself: a fresh agent that has only the README and the docs sets ShipIt
     up in a sample project and takes one small slice to "ready to ship".
 18. Several goals run at the same time. Each has a short name; its slices use branches `slice/<goal>/<slice>`, its done-when items are written `<goal>:DW<n>` where goals meet, and the slice cap counts across all goals.
-19. When every slice and proof step of a goal has shipped, `shipit complete <goal>` keeps only the data a tool reads (each slice's metrics), turns the goal's open known issues into GitHub issues after the owner confirms, and deletes the rest.
+19. When every slice and proof step of a goal has shipped, `shipit complete <goal>` keeps only the data a tool reads (each slice's metrics), turns the goal's open known issues into GitHub issues after the owner confirms, and deletes the goal's own files (goal, roadmap, build plans, logbook).
 
 ## Non-goals (version 1)
 

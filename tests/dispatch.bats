@@ -1,5 +1,6 @@
 #!/usr/bin/env bats
 
+bats_require_minimum_version 1.5.0
 load helpers
 
 @test "--version prints the version from Cargo.toml" {
@@ -41,6 +42,30 @@ load helpers
   run_shipit help setup
   [ "$status" -eq 0 ]
   [[ $output == "usage: shipit setup [ref]"* ]]
+}
+
+# The commands are the files in src/commands, as build.rs finds them, so hidden ones are run too.
+@test "a command stops with exit 2 and no setup file exactly when it says it needs one" {
+  local repo file name needs
+  repo=$(make_repo)
+  cd "$repo"
+  git rm -q .config/shipit.toml
+  git commit -q -m "drop the setup"
+  for file in "$SHIPIT_SRC"/src/commands/*.rs; do
+    name=$(basename "$file" .rs)
+    name=${name//_/-}
+    run_shipit help "$name"
+    [ "$status" -eq 0 ]
+    needs=no
+    [[ $output == *"needs a setup file: yes"* ]] && needs=yes
+    run --separate-stderr "$SHIPIT_BIN" "$name"
+    if [[ $needs == yes ]]; then
+      [ "$status" -eq 2 ]
+      [[ $stderr == *"no setup file at .config/shipit.toml"* ]]
+    else
+      [[ $stderr != *"no setup file"* ]]
+    fi
+  done
 }
 
 @test "help of an unknown command or with too many arguments exits 2" {

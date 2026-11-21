@@ -56,14 +56,33 @@ fn rev_path(rev: &OsStr, path: &str) -> OsString {
     spec(rev, &[":", path])
 }
 
-// Git obeys these before it looks at the folder (it sets them itself for hooks run in a linked
-// worktree), so a `Git` for one folder would read another repository's objects. Every git call
-// discovers the repository from its folder instead.
-const REPOSITORY_VARIABLES: [&str; 3] = ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"];
+// Git obeys these before it looks at the folder (it sets some itself for hooks run in a linked
+// worktree), so a `Git` for one folder could read another repository's objects, config or
+// store. Every git call discovers the repository from its folder instead, and the check
+// commands see the same environment, so they look at the repository that gets the receipt.
+// The list is `git rev-parse --local-env-vars`, the variables git itself clears when it enters
+// a submodule; a test compares it with the installed git.
+pub(crate) const LOCAL_ENV: [&str; 15] = [
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_CONFIG",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_COUNT",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_GRAFT_FILE",
+    "GIT_INDEX_FILE",
+    "GIT_NO_REPLACE_OBJECTS",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_PREFIX",
+    "GIT_SHALLOW_FILE",
+    "GIT_COMMON_DIR",
+];
 
 fn git_in(dir: &Path) -> Command {
     let mut command = Command::new("git");
-    for variable in REPOSITORY_VARIABLES {
+    for variable in LOCAL_ENV {
         command.env_remove(variable);
     }
     command.current_dir(dir);
@@ -233,6 +252,17 @@ impl Git {
             .filter(|name| !name.is_empty())
     }
 
+    pub(crate) fn is_ancestor(&self, ancestor: &Oid, descendant: &Oid) -> bool {
+        self.run(&[
+            "merge-base",
+            "--is-ancestor",
+            "--end-of-options",
+            ancestor.as_str(),
+            descendant.as_str(),
+        ])
+        .is_ok()
+    }
+
     pub(crate) fn merge_base_with_head(&self, rev: &OsStr) -> Option<Oid> {
         let bytes = self
             .output(&[
@@ -352,7 +382,7 @@ mod tests {
     #[test]
     fn every_git_call_ignores_the_repository_variables_of_the_environment() {
         let command = git_in(Path::new("."));
-        for variable in ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"] {
+        for variable in LOCAL_ENV {
             assert!(
                 command
                     .get_envs()
@@ -360,6 +390,20 @@ mod tests {
                 "{variable}"
             );
         }
+    }
+
+    #[test]
+    fn the_list_is_the_one_the_installed_git_prints() {
+        let output = Command::new("git")
+            .args(["rev-parse", "--local-env-vars"])
+            .output()
+            .expect("git runs");
+        let printed = String::from_utf8_lossy(&output.stdout);
+        let mut listed: Vec<&str> = printed.lines().collect();
+        let mut ours = LOCAL_ENV.to_vec();
+        listed.sort_unstable();
+        ours.sort_unstable();
+        assert_eq!(ours, listed);
     }
 
     #[test]

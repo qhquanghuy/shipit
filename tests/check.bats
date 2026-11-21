@@ -106,6 +106,17 @@ LOG="$BATS_TEST_TMPDIR/log"
   [ "$(cat "$LOG")" = "$base|$one"$'\n'"$base|$two" ]
 }
 
+@test "check ignores git's repository variables, for itself and for its commands" {
+  local other
+  other=$(make_repo)
+  start_repo "gate.check=$(checks "git rev-parse HEAD >> '$LOG'")"
+  commit_files 1
+  GIT_DIR="$other/.git" GIT_COMMON_DIR="$other/.git" run_check
+  [ "$status" -eq 0 ]
+  [ "$(cat "$LOG")" = "$(git rev-parse HEAD)" ]
+  [ -f "$(store)"/receipts/check/"$(git rev-parse 'HEAD^{tree}')".json ]
+}
+
 @test "check reads the setup file at HEAD once" {
   start_repo
   commit_files 1
@@ -236,6 +247,7 @@ NOTICE="shipit: comparing with origin/main; the local main is at another commit 
   run_check
   [ "$status" -eq 0 ]
   [[ $output == *"size: 3 files (cap 6)"* ]]
+  [ "$stderr" = "$NOTICE" ]
 }
 
 @test "an unpushed setup change on the local base is not the baseline while origin/main exists" {
@@ -420,7 +432,7 @@ $(changed_msg 'version, gate.base, gate.max_files, gate.check, gate.environment,
   run_check
   [ "$status" -eq 0 ]
   [[ $output == *"size: 1 files (cap 20)"* ]]
-  [ "$stderr" = "$NOTICE" ]
+  [ -z "$stderr" ]
 }
 
 @test "--base overrides the base named in the setup" {
