@@ -6,9 +6,11 @@ use crate::commands::check::base_argument;
 use crate::commands::setup::load_setup_table;
 use crate::edge::files::read_text;
 use crate::edge::git::Git;
+use crate::edge::home::{home, machine_notes, machine_notes_path};
 use crate::edge::machine::probe;
 use crate::edge::projectfiles::{config_names, inside_project};
-use crate::edge::write::{append_block, append_line, write_new};
+use crate::edge::terminal::{interactive, read_answer};
+use crate::edge::write::{append_block, append_line, writability, write_new};
 use crate::pure::base::BranchName;
 use crate::pure::failure::Failure;
 use crate::pure::hooks::{
@@ -18,6 +20,11 @@ use crate::pure::hooks::{
 use crate::pure::init::{
     CI_FILE, CI_KEY, HOOK_KEY, HookMode, InitFacts, LEFTHOOK_KEY, PACK_KEY, PRE_COMMIT_KEY, Start,
     choose_base, ci_job, embedded, init_plan, next_lines, starting_setup, tools_line,
+};
+use crate::pure::machine::{ToolState, Writability};
+use crate::pure::machine_notes::{
+    AT_LINE, BUILT_IN_NEVER, MachineFacts, MachineStep, NotesFile, ask_text, has_at_line,
+    home_manager_snippet, init_recipe, machine_plan, plain_snippet, render_notes, says_yes,
 };
 use crate::pure::rules::invalid;
 use crate::pure::setup::{HEAD, SETUP_PATH, parse_setup, toml_table};
@@ -279,10 +286,87 @@ fn apply_hook(
     Ok(())
 }
 
+fn notes_file(notes_path: &Path, exists: bool) -> NotesFile {
+    if exists {
+        return NotesFile::Exists;
+    }
+    match writability(notes_path) {
+        Writability::CanCreate => NotesFile::CanCreate,
+        Writability::Writable | Writability::ReadOnly | Writability::CannotCreate => {
+            NotesFile::CannotCreate
+        }
+    }
+}
+
+// The machine files are the owner's, not the project's: they are written only on a yes in a
+// terminal, and otherwise printed.
+fn machine_step(
+    tools: &[(String, ToolState)],
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Result<(), Failure> {
+    let Some(home) = home() else {
+        writeln!(out, "machine notes: HOME is not set; skipped").ok();
+        return Ok(());
+    };
+    let notes_path = machine_notes_path(&home);
+    let claude_md = home.join(".claude").join("CLAUDE.md");
+    let facts = MachineFacts {
+        interactive: interactive(),
+        nix: tools
+            .iter()
+            .any(|(tool, state)| tool == "nix" && *state != ToolState::Missing),
+        notes: notes_file(&notes_path, machine_notes().is_some()),
+        claude_md: writability(&claude_md),
+        has_at_line: read_text(&claude_md).is_ok_and(|text| has_at_line(&text)),
+    };
+    let write_notes = facts.notes != NotesFile::Exists;
+    let add_at_line = !facts.has_at_line;
+    let missing: Vec<&str> = tools
+        .iter()
+        .filter(|(_tool, state)| *state == ToolState::Missing)
+        .map(|(tool, _state)| tool.as_str())
+        .collect();
+    let notes =
+        write_notes.then(|| render_notes(&missing, &init_recipe(facts.nix), BUILT_IN_NEVER));
+    match machine_plan(facts) {
+        MachineStep::Nothing => {}
+        MachineStep::Print => {
+            let snippet = if facts.nix {
+                home_manager_snippet(notes.as_deref(), add_at_line)
+            } else {
+                plain_snippet(notes.as_deref(), add_at_line)
+            };
+            writeln!(out, "{snippet}").ok();
+        }
+        MachineStep::Ask => {
+            write!(err, "{}", ask_text(write_notes, add_at_line)).ok();
+            err.flush().ok();
+            if !read_answer().is_some_and(|answer| says_yes(&answer)) {
+                writeln!(out, "machine notes: not written").ok();
+                return Ok(());
+            }
+            if let Some(text) = &notes {
+                write_new(
+                    &notes_path,
+                    text,
+                    false,
+                    "~/.config/shipit/machine.md already exists; init never overwrites it",
+                )?;
+                writeln!(out, "machine notes: wrote ~/.config/shipit/machine.md").ok();
+            }
+            if add_at_line && append_line(&claude_md, AT_LINE)? {
+                writeln!(out, "machine notes: added {AT_LINE} to ~/.claude/CLAUDE.md").ok();
+            }
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn run(
     args: &[OsString],
     out: &mut dyn Write,
-    _err: &mut dyn Write,
+    err: &mut dyn Write,
 ) -> Result<(), Failure> {
     let init = parse_args(args)?;
     let git = Git::find()?;
@@ -314,16 +398,17 @@ pub(crate) fn run(
     if let Some(planned) = &hook {
         apply_hook(&git, planned, out)?;
     }
+    let tools = probe(&TOOLS);
     // The setup is the start of an adoption; the tools and the next steps belong to it.
     if let Some((_text, base)) = &setup {
-        if let Some(line) = tools_line(&probe(&TOOLS)) {
+        if let Some(line) = tools_line(&tools) {
             writeln!(out, "{line}").ok();
         }
         for line in next_lines(base, start_of(&git, base, born)) {
             writeln!(out, "{line}").ok();
         }
     }
-    Ok(())
+    machine_step(&tools, out, err)
 }
 
 #[cfg(test)]

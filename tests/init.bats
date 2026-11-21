@@ -20,6 +20,13 @@ configure() {
   git config commit.gpgsign false
 }
 
+# machine_ready: machine notes and the @ line already in HOME, so init has nothing to say about them.
+machine_ready() {
+  mkdir -p "$HOME/.config/shipit" "$HOME/.claude"
+  printf '# notes\n' >"$HOME/.config/shipit/machine.md"
+  printf '@~/.config/shipit/machine.md\n' >"$HOME/.claude/CLAUDE.md"
+}
+
 # new_repo: an empty repository on main as the current directory.
 new_repo() {
   local repo
@@ -27,6 +34,21 @@ new_repo() {
   git init -q -b main "$repo"
   cd "$repo"
   configure
+  machine_ready
+}
+
+# bare_path [nix]: a PATH folder holding only git and sh (and a fake nix), printed.
+bare_path() {
+  local dir="$BATS_TEST_TMPDIR/bare-tools" tool
+  mkdir -p "$dir"
+  for tool in git sh; do
+    ln -sf "$(command -v "$tool")" "$dir/$tool"
+  done
+  if [[ ${1:-} == nix ]]; then
+    printf '#!/bin/sh\necho nix 2.0\n' >"$dir/nix"
+    chmod +x "$dir/nix"
+  fi
+  printf '%s\n' "$dir"
 }
 
 # new_project: a repository with a README on main, pushed to a bare origin, as the current directory.
@@ -466,6 +488,64 @@ same_except() {
   [[ $output == *"# pre-commit runs it once per push, for one ref"* ]]
   same_except
   [ ! -e "$(hook_file)" ]
+}
+
+@test "non-interactive: the machine notes are printed, never written" {
+  new_project
+  rm -rf "$HOME/.config" "$HOME/.claude"
+  run env PATH="$(bare_path)" "$SHIPIT_BIN" init
+  [ "$status" -eq 0 ]
+  [ "${#lines[@]}" -le 30 ]
+  [ ! -e "$HOME/.config" ]
+  [ ! -e "$HOME/.claude" ]
+  [[ $output == *"write this to ~/.config/shipit/machine.md:"* ]]
+  [[ $output == *"add this line to ~/.claude/CLAUDE.md: @~/.config/shipit/machine.md"* ]]
+  [[ $output == *"  Never: \`pip install\`"* ]]
+  [[ $output == *"  Missing here: "* ]]
+  [[ $output != *"home.file"* ]]
+}
+
+@test "non-interactive with nix on PATH: a home-manager snippet" {
+  new_project
+  rm -rf "$HOME/.config" "$HOME/.claude"
+  run env PATH="$(bare_path nix)" "$SHIPIT_BIN" init
+  [ "$status" -eq 0 ]
+  [ "${#lines[@]}" -le 30 ]
+  [[ $output == *$'\nhome.file.".config/shipit/machine.md".text = "# Machine notes'* ]]
+  [[ $output == *'\nNever: `pip install`'* ]]
+  [[ $output == *"add this line to the text of ~/.claude/CLAUDE.md: @~/.config/shipit/machine.md"* ]]
+  [ ! -e "$HOME/.config" ]
+  [ ! -e "$HOME/.claude" ]
+}
+
+@test "the @ line already in CLAUDE.md is not mentioned and the file is not touched" {
+  new_project
+  rm -rf "$HOME/.config"
+  cp "$HOME/.claude/CLAUDE.md" "$BATS_TEST_TMPDIR/claude-before"
+  run env PATH="$(bare_path)" "$SHIPIT_BIN" init --hook-only
+  [ "$status" -eq 0 ]
+  [[ $output == *"write this to ~/.config/shipit/machine.md:"* ]]
+  [[ $output != *"add this line"* ]]
+  cmp "$HOME/.claude/CLAUDE.md" "$BATS_TEST_TMPDIR/claude-before"
+  [ ! -e "$HOME/.config" ]
+}
+
+@test "machine notes and the @ line both there: nothing is said about them" {
+  new_project
+  run "$SHIPIT_BIN" init --hook-only
+  [ "$status" -eq 0 ]
+  [[ $output != *"machine notes"* ]]
+}
+
+@test "a read-only CLAUDE.md: printed, the rest of init still runs" {
+  new_project
+  rm -f "$HOME/.config/shipit/machine.md"
+  printf 'no at line here\n' >"$HOME/.claude/CLAUDE.md"
+  chmod 444 "$HOME/.claude/CLAUDE.md"
+  run env PATH="$(bare_path)" "$SHIPIT_BIN" init --hook-only
+  [ "$status" -eq 0 ]
+  [[ $output == *"add this line to ~/.claude/CLAUDE.md"* ]]
+  [ ! -e "$HOME/.config/shipit/machine.md" ]
 }
 
 @test "--no-hook writes the setup only, whatever the manager" {

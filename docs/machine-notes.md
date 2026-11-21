@@ -24,3 +24,9 @@ recipe: use what the project provides, ask the owner when a tool is still missin
 globally. The built-in list is the global installs of the common package managers.
 
 `shipit doctor` shows the recipe and the list it is using, and says `no machine notes yet` when the file is missing.
+
+`shipit init` offers the file at the end of its run. It asks, and writes only on a yes, when it runs in a
+terminal and the files can be written. Where it cannot ask or cannot write (a read-only home from
+home-manager, a script, CI) it prints what to add instead: a home-manager `home.file` entry when `nix` is
+on the `PATH`, else the file's path and text. It never overwrites a file, and adds the `@` line only when
+no line of `~/.claude/CLAUDE.md` is that line already.

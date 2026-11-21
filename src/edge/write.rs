@@ -67,6 +67,9 @@ fn existing(path: &Path) -> Result<Vec<u8>, Failure> {
 
 // Whatever the file holds is kept; the last line is ended first, so the block starts on its own.
 pub(crate) fn append_block(path: &Path, block: &str) -> Result<(), Failure> {
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).map_err(|_why| cannot_write(path))?;
+    }
     let before = existing(path)?;
     let ended = before.is_empty() || before.ends_with(b"\n");
     let text = if ended {
