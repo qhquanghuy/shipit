@@ -12,6 +12,10 @@ pub(crate) enum Entry {
     Receipt {
         kind: String,
         key: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tree: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        commit: Option<String>,
         result: String,
         findings: u64,
         author: String,
@@ -74,6 +78,8 @@ mod tests {
             let entry = Entry::Receipt {
                 kind: "plan-review".to_owned(),
                 key: key.clone(),
+                tree: None,
+                commit: None,
                 result: "approve".to_owned(),
                 findings: 0,
                 author: "opus:high".to_owned(),

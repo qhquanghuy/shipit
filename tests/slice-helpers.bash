@@ -51,3 +51,16 @@ make_work() {
 rec() {
   run --separate-stderr "$SHIPIT_BIN" receipt "$@"
 }
+
+# check_here: shipit check on the current branch; the test stops when it does not pass.
+check_here() {
+  "$SHIPIT_BIN" check >/dev/null 2>&1 || {
+    "$SHIPIT_BIN" check >&2
+    return 1
+  }
+}
+
+# patch_id_of <rev>: the patch id of the change from main to <rev>, as a plain diff gives it.
+patch_id_of() {
+  git diff --binary --full-index "$(git merge-base main "$1")" "$1" | git patch-id --stable | cut -d' ' -f1
+}

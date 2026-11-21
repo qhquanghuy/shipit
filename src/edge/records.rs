@@ -17,6 +17,7 @@ use crate::pure::goal::GoalName;
 use crate::pure::goal_pick::roadmap_version;
 use crate::pure::messages::{FILE_PROBLEM, NO_BLOCK, NOT_TOML, say};
 use crate::pure::receipt::Oid;
+use crate::pure::review::ReceiptKind;
 use crate::pure::roadmap::{Roadmap, SliceName, parse_roadmap};
 use crate::pure::rules::invalid;
 use crate::pure::setup::toml_table;
@@ -42,11 +43,18 @@ pub(crate) fn build_plan_path(store: &Path, goal: &GoalName, slice: &SliceName) 
         .join("build-plan.md")
 }
 
-pub(crate) fn plan_review_path(store: &Path, key: &Oid) -> PathBuf {
-    store
-        .join("receipts")
-        .join("plan-review")
-        .join(format!("{key}.json"))
+// Reviews of work are keyed by the patch id and kept apart by kind; the others by their own key.
+pub(crate) fn receipt_path(store: &Path, kind: ReceiptKind, key: &Oid) -> PathBuf {
+    let receipts = store.join("receipts");
+    match kind {
+        ReceiptKind::PlanReview | ReceiptKind::TestDrive => {
+            receipts.join(kind.name()).join(format!("{key}.json"))
+        }
+        ReceiptKind::InformedReview | ReceiptKind::SecondOpinion => receipts
+            .join("review")
+            .join(key.to_string())
+            .join(format!("{}.json", kind.name())),
+    }
 }
 
 // The folders of `goals/` that are goal names; a missing store has none.

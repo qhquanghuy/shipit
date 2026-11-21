@@ -158,3 +158,131 @@ PLAN=(--author opus:high --by fable:high --result approve)
   [ ! -e "$(store)/receipts" ]
 }
 
+
+@test "receipt: a second opinion keys the patch id of the checked work" {
+  make_slice_repo
+  make_work slice/demo/beta 2
+  check_here
+  local pid file
+  pid=$(patch_id_of slice/demo/beta)
+  rec second-opinion beta --author sonnet:high --by opus:high --result approve-after-fixes \
+    --finding "issue (blocking, security): a problem" --finding "nitpick: a detail"
+  [ "$status" -eq 0 ]
+  [[ $output == "receipt written: second-opinion for beta (${pid:0:12}), opus:high above sonnet:high by tier" ]]
+  file="$(store)/receipts/review/$pid/second-opinion.json"
+  [ "$(jq -c '[.kind, .key, .slice, .rank, .result, .author_is_maker, .author.tier, .by.tier]' "$file")" = \
+    "[\"second-opinion\",\"$pid\",\"beta\",\"tier\",\"approve-after-fixes\",true,2,3]" ]
+  [ "$(jq -c '.subject' "$file")" = \
+    "{\"branch\":\"slice/demo/beta\",\"commit\":\"$(git rev-parse HEAD)\",\"tree\":\"$(git rev-parse 'HEAD^{tree}')\",\"merge_base\":\"$(git rev-parse main)\"}" ]
+  [ "$(jq -c '[.findings[] | [.id, .class]]' "$file")" = '[["F1","must fix"],["F2","nice to fix"]]' ]
+  [ "$(wc -l <"$(store)/goals/demo/logbook.jsonl")" -eq 1 ]
+  [ "$(jq -r '[.event, .kind, .key, .tree, .commit, .findings] | join(" ")' "$(store)/goals/demo/logbook.jsonl")" = \
+    "receipt second-opinion $pid $(git rev-parse 'HEAD^{tree}') $(git rev-parse HEAD) 2" ]
+}
+
+@test "receipt: the patch id ignores the user's diff config" {
+  make_slice_repo
+  printf 'one\ntwo\nthree\n' >old.txt
+  git add old.txt
+  git commit -q -m "an old file"
+  git checkout -q -b slice/demo/beta
+  git mv old.txt new.txt
+  printf 'four\n' >>new.txt
+  mkdir sub
+  printf 'x\n' >sub/é.txt
+  git add -A
+  git commit -q -m "work"
+  check_here
+  rec second-opinion beta --author sonnet:high --by opus:high --result approve
+  [ "$status" -eq 0 ]
+  git config diff.noprefix true
+  git config diff.algorithm histogram
+  git config diff.renames copies
+  git config diff.external /bin/false
+  git config color.ui always
+  git config diff.relative true
+  git config core.quotePath false
+  git config diff.submodule diff
+  cd sub
+  rec informed-review beta --author sonnet:high --by opus:high --result approve
+  [ "$status" -eq 0 ]
+  [ "$(ls "$(store)/receipts/review" | wc -l)" -eq 1 ]
+  [ "$(ls "$(store)"/receipts/review/*)" = $'informed-review.json\nsecond-opinion.json' ]
+}
+
+@test "receipt: a binary file, then a text change: the key changes" {
+  make_slice_repo
+  make_work slice/demo/beta 1
+  printf '\000\001\002' >bin.dat
+  git add bin.dat
+  git commit -q -m "a binary file"
+  check_here
+  rec second-opinion beta --author sonnet:high --by opus:high --result approve
+  [ "$status" -eq 0 ]
+  printf '\000\001\003' >bin.dat
+  git commit -q -am "another binary content"
+  check_here
+  rec second-opinion beta --author sonnet:high --by opus:high --result approve
+  [ "$status" -eq 0 ]
+  printf 'text\n' >>work1
+  git commit -q -am "a text change"
+  check_here
+  rec second-opinion beta --author sonnet:high --by opus:high --result approve
+  [ "$status" -eq 0 ]
+  [ "$(ls "$(store)/receipts/review" | wc -l)" -eq 3 ]
+}
+
+@test "receipt: no check receipt or no change is refused" {
+  make_slice_repo
+  make_work slice/demo/beta 1
+  rec second-opinion beta --author sonnet:high --by opus:high --result approve
+  [ "$status" -eq 1 ]
+  [ "$stderr" = "shipit: no check receipt for this content: run shipit check on slice/demo/beta" ]
+  git checkout -q main
+  git checkout -q -b slice/demo/gamma
+  git commit -q --allow-empty -m "nothing"
+  check_here
+  rec second-opinion gamma --author sonnet:high --by opus:high --result approve
+  [ "$status" -eq 1 ]
+  [ "$stderr" = "shipit: the slice has no changes against main" ]
+  [ ! -e "$(store)/receipts/review" ]
+}
+
+@test "receipt: a test drive keys the tree and needs a tester above the maker" {
+  make_slice_repo
+  make_work slice/demo/beta 1
+  check_here
+  rec test-drive beta --author sonnet:high --by sonnet:high --result pass
+  [ "$status" -eq 1 ]
+  rec test-drive beta --author sonnet:high --by opus:medium --result pass
+  [ "$status" -eq 0 ]
+  local tree
+  tree=$(git rev-parse 'HEAD^{tree}')
+  [ "$(jq -c '[.kind, .key, .subject.tree, .result]' "$(store)/receipts/test-drive/$tree.json")" = \
+    "[\"test-drive\",\"$tree\",\"$tree\",\"pass\"]" ]
+  rec test-drive alpha --author sonnet:high --by opus:medium --result pass
+  [ "$status" -eq 2 ]
+  [ "$stderr" = 'shipit: slice "alpha" has no test drive in the roadmap' ]
+  rec test-drive beta --author sonnet:high --by opus:medium --result approve
+  [ "$status" -eq 2 ]
+  [ "$stderr" = "shipit: approve is a review result" ]
+}
+
+@test "receipt: --commit keys that commit" {
+  make_slice_repo
+  make_work slice/demo/beta 1
+  local first
+  first=$(git rev-parse HEAD)
+  check_here
+  printf 'more\n' >>work1
+  git commit -q -am "more work"
+  check_here
+  rec second-opinion beta --author sonnet:high --by opus:high --result approve --commit "$first"
+  [ "$status" -eq 0 ]
+  local pid
+  pid=$(patch_id_of "$first")
+  [ "$(jq -r .subject.commit "$(store)/receipts/review/$pid/second-opinion.json")" = "$first" ]
+  rec second-opinion beta --author sonnet:high --by opus:high --result approve --commit nonsense
+  [ "$status" -eq 2 ]
+  [ "$stderr" = "shipit: 'nonsense' is not a commit" ]
+}
