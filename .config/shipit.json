@@ -15,7 +15,8 @@
   "roles": {
     "scout":  {"tier": 1, "retries": 1, "then": {"tier": 2}},
     "maker":  {"tier": 2, "effort": "high"},
-    "tester": {"tier": 3, "effort": "medium"}
+    "tester": {"tier": 3, "effort": "medium"},
+    "reader": {"tier": 1}
   },
   "packs": {"skill": "superpowers", "domain": "coding", "model": "claude"},
   "messages_to_owner": {"max_lines": 30, "status_update_max_lines": 10}

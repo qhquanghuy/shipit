@@ -1,2 +1,4 @@
 notes/
-result
+target/
+proptest-regressions/
+result*

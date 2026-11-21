@@ -22,7 +22,9 @@ add files and never change this layout.
 
 - `<tree>` is the git tree hash (`git rev-parse HEAD^{tree}`): a receipt belongs to the
   content of a commit, not to the commit.
-- Every file is written under a temporary name in its own folder, then moved into place.
+- Every file is written under a temporary name in its own folder, then moved into place with an atomic
+  rename: a reader sees the old file or the whole new one. The data is not synced to disk first, so after a crash or power
+  loss the receipt may be missing or empty: verify then says there is no receipt, and the check is run again.
 - Reading never creates folders.
 - Every receipt is one JSON object with `kind`, `version`, `key`, `time` (UTC, ISO 8601) and
   `tool` (`shipit <version>`).
@@ -30,7 +32,8 @@ add files and never change this layout.
 ## Trust
 
 A receipt proves only that this machine ran the checks. Receipts are trusted locally and nowhere
-else: the store is not shared, and a CI run rechecks the work and trusts none.
+else: the store is not shared, and a CI run rechecks the work and trusts none. A local receipt can be gamed by
+design (`shipit check --base <own branch>` compares the slice with itself, and a slice can name a base branch whose setup names itself; `base_ref` shows which base was used): CI's recheck, with its own `--base`, is the gate.
 
 ## Check receipt
 
@@ -38,11 +41,16 @@ else: the store is not shared, and a CI run rechecks the work and trusts none.
 
 ```json
 {"kind": "check", "version": 1, "key": "<tree hash>", "commit": "<commit hash>",
+ "base_ref": "refs/heads/main", "base_commit": "<commit hash of the base>",
  "size": {"files": 24, "cap": 60}, "commands": ["…"],
  "time": "2026-11-21T10:00:00Z", "tool": "shipit 0.1.0"}
 ```
 
+`base_ref` is the full ref the slice was compared with (`refs/heads/<base>` or `refs/remotes/origin/<base>`) and
+`base_commit` the commit it was at. When the slice changed only the setup file (docs/setup.md), the receipt also has
+`"setup_change": true` and `"setup_fields": ["check"]` (the changed fields, in the order base, cap, check, environment),
+placed after `commands`; `shipit verify` says so. Receipts without a setup change have neither key.
+
 ## In code
 
-`lib/store.sh` has `store_path <relative path>`, which prints the absolute path and creates
-nothing, and `write_json_atomic <path>`, which reads JSON on stdin and writes it as above.
+`src/edge/store.rs` finds the store folder (it creates nothing) and writes each file as above.

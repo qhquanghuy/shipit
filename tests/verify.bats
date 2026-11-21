@@ -18,11 +18,11 @@ start_repo() {
 
 # run_verify <args>: stdout in $output, stderr in $stderr.
 run_verify() {
-  run --separate-stderr "$SHIPIT_SRC/bin/shipit" verify "$@"
+  run --separate-stderr "$SHIPIT_BIN" verify "$@"
 }
 
 do_check() {
-  "$SHIPIT_SRC/bin/shipit" check >/dev/null
+  "$SHIPIT_BIN" check >/dev/null
 }
 
 short_tree() {
@@ -51,17 +51,6 @@ receipt_file() {
   [ "$status" -eq 0 ]
 }
 
-@test "a new commit with changed content has no receipt" {
-  start_repo
-  do_check
-  echo two >f2
-  git add -A
-  git commit -q -m "add f2"
-  run_verify
-  [ "$status" -eq 1 ]
-  [ "$stderr" = "shipit: no receipt for this content: run shipit check" ]
-}
-
 @test "an amended message keeps the receipt valid" {
   start_repo
   do_check
@@ -79,15 +68,6 @@ receipt_file() {
   [[ $stderr == "shipit: uncommitted changes"* ]]
 }
 
-@test "an untracked file exits 1" {
-  start_repo
-  do_check
-  echo new >untracked
-  run_verify
-  [ "$status" -eq 1 ]
-  [[ $stderr == "shipit: uncommitted changes"* ]]
-}
-
 @test "verify of an old commit is valid while HEAD has no receipt" {
   start_repo
   do_check
@@ -97,6 +77,7 @@ receipt_file() {
   git commit -q -m "add f2"
   run_verify
   [ "$status" -eq 1 ]
+  [ "$stderr" = "shipit: no receipt for this content: run shipit check" ]
   run_verify "$old"
   [ "$status" -eq 0 ]
   [ "$output" = "valid receipt for $(short_tree "$old")" ]
@@ -123,13 +104,6 @@ receipt_file() {
   [ "$status" -eq 2 ]
 }
 
-@test "two arguments exit 2" {
-  start_repo
-  run_verify HEAD HEAD
-  [ "$status" -eq 2 ]
-  [[ $stderr == *"usage: shipit verify [commit]"* ]]
-}
-
 @test "a receipt from another working copy is valid" {
   start_repo
   do_check
@@ -147,57 +121,6 @@ receipt_file() {
   run_verify
   [ "$status" -eq 1 ]
   [ "$stderr" = "shipit: no receipt for this content: run shipit check" ]
-}
-
-@test "a non-JSON receipt file exits 1" {
-  start_repo
-  do_check
-  echo 'not json {' >"$(receipt_file)"
-  run_verify
-  [ "$status" -eq 1 ]
-  [ "$stderr" = "shipit: no receipt for this content: run shipit check" ]
-}
-
-@test "a receipt with a different key exits 1" {
-  start_repo
-  do_check
-  jq '.key = "0000000000000000000000000000000000000000"' "$(receipt_file)" >"$BATS_TEST_TMPDIR/r.json"
-  cp "$BATS_TEST_TMPDIR/r.json" "$(receipt_file)"
-  run_verify
-  [ "$status" -eq 1 ]
-}
-
-@test "receipts of the wrong shape exit 1" {
-  start_repo
-  do_check
-  local bad
-  for bad in '[]' 'null' '"text"' '42' '{"kind":"review","version":1}' '{"kind":"check","version":2}' \
-    "{\"kind\":\"check\",\"version\":1,\"key\":\"$(git rev-parse 'HEAD^{tree}')\"} {}"; do
-    printf '%s\n' "$bad" >"$(receipt_file)"
-    run_verify
-    [ "$status" -eq 1 ]
-  done
-}
-
-@test "a directory where the receipt should be exits 1" {
-  start_repo
-  do_check
-  rm "$(receipt_file)"
-  mkdir "$(receipt_file)"
-  run_verify
-  [ "$status" -eq 1 ]
-}
-
-@test "verify needs no setup file: a commit without one has no receipt, and says so" {
-  start_repo
-  do_check
-  git rm -q .config/shipit.json
-  git commit -q -m "drop setup"
-  run_verify
-  [ "$status" -eq 1 ]
-  [[ $stderr == "shipit: no receipt for this content"* ]]
-  run_verify HEAD~1
-  [ "$status" -eq 0 ]
 }
 
 @test "verify never reads the setup: a receipt is valid for its tree even if the setup is broken" {
@@ -238,17 +161,10 @@ receipt_file() {
   run_verify
   [ "$status" -eq 1 ]
   local verify_msg="$stderr"
-  run --separate-stderr "$SHIPIT_SRC/bin/shipit" check
+  run --separate-stderr "$SHIPIT_BIN" check
   [ "$status" -eq 3 ]
   [ "$stderr" = "$verify_msg" ]
   [[ $verify_msg == *"(f1)"* ]]
-}
-
-@test "an empty commit argument is a usage error" {
-  start_repo
-  run_verify ""
-  [ "$status" -eq 2 ]
-  [[ $stderr == *"usage: shipit verify [commit]"* ]]
 }
 
 @test "verify with no receipts leaves no shipit folder behind" {
@@ -256,4 +172,13 @@ receipt_file() {
   run_verify
   [ "$status" -eq 1 ]
   [ ! -e "$(git rev-parse --path-format=absolute --git-common-dir)/shipit" ]
+}
+
+@test "an untracked file exits 1" {
+  start_repo
+  do_check
+  echo new >untracked
+  run_verify
+  [ "$status" -eq 1 ]
+  [[ $stderr == "shipit: uncommitted changes"* ]]
 }

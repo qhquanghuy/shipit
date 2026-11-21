@@ -1,6 +1,6 @@
 # ShipIt: goal
 
-Status: draft, waiting for the owner's approval. Terms are defined in [vocab.md](vocab.md).
+Status: approved by the owner on 2026-11-21; later owner decisions are folded in. Terms are defined in [vocab.md](vocab.md).
 
 ## Goal
 
@@ -16,6 +16,9 @@ goal → roadmap → build plan → make → check → informed review + second 
 
 ### Why
 
+- In agentic coding, agents do most of the work, in parallel. The human keeps three jobs:
+  critical decisions, final verification (agents prepare the evidence, the human has the last
+  word), and code review (wanted, not mandatory). ShipIt keeps those three jobs small and clear.
 - The owner's process worked on one project (firectl) but lived in chat and memory. Each new
   session or project had to be told again.
 - Rules that live only in instructions get skipped. Rules a tool enforces do not.
@@ -46,6 +49,33 @@ functional.
 | Composition | A slice's flow is one function applied to each slice. Slices share no changing state, so slices that touch separate work can run in parallel. |
 | Memoization | A receipt is a cached result keyed by the content of the work. Recheck computes it again to prove the cache honest. |
 
+## Principles per step
+
+| Step | Principle |
+|---|---|
+| goal | The owner's words are the source. Done-when is written before any work and is checkable. Ask only what changes the build. |
+| roadmap | Slices are complete, never broken pieces; each fits the cap and one session. Plan what runs in parallel; parallel slices only add files. Mark which slices need a test drive. |
+| build plan | Say how each part is verified before making. Fix interfaces; leave bodies to the maker. Reviewed by a higher rank first. |
+| make | Cheapest capable model, one task at a time, no review mid-way. Code is written for its reviewer. Use the machine's tools; never install globally. |
+| check | Tools enforce, not prose. Runs once per exact version and leaves a receipt. A slice cannot change its own checks; only a setup-only change (no other files) may. |
+| review | Informed review and second opinion, ranked above the maker; the teach-back reader is a signal. Findings are fixed or written down as known issues. |
+| test drive | Use it as its audience would, from the goal only, never the code. Checklist first, then exploration. |
+| fix rounds | Limited (2 by default). Past the limit, the lead decides and records it. |
+| recheck | Trust no receipt; run everything again where the maker has no control. |
+| ship | Only the owner. Always asked. Shows the evidence and known issues, short. |
+
+## Code is written for the person who reviews it
+
+The human reviewer reads the change, so the code must be simple to read:
+
+- Reuse before adding. No dead code and no duplicate code.
+- Make the simplest change that meets the done-when.
+- Comments only for decisions, not for what the code already says.
+- The pull request leads with the changed types and interfaces.
+
+A **reader** (a low-rank model) explains the change without seeing the build plan. The informed
+reviewer compares that explanation with the goal. It is a signal, not a gate.
+
 ## Talking to the owner
 
 Everything the owner reads must be simple and easy to understand: plain words, short sentences,
@@ -73,7 +103,8 @@ The decision-point template enforces this form: label, What, Context, Recommenda
 
 ### 1. The `shipit` tool
 
-One command, in shell, kept in this repo. Hooks and CI call the same tool.
+One command, a Rust program, kept in this repo. It runs git as a process and needs only git, and
+bash to run the check commands, at run time. Hooks and CI call the same tool.
 
 | Command | What it does |
 |---|---|
@@ -91,7 +122,8 @@ One command, in shell, kept in this repo. Hooks and CI call the same tool.
     rebase that leaves the change identical keeps the review; the check must still run again.
   - A review of a roadmap or a build plan judges a file, so its key is the hash of that file.
     Editing the file after its review loses the receipt.
-- Receipts and the logbook are JSON. The pure logic is written in `jq`; shell does the effects.
+- Receipts and the logbook are JSON. Deciding is a pure core with no input or output; running git,
+  the check commands and writing files are the effects at the edge.
 - A check receipt is written only by `shipit check`. Review and test-drive receipts are records
   made by the lead: they say who claims what about which input. They are honest notes, not
   proof, which is why recheck and the owner come after them.
@@ -165,6 +197,7 @@ the next phase only after it validates.
 | reviewer | review | approve, approve after fixes, rework |
 | tester | test drive | pass, findings |
 | researcher | model advice | ready for the owner |
+| reader | explanation of the change, written without the build plan | understood, unclear |
 
 A scout that returns `partial` or `not found` is asked once more with a narrower question and
 where it already looked. If that is still not enough, the question goes to a scout one tier up,
@@ -233,7 +266,8 @@ The goal is met when all of these are true.
 5. A review receipt from a reviewer who does not rank above the author is refused: same model and
    same effort fails, same model and higher effort passes, and any effort above the setup's cap
    is refused.
-6. The tool's own tests run in temporary git repositories and pass. `shellcheck` is clean.
+6. The tool's own tests run in temporary git repositories and pass. `cargo clippy` reports nothing;
+   every warning is an error.
 
 **Gates**
 
@@ -306,8 +340,8 @@ ShipIt has failed, even if it works, when any of these is true.
 
 | Approach | Trade-off | Decision |
 |---|---|---|
-| Shell, written in a functional style, with `jq` for the pure logic | No build step. Discipline comes from style and tests, not from a type checker. | **Chosen by the owner**: functional thinking does not need static types. |
-| Rust | Types enforce more. Needs a built binary for every install and CI run. | Rejected. |
+| Rust | Types and the compiler enforce more: newtypes, exhaustive matches, no panics, every warning an error. One binary, also as a static Linux build; no jq and no bash version at run time. Needs a build, which Nix does for CI and installs. | **Chosen by the owner** (2026-11-21, after slice check-and-verify was built in shell). |
+| Shell, written in a functional style, with `jq` for the pure logic | No build step. Needs jq and bash 4.4 at run time; macOS ships bash 3.2. No types: discipline comes only from style and tests. | Rejected. It was chosen first, then replaced by Rust: one binary, no runtime dependencies, and types enforce the style. |
 
 ## Decided by the owner
 
@@ -328,7 +362,8 @@ ShipIt has failed, even if it works, when any of these is true.
 
 ## The lead's calls (the owner may overrule)
 
-- The setup file is JSON, not TOML, because `jq` reads it without an extra tool.
+- The setup file is JSON, not TOML: chosen when the tool used `jq`, and kept; receipts and the
+  logbook are JSON too.
 - Receipts and the logbook are JSON files; the logbook is one JSON entry per line.
 - Roadmaps, build plans and logbooks stay out of git history, in one place that every working
   copy of the project shares. Receipts sit beside them.
@@ -343,7 +378,8 @@ ShipIt has failed, even if it works, when any of these is true.
   the same rank. The receipt records which of these applied.
 - Review and test-drive receipts are recorded by the lead through the tool and are treated as
   notes, not proof.
-- The tool is offered as a Nix flake package, so it is on the path for git hooks and people.
+- The tool is offered as a Nix flake package, so it is on the path for git hooks and people; a
+  static Linux binary is built as well.
 - firectl's planned check gate is built here as part of the tool. firectl then only adopts it.
 
 ## Context for the builder
