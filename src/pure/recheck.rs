@@ -122,31 +122,41 @@ pub(crate) struct Report {
     pub(crate) branch: String,
     pub(crate) mode: Mode,
     pub(crate) adopting: bool,
+    // HEAD is the base's own tip: a push to the base. Never decided by a branch name, which a
+    // pull request's author picks.
+    pub(crate) at_base_tip: bool,
     pub(crate) setup: SetupStatus,
     pub(crate) ci: Vec<String>,
 }
 
-fn quoted_list(values: &[String]) -> String {
+fn quoted_list(values: &[String], one: fn(&str) -> String) -> String {
     values
         .iter()
-        .map(|value| json_string(value))
+        .map(|value| one(value))
         .collect::<Vec<_>>()
         .join(", ")
 }
 
-fn setup_text(status: &SetupStatus) -> Option<String> {
+fn setup_text(status: &SetupStatus, one: fn(&str) -> String) -> Option<String> {
     match status {
         SetupStatus::Unchanged => None,
         SetupStatus::Added => Some("added".to_owned()),
         SetupStatus::Removed => Some("removed".to_owned()),
-        SetupStatus::Changed(keys) => Some(format!("changed: {}", quoted_list(keys))),
+        SetupStatus::Changed(keys) => Some(format!("changed: {}", quoted_list(keys, one))),
         SetupStatus::Unreadable => Some("changed (not readable as TOML)".to_owned()),
     }
 }
 
+// A value from git or from the pull request, as the summary shows it: quoted, and with nothing
+// Markdown could turn into a tag, a link or an image.
+fn shown(value: &str) -> String {
+    summary_safe(&json_string(value))
+}
+
+// Each line is its own paragraph: a single line break would run them together on GitHub.
 pub(crate) fn summary(report: &Report, check: Result<(), u8>) -> String {
-    let base = json_string(&report.base);
-    let branch = json_string(&report.branch);
+    let base = shown(&report.base);
+    let branch = shown(&report.branch);
     let mode = match report.mode {
         Mode::Slice => format!(
             "mode: slice (branch {branch}): size cap, setup comparison and coverage map apply"
@@ -167,13 +177,13 @@ pub(crate) fn summary(report: &Report, check: Result<(), u8>) -> String {
             "checks: from this pull request's setup (the base has none)".to_owned()
         }
     };
-    let setup = setup_text(&report.setup).unwrap_or_else(|| "unchanged".to_owned());
+    let setup = setup_text(&report.setup, shown).unwrap_or_else(|| "unchanged".to_owned());
     let ci = if report.ci.is_empty() {
         "unchanged".to_owned()
     } else {
         format!(
             "CHANGED: {} \u{2014} the pull request edits its own CI; read these files in the diff, recheck cannot judge them",
-            quoted_list(&report.ci)
+            quoted_list(&report.ci, shown)
         )
     };
     let verdict = match check {
@@ -188,30 +198,25 @@ pub(crate) fn summary(report: &Report, check: Result<(), u8>) -> String {
         format!("CI job: {ci}"),
         format!("check: {verdict}"),
     ];
-    let mut text = String::new();
-    for line in lines {
-        text.push_str(&summary_safe(&line));
-        text.push('\n');
-    }
-    text
+    format!("{}\n", lines.join("\n\n"))
 }
 
 // The line a failure before the checks leaves in the summary, instead of the report.
 pub(crate) fn stopped(message: &str) -> String {
-    format!("recheck stopped: {}\n", summary_safe(&json_string(message)))
+    format!("recheck stopped: {}\n", shown(message))
 }
 
 const WARNING: &str = "::warning title=ShipIt::";
 
 pub(crate) fn warnings(report: &Report) -> Vec<String> {
     let mut found = Vec::new();
-    if let Some(text) = setup_text(&report.setup) {
+    if let Some(text) = setup_text(&report.setup, json_string) {
         found.push(format!("this pull request changes the setup file: {text}"));
     }
     if !report.ci.is_empty() {
         found.push(format!(
             "this pull request changes the CI job: {}",
-            quoted_list(&report.ci)
+            quoted_list(&report.ci, json_string)
         ));
     }
     if report.adopting {
@@ -220,7 +225,7 @@ pub(crate) fn warnings(report: &Report) -> Vec<String> {
             json_string(&report.base)
         ));
     }
-    if report.mode == Mode::Plain && report.branch != report.base {
+    if report.mode == Mode::Plain && !report.at_base_tip {
         found.push(
             "not a slice/* branch: size cap and setup comparison were not applied".to_owned(),
         );
@@ -237,7 +242,7 @@ mod tests {
 
     use super::*;
 
-    const NASTY: &str = "[a-z<>&`%:!#\n\r/-]{0,12}";
+    const NASTY: &str = "[a-z<>&`%:!#\n\r/.@()\\[\\]-]{0,12}";
 
     fn setup_text_of(version: u8, max_files: u8) -> String {
         format!("version = {version}\n[gate]\nmax_files = {max_files}\n")
@@ -247,26 +252,28 @@ mod tests {
         (
             NASTY,
             NASTY,
-            any::<bool>(),
-            any::<bool>(),
+            (any::<bool>(), any::<bool>(), any::<bool>()),
             proptest::collection::vec(NASTY, 0..3),
             proptest::collection::vec(NASTY, 0..3),
             0_u8..5,
         )
-            .prop_map(|(base, branch, slice, adopting, keys, ci, kind)| Report {
-                base,
-                branch,
-                mode: if slice { Mode::Slice } else { Mode::Plain },
-                adopting,
-                setup: match kind {
-                    0 => SetupStatus::Unchanged,
-                    1 => SetupStatus::Added,
-                    2 => SetupStatus::Removed,
-                    3 => SetupStatus::Changed(keys),
-                    _ => SetupStatus::Unreadable,
+            .prop_map(
+                |(base, branch, (slice, adopting, at_base_tip), keys, ci, kind)| Report {
+                    base,
+                    branch,
+                    mode: if slice { Mode::Slice } else { Mode::Plain },
+                    adopting,
+                    at_base_tip,
+                    setup: match kind {
+                        0 => SetupStatus::Unchanged,
+                        1 => SetupStatus::Added,
+                        2 => SetupStatus::Removed,
+                        3 => SetupStatus::Changed(keys),
+                        _ => SetupStatus::Unreadable,
+                    },
+                    ci,
                 },
-                ci,
-            })
+            )
     }
 
     proptest! {
@@ -391,8 +398,10 @@ mod tests {
         fn no_value_can_start_a_command_or_hide_lines(report in report(), code in 1_u8..4) {
             for check in [Ok(()), Err(code)] {
                 let text = summary(&report, check);
-                let lines: Vec<&str> = text.lines().collect();
+                let lines: Vec<&str> = text.lines().filter(|line| !line.is_empty()).collect();
                 prop_assert_eq!(lines.len(), 6);
+                // a blank line between every two, so that each shows as its own paragraph
+                prop_assert_eq!(text.lines().count(), 11);
                 let prefixes = [
                     vec!["## ShipIt recheck"],
                     vec!["mode: slice (branch ", "mode: plain (branch "],
@@ -403,7 +412,10 @@ mod tests {
                 ];
                 for (line, allowed) in lines.iter().zip(&prefixes) {
                     prop_assert!(allowed.iter().any(|prefix| line.starts_with(prefix)), "{}", line);
-                    prop_assert!(!line.contains(['<', '`']));
+                    // nothing a value says can open a tag, a code span, a link, an image or
+                    // an autolink
+                    prop_assert!(!line.contains(['<', '`', '[', ']', '@']));
+                    prop_assert!(!line.contains("://"));
                 }
             }
             for line in warnings(&report) {
@@ -420,7 +432,8 @@ mod tests {
         ) {
             report.ci = paths;
             let text = summary(&report, Ok(()));
-            prop_assert!(text.lines().nth(4).is_some_and(|line| line.starts_with("CI job: CHANGED: ")));
+            let ci_line = text.lines().filter(|line| !line.is_empty()).nth(4);
+            prop_assert!(ci_line.is_some_and(|line| line.starts_with("CI job: CHANGED: ")));
             let loud = warnings(&report)
                 .iter()
                 .filter(|line| line.contains("changes the CI job: "))
@@ -429,18 +442,19 @@ mod tests {
         }
 
         #[test]
-        fn the_plain_warning_is_given_except_for_the_base_itself(
-            mut report in report(),
-        ) {
-            report.mode = Mode::Plain;
+        fn the_plain_warning_is_given_except_at_the_base_tip(mut report in report()) {
             let plain = |report: &Report| {
                 warnings(report).iter().any(|line| line.contains("not a slice/* branch"))
             };
-            prop_assert_eq!(plain(&report), report.branch != report.base);
+            report.mode = Mode::Plain;
+            // the branch name decides nothing: a fork's `main` is a branch named like the base
             report.branch.clone_from(&report.base);
+            report.at_base_tip = false;
+            prop_assert!(plain(&report));
+            report.at_base_tip = true;
             prop_assert!(!plain(&report));
             report.mode = Mode::Slice;
-            report.branch.push('x');
+            report.at_base_tip = false;
             prop_assert!(!plain(&report));
         }
     }

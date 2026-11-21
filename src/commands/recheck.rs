@@ -89,6 +89,7 @@ fn parse_args(args: &[OsString]) -> Result<Args, Failure> {
 struct Facts {
     merge_base: Oid,
     adopting: bool,
+    at_base_tip: bool,
     setup: SetupStatus,
     ci: Vec<String>,
 }
@@ -109,8 +110,10 @@ fn facts(git: &Git, base: &BranchName) -> Result<Facts, Failure> {
         text_at(git, OsStr::new(HEAD)).as_deref(),
     );
     let ci = ci_paths(&git.changed_names(&merge_base)?);
+    let head = git.commit_of(OsStr::new(HEAD));
     Ok(Facts {
         adopting: !git.file_exists(OsStr::new(&full), SETUP_PATH),
+        at_base_tip: head.is_some() && head == git.commit_of(OsStr::new(&full)),
         merge_base,
         setup,
         ci,
@@ -126,13 +129,13 @@ fn plain(
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> Result<(), Failure> {
+    // The pull request's setup judges nothing here, but a command that needs a setup stops
+    // when there is none or it is broken: deleting the file is not a way to skip the checks.
+    let (_head_setup, head_table) = load_setup_table(git, OsStr::new(HEAD))?;
     let (_base, base_ref, tip) = settle_base(git, base.clone(), true, err)?;
     let (table, label) = match tip {
         Some(flow) => (flow.table().clone(), setup_label(&base_ref.to_string())),
-        None => (
-            load_setup_table(git, OsStr::new(HEAD))?.1,
-            setup_label(HEAD),
-        ),
+        None => (head_table, setup_label(HEAD)),
     };
     let checks =
         plain_checks(&table).map_err(|problems| Failure::usage(invalid(&label, &problems)))?;
@@ -191,6 +194,7 @@ pub(crate) fn run(
         mode: mode(&args.branch),
         branch: args.branch.clone(),
         adopting: facts.adopting,
+        at_base_tip: facts.at_base_tip,
         setup: facts.setup,
         ci: facts.ci,
     };

@@ -100,6 +100,13 @@ doctor_with() {
   grep -qxF 'never: pip install, npm install -g, cargo install' <<<"$output"
 }
 
+@test "a home folder that belongs to someone else: the agent config cannot be created" {
+  cd "$BATS_TEST_TMPDIR"
+  run env HOME=/ "$SHIPIT_BIN" doctor
+  [ "$status" -eq 0 ]
+  grep -qxF 'agent config: ~/.claude/CLAUDE.md missing (cannot be created)' <<<"$output"
+}
+
 @test "an argument: exit 2 with the usage" {
   run --separate-stderr "$SHIPIT_BIN" doctor now
   [ "$status" -eq 2 ]

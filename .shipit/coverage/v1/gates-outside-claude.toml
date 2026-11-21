@@ -4,6 +4,7 @@ DW3 = [
   "a branch whose commit has no setup file passes with the notice",
   "an invalid setup at the pushed commit: exit 2",
   "outside a repository and without a setup, doctor exits 0 and says so",
+  "plain mode: no setup file at HEAD: exit 2",
 ]
 DW8 = [
   "end to end: a slice push is blocked without a receipt and passes after check",
@@ -18,5 +19,6 @@ DW10 = [
   "mode_is_slice_exactly_for_the_slice_prefix",
   "61 files on fix/x: plain mode runs the checks and passes",
   "plain mode: a failing setup check fails the run",
+  "a pull request from a branch named like the base still gets the plain warning",
   "a_changed_ci_job_is_loud",
 ]

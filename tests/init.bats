@@ -320,11 +320,11 @@ refuses() {
 }
 
 @test "a hook with exit 0 at its end: printed" {
-  refuses exit $'#!/bin/sh\necho x\nexit 0' "a line starts with exit or exec, so a line after it never runs"
+  refuses exit $'#!/bin/sh\necho x\nexit 0' "it has exit or exec, so a line after it may never run"
 }
 
 @test "a hook with exec: printed" {
-  refuses exec $'#!/bin/sh\nexec other-tool "$@"' "a line starts with exit or exec, so a line after it never runs"
+  refuses exec $'#!/bin/sh\nexec other-tool "$@"' "it has exit or exec, so a line after it may never run"
 }
 
 @test "a git lfs hook: printed" {
@@ -333,6 +333,37 @@ refuses() {
 
 @test "a hook that reads stdin: printed" {
   refuses stdin $'#!/bin/sh\nwhile read a b c d; do echo "$a"; done' "it uses git lfs or reads git's input, which ShipIt's line needs too"
+}
+
+@test "a hook with exit in the middle of a line: printed" {
+  refuses mid $'#!/bin/sh\nnpm test; exit 0' "it has exit or exec, so a line after it may never run"
+}
+
+@test "a hook that drains its input with head: printed" {
+  refuses head $'#!/bin/sh\nhead -c 10000 >/dev/null' "it uses git lfs or reads git's input, which ShipIt's line needs too"
+}
+
+@test "a hook that is not executable: printed, git would skip it" {
+  new_project
+  foreign_hook $'#!/bin/sh\necho foreign'
+  chmod -x "$(hook_file)"
+  cp "$(hook_file)" "$BATS_TEST_TMPDIR/before"
+  run "$SHIPIT_BIN" init --hook-only
+  [ "$status" -eq 0 ]
+  [[ $output == "not added to $(hook_file) (it is not executable, so git would skip it); add this line yourself, before anything reads git's input: $GUARDED" ]]
+  cmp "$(hook_file)" "$BATS_TEST_TMPDIR/before"
+}
+
+@test "a hook that is not text: the setup is still written, the hook is printed, exit 0" {
+  new_project
+  printf '\xff\xfe' >"$(hook_file)"
+  chmod +x "$(hook_file)"
+  cp "$(hook_file)" "$BATS_TEST_TMPDIR/before"
+  run "$SHIPIT_BIN" init
+  [ "$status" -eq 0 ]
+  [[ $output == *"(it cannot be read as text, so ShipIt cannot tell what it does)"* ]]
+  [ -f .config/shipit.toml ]
+  cmp "$(hook_file)" "$BATS_TEST_TMPDIR/before"
 }
 
 # sums: a checksum of every file of the working tree except .git, one per line.
@@ -448,6 +479,20 @@ same_except() {
   [[ ${lines[0]} == "not added to lefthook-local.yml (lefthook-local.yml already has a pre-push entry); add it yourself:" ]]
   [[ $output == *"  # only one command receives git's input when several use use_stdin"* ]]
   same_except
+}
+
+@test "lefthook with the pre-push key spelled another way in the local file: printed, never a second key" {
+  local spelling
+  new_project
+  printf 'pre-commit:\n  commands: {}\n' >lefthook.yml
+  for spelling in 'pre-push: # mine' '"pre-push":' "'pre-push':" 'pre-push: {commands: {}}'; do
+    printf '%s\n' "$spelling" >lefthook-local.yml
+    before=$(sums)
+    run "$SHIPIT_BIN" init --hook-only
+    [ "$status" -eq 0 ]
+    [[ ${lines[0]} == "not added to lefthook-local.yml (lefthook-local.yml already has a pre-push entry); add it yourself:" ]]
+    same_except
+  done
 }
 
 @test "lefthook-local.yml without pre-push: the entry is appended" {

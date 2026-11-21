@@ -8,7 +8,7 @@ use crate::edge::files::read_text;
 use crate::edge::git::Git;
 use crate::edge::home::{home, machine_notes, machine_notes_path};
 use crate::edge::machine::probe;
-use crate::edge::projectfiles::{config_names, inside_project};
+use crate::edge::projectfiles::{config_names, inside_project, is_executable, path_exists};
 use crate::edge::terminal::{interactive, read_answer};
 use crate::edge::write::{append_block, append_line, writability, write_new};
 use crate::pure::base::BranchName;
@@ -170,13 +170,24 @@ fn git_succeeds(git: &Git, args: &[&str]) -> bool {
     git.output(&args).is_ok()
 }
 
+// A file that is there and cannot be read is not a missing one: nothing is planned to replace it.
+// A hook git runs directly needs its executable bit (`must_run`).
+fn read_hook(path: &Path, must_run: bool) -> HookFile {
+    match read_text(path) {
+        Ok(text) if must_run && !is_executable(path) => HookFile::NotExecutable(text),
+        Ok(text) => HookFile::Present(text),
+        Err(_why) if path_exists(path) => HookFile::Unreadable,
+        Err(_why) => HookFile::Missing,
+    }
+}
+
 fn hook_facts<'a>(git: &Git, roots: &[&Path], file: &'a str) -> HookFacts<'a> {
     let path = Path::new(file);
     HookFacts {
         file,
         inside_project: inside_project(path, roots),
         tracked: git_succeeds(git, &["ls-files", "--error-unmatch", "--", file]),
-        hook: read_text(path).map_or(HookFile::Missing, HookFile::Present),
+        hook: read_hook(path, true),
     }
 }
 
@@ -207,8 +218,7 @@ fn plan_hook(git: &Git) -> Result<(Manager, HookStep), Failure> {
         .iter()
         .filter(|name| is_lefthook_local(name))
         .map(|name| {
-            let hook =
-                read_text(&git.top().join(name)).map_or(HookFile::Missing, HookFile::Present);
+            let hook = read_hook(&git.top().join(name), false);
             (name.clone(), hook)
         })
         .collect();
@@ -375,7 +385,7 @@ pub(crate) fn run(
     }
     let setup_path = git.top().join(SETUP_PATH);
     let facts = InitFacts {
-        setup_exists: read_text(&setup_path).is_ok(),
+        setup_exists: path_exists(&setup_path),
     };
     let steps = init_plan(&facts, init.mode)?;
     let born = git.commit_of(OsStr::new(HEAD)).is_some();

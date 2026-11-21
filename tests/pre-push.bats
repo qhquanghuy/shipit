@@ -92,6 +92,8 @@ hook() {
   cd "$repo"
   hook "(delete) $ZEROS refs/heads/slice/x $(git rev-parse HEAD)"
   [ "$status" -eq 0 ]
+  [ "$output" = "" ]
+  [ "$stderr" = "" ]
 }
 
 @test "a branch whose commit has no setup file passes with the notice" {

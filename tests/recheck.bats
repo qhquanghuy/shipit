@@ -29,6 +29,11 @@ run_recheck() {
   run --separate-stderr "$SHIPIT_BIN" recheck --base main --branch "$1" --summary "$SUMMARY"
 }
 
+# nth <n>: the nth line of the report that is not blank.
+nth() {
+  grep . "$SUMMARY" | sed -n "${1}p"
+}
+
 last_line() {
   tail -n 1 "$1"
 }
@@ -48,7 +53,8 @@ last_line() {
   [[ $output == *"size: 61 files (cap 60)"* ]]
   [[ $stderr == *"too big: 61 files (cap 60)"* ]]
   [ "$(last_line "$SUMMARY")" = "check: failed (exit 1)" ]
-  [ "$(wc -l <"$SUMMARY")" -eq 6 ]
+  [ "$(grep -c . "$SUMMARY")" -eq 6 ]
+  [ "$(wc -l <"$SUMMARY")" -eq 11 ]
 }
 
 @test "a slice branch that passes: summary says mode slice and check: passed" {
@@ -57,8 +63,8 @@ last_line() {
   files 2
   run_recheck slice/x
   [ "$status" -eq 0 ]
-  [ "$(sed -n 2p "$SUMMARY")" = 'mode: slice (branch "slice/x"): size cap, setup comparison and coverage map apply' ]
-  [ "$(sed -n 3p "$SUMMARY")" = 'gate (max_files and check): from the base branch "main"' ]
+  [ "$(nth 2)" = 'mode: slice (branch "slice/x"): size cap, setup comparison and coverage map apply' ]
+  [ "$(nth 3)" = 'gate (max_files and check): from the base branch "main"' ]
   [ "$(last_line "$SUMMARY")" = "check: passed" ]
   [[ $output != *"not a slice/* branch"* ]]
 }
@@ -72,8 +78,8 @@ last_line() {
   [[ $output == *"check: echo ran-the-check"* ]]
   [[ $output == *"$PLAIN_WARNING"* ]]
   [[ $output != *"size:"* ]]
-  [ "$(sed -n 2p "$SUMMARY")" = 'mode: plain (branch "fix/x" is not slice/*): only the base'"'"'s check commands ran' ]
-  [ "$(sed -n 3p "$SUMMARY")" = 'checks: from the base branch "main"' ]
+  [ "$(nth 2)" = 'mode: plain (branch "fix/x" is not slice/*): only the base'"'"'s check commands ran' ]
+  [ "$(nth 3)" = 'checks: from the base branch "main"' ]
   [ "$(last_line "$SUMMARY")" = "check: passed" ]
 }
 
@@ -101,7 +107,53 @@ last_line() {
   run --separate-stderr "$SHIPIT_BIN" recheck --base main --branch main --summary "$SUMMARY"
   [ "$status" -eq 0 ]
   [[ $output != *"$PLAIN_WARNING"* ]]
-  [ "$(sed -n 2p "$SUMMARY" | cut -c1-24)" = 'mode: plain (branch "mai' ]
+  [ "$(nth 2 | cut -c1-24)" = 'mode: plain (branch "mai' ]
+}
+
+@test "a pull request from a branch named like the base still gets the plain warning" {
+  start_repo
+  git checkout -q -b fix/x
+  files 1
+  run_recheck main
+  [ "$status" -eq 0 ]
+  [[ $output == *"$PLAIN_WARNING"* ]]
+}
+
+@test "plain mode: no setup file at HEAD: exit 2" {
+  start_repo
+  git checkout -q -b fix/x
+  git rm -q .config/shipit.toml
+  git commit -q -m "drop the setup"
+  run_recheck fix/x
+  [ "$status" -eq 2 ]
+  [[ $stderr == *"no setup file at .config/shipit.toml"* ]]
+  [ "$(last_line "$SUMMARY")" = "check: failed (exit 2)" ]
+}
+
+@test "plain mode: a broken setup at HEAD: exit 2, though the base's own is fine" {
+  start_repo
+  git checkout -q -b fix/x
+  printf 'version = 1\n' >.config/shipit.toml
+  git commit -q -am "break the setup"
+  run_recheck fix/x
+  [ "$status" -eq 2 ]
+  [[ $stderr == *" is invalid:"* ]]
+}
+
+@test "a workflow file name that looks like a link is not one in the summary" {
+  start_repo
+  git checkout -q -b fix/x
+  mkdir -p '.github/workflows/[a](https:/www.evil.example)'
+  echo "on: push" >'.github/workflows/[a](https:/www.evil.example)/x@y.yml'
+  git add -A
+  git commit -q -m "a workflow"
+  run_recheck fix/x
+  [ "$status" -eq 0 ]
+  ! grep -qF '[' "$SUMMARY"
+  ! grep -qF '](' "$SUMMARY"
+  ! grep -qF '://' "$SUMMARY"
+  ! grep -qF '@' "$SUMMARY"
+  grep -q '^CI job: CHANGED: ' "$SUMMARY"
 }
 
 @test "a changed setup key and a new workflow are reported, with one warning each" {
@@ -146,7 +198,7 @@ last_line() {
   git commit -q -m "adopt ShipIt"
   run_recheck slice/adopt
   [ "$status" -eq 0 ]
-  [ "$(sed -n 3p "$SUMMARY")" = 'adopting: "main" has no setup file, so this pull request may change the setup file only' ]
+  [ "$(nth 3)" = 'adopting: "main" has no setup file, so this pull request may change the setup file only' ]
   grep -qxF 'setup file: added' "$SUMMARY"
   [[ $output == *'::warning title=ShipIt::this pull request adopts ShipIt: "main" has no setup file'* ]]
 }

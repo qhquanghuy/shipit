@@ -102,11 +102,25 @@ pub(crate) fn writability(path: &Path) -> Writability {
             Writability::ReadOnly
         };
     }
+    // The mode bits alone say a folder owned by someone else is writable; only the system knows,
+    // so a file is made in the nearest folder that exists, and taken away at once.
     let creatable = path
         .ancestors()
         .skip(1)
-        .find_map(|dir| fs::metadata(dir).ok())
-        .is_some_and(|meta| meta.is_dir() && !meta.permissions().readonly());
+        .find(|part| fs::metadata(part).is_ok())
+        .filter(|dir| fs::metadata(dir).is_ok_and(|meta| meta.is_dir()))
+        .is_some_and(|dir| {
+            let probe = dir.join(format!(".shipit-write-probe-{}", std::process::id()));
+            let made = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&probe)
+                .is_ok();
+            if made {
+                fs::remove_file(&probe).ok();
+            }
+            made
+        });
     if creatable {
         Writability::CanCreate
     } else {
@@ -250,6 +264,12 @@ mod tests {
             writability(&file.join("under-a-file")),
             Writability::CannotCreate
         );
+        // a folder that is open for everyone to read but belongs to someone else (a HOME of /)
+        assert_eq!(
+            writability(Path::new("/shipit-no-such-folder/x")),
+            Writability::CannotCreate
+        );
+        assert_eq!(fs::read_dir(&dir).map(Iterator::count).ok(), Some(2));
         let locked = dir.join("locked");
         fs::create_dir(&locked).expect("a folder");
         mode(&locked, 0o555);

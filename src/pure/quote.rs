@@ -4,12 +4,18 @@ pub(crate) fn json_string(text: &str) -> String {
     serde_json::to_string(text).unwrap_or_else(|_why| String::from("\"\""))
 }
 
-// In the job summary Markdown must not open a comment, a tag or a code span.
+// In the job summary Markdown must not open a comment, a tag, a code span, a link or an image,
+// and a bare address must not turn into a link by itself (`://`, `www.`, an email's `@`).
 pub(crate) fn summary_safe(text: &str) -> String {
     text.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('`', "&#96;")
+        .replace('[', "&#91;")
+        .replace(']', "&#93;")
+        .replace('@', "&#64;")
+        .replace("://", "&#58;//")
+        .replace("www.", "www&#46;")
 }
 
 // A `::warning` line ends at a line break, and `%` starts the escapes of the runner.
@@ -39,10 +45,16 @@ mod tests {
         }
 
         #[test]
-        fn a_safe_summary_has_no_raw_markup_and_reads_back(text in "[a-z<>&`;#%\r\n:!-]{0,30}") {
+        fn a_safe_summary_has_no_raw_markup_and_reads_back(text in "[a-zw<>&`;#%\r\n:!/.@()\\[\\]-]{0,30}") {
             let safe = summary_safe(&text);
-            prop_assert!(!safe.contains(['<', '>', '`']));
+            prop_assert!(!safe.contains(['<', '>', '`', '[', ']', '@']));
+            prop_assert!(!safe.contains("://") && !safe.contains("www."));
             let back = safe
+                .replace("www&#46;", "www.")
+                .replace("&#58;//", "://")
+                .replace("&#64;", "@")
+                .replace("&#93;", "]")
+                .replace("&#91;", "[")
                 .replace("&#96;", "`")
                 .replace("&gt;", ">")
                 .replace("&lt;", "<")

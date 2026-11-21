@@ -107,8 +107,9 @@ Needs git 2.39 or newer. Adoption is one command and two small pull requests.
    In a new clone, `shipit init --hook-only` adds the hook again.
 
 **The hook.** `shipit pre-push` asks for a check receipt only on a `slice/*` branch, that is `slice/<goal>/<slice>` (any name
-starting `slice/` counts). Every other branch, tag and delete passes, with a notice such as
-`shipit: <branch> is not a slice/* branch; not checked`. A commit with no setup file passes too, with a notice.
+starting `slice/` counts). Every other branch passes with a notice such as
+`shipit: <branch> is not a slice/* branch; not checked`, and a commit with no setup file passes with a notice too.
+A tag or a delete passes silently: it prints nothing.
 
 **Mixed teams.** The hook line `if command -v shipit >/dev/null 2>&1; then exec shipit pre-push "$@"; fi` does nothing
 where ShipIt is not installed, so a teammate without it pushes as before. `shipit init` adds it to a plain `.git/hooks/pre-push`,

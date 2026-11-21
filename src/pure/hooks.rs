@@ -7,15 +7,21 @@ pub(crate) const GUARDED_LINE: &str =
 
 pub(crate) const ALREADY_INSTALLED: &str = "pre-push hook: already installed";
 
+// A file that is there but cannot be read as text is its own case, so that no write is planned
+// for it: every refusal is decided before the first file is written.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum HookFile {
     Missing,
     Present(String),
+    NotExecutable(String),
+    Unreadable,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Unsafe {
     OutsideProject,
+    Unreadable,
+    NotExecutable,
     NotShell,
     EndsEarly,
     ReadsInput,
@@ -25,8 +31,10 @@ impl Unsafe {
     pub(crate) const fn reason(self) -> &'static str {
         match self {
             Self::OutsideProject => "it is outside this project",
+            Self::Unreadable => "it cannot be read as text, so ShipIt cannot tell what it does",
+            Self::NotExecutable => "it is not executable, so git would skip it",
             Self::NotShell => "it is not a sh or bash script",
-            Self::EndsEarly => "a line starts with exit or exec, so a line after it never runs",
+            Self::EndsEarly => "it has exit or exec, so a line after it may never run",
             Self::ReadsInput => {
                 "it uses git lfs or reads git's input, which ShipIt's line needs too"
             }
@@ -79,34 +87,42 @@ fn is_comment(line: &str) -> bool {
     line.trim_start().starts_with('#')
 }
 
-fn ends_early(line: &str) -> bool {
-    let line = line.trim_start();
-    ["exit", "exec"].iter().any(|word| {
-        line.strip_prefix(word)
-            .is_some_and(|rest| !rest.starts_with(|c: char| c.is_alphanumeric() || c == '_'))
-    })
+// The words of a line, split at anything that is not part of a name.
+fn has_word(line: &str, words: &[&str]) -> bool {
+    line.split(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .any(|token| words.contains(&token))
 }
 
+// A word anywhere, not only at the start of a line: `npm test; exit 0` ends the hook as well.
+fn ends_early(line: &str) -> bool {
+    !is_comment(line) && has_word(line, &["exit", "exec"])
+}
+
+// Whatever may drain git's input before ShipIt's line gets it; over-refusing only prints.
+const READERS: [&str; 10] = [
+    "read", "cat", "head", "tail", "grep", "sed", "awk", "while", "xargs", "lfs",
+];
+
 fn reads_input(line: &str) -> bool {
-    if is_comment(line) {
-        return false;
-    }
-    let word = |text: &str| {
-        line.split(|c: char| !(c.is_alphanumeric() || c == '_'))
-            .any(|token| token == text)
-    };
-    word("lfs")
-        || word("read")
-        || word("cat")
-        || line.contains("<&0")
-        || line.split_whitespace().any(|token| token == "-")
+    !is_comment(line)
+        && (has_word(line, &READERS)
+            || line.contains("<&0")
+            || line.split_whitespace().any(|token| token == "-"))
 }
 
 // In this order; the first that holds is the reason. A husky file may have no shebang, because
-// husky runs its hooks with sh.
-pub(crate) fn append_safety(inside_project: bool, husky: bool, text: &str) -> Result<(), Unsafe> {
+// husky runs its hooks with sh, and needs no executable bit for the same reason.
+pub(crate) fn append_safety(
+    inside_project: bool,
+    husky: bool,
+    executable: bool,
+    text: &str,
+) -> Result<(), Unsafe> {
     if !inside_project {
         return Err(Unsafe::OutsideProject);
+    }
+    if !executable && !husky {
+        return Err(Unsafe::NotExecutable);
     }
     let first = text.lines().next().unwrap_or_default();
     let shell = if first.starts_with("#!") {
@@ -127,7 +143,8 @@ pub(crate) fn append_safety(inside_project: bool, husky: bool, text: &str) -> Re
 }
 
 pub(crate) fn already_installed(text: &str) -> bool {
-    text.lines().any(|line| line.contains("shipit pre-push"))
+    text.lines()
+        .any(|line| !is_comment(line) && line.contains("shipit pre-push"))
 }
 
 pub(crate) fn plain_hook_plan(
@@ -148,16 +165,20 @@ pub(crate) fn plain_hook_plan(
             text: new_hook.to_owned(),
         },
         HookFile::Missing => print(Unsafe::OutsideProject),
-        HookFile::Present(text) if already_installed(text) => {
-            HookStep::Nothing(ALREADY_INSTALLED.to_owned())
+        HookFile::Unreadable => print(Unsafe::Unreadable),
+        HookFile::Present(text) | HookFile::NotExecutable(text) => {
+            let executable = matches!(hook, HookFile::Present(_));
+            if (executable || husky) && already_installed(text) {
+                return HookStep::Nothing(ALREADY_INSTALLED.to_owned());
+            }
+            match append_safety(inside_project, husky, executable, text) {
+                Ok(()) => HookStep::Append {
+                    path: path.to_owned(),
+                    line: GUARDED_LINE.to_owned(),
+                },
+                Err(reason) => print(reason),
+            }
         }
-        HookFile::Present(text) => match append_safety(inside_project, husky, text) {
-            Ok(()) => HookStep::Append {
-                path: path.to_owned(),
-                line: GUARDED_LINE.to_owned(),
-            },
-            Err(reason) => print(reason),
-        },
     }
 }
 
@@ -214,9 +235,16 @@ pub(crate) fn is_lefthook_local(name: &str) -> bool {
     name.starts_with("lefthook-local.") || name.starts_with(".lefthook-local.")
 }
 
-// A line that is exactly `pre-push:`, at column 0.
+// A top-level `pre-push` key in any spelling: bare or quoted, with a comment or a flow mapping
+// after the colon. A second one would make lefthook refuse the whole file.
 pub(crate) fn has_pre_push_key(text: &str) -> bool {
-    text.lines().any(|line| line.trim_end() == "pre-push:")
+    text.lines().any(|line| {
+        let key = line
+            .strip_prefix("pre-push")
+            .or_else(|| line.strip_prefix("\"pre-push\""))
+            .or_else(|| line.strip_prefix("'pre-push'"));
+        key.is_some_and(|rest| rest.trim_start().starts_with(':'))
+    })
 }
 
 // The first entry of a list, as `manager` finds them, in this order of strength.
@@ -350,13 +378,14 @@ fn lefthook_plan(
             path: name.clone(),
             text: texts.lefthook.to_owned(),
         },
-        HookFile::Present(text) if already_installed(text) => {
+        HookFile::Unreadable => print(name, "it cannot be read as text"),
+        HookFile::Present(text) | HookFile::NotExecutable(text) if already_installed(text) => {
             HookStep::Nothing(ALREADY_INSTALLED.to_owned())
         }
-        HookFile::Present(text) if has_pre_push_key(text) => {
+        HookFile::Present(text) | HookFile::NotExecutable(text) if has_pre_push_key(text) => {
             print(name, &format!("{name} already has a pre-push entry"))
         }
-        HookFile::Present(_) => HookStep::Append {
+        HookFile::Present(_) | HookFile::NotExecutable(_) => HookStep::Append {
             path: name.clone(),
             line: texts.lefthook.to_owned(),
         },
@@ -437,6 +466,14 @@ mod tests {
         prop_oneof![
             word().prop_map(|w| (Unsafe::EndsEarly, format!("exit {w}"))),
             word().prop_map(|w| (Unsafe::EndsEarly, format!("  exec {w}"))),
+            word().prop_map(|w| (Unsafe::EndsEarly, format!("npm {w}; exit 0"))),
+            word().prop_map(|w| (Unsafe::EndsEarly, format!("[ -n \"${w}\" ] && exit 0"))),
+            word().prop_map(|w| (Unsafe::ReadsInput, format!("head -c 10 {w}"))),
+            word().prop_map(|w| (Unsafe::ReadsInput, format!("{w} | grep -q x"))),
+            word().prop_map(|w| (Unsafe::ReadsInput, format!("tail {w}"))),
+            word().prop_map(|w| (Unsafe::ReadsInput, format!("{w} | sed s/a/b/"))),
+            word().prop_map(|w| (Unsafe::ReadsInput, format!("{w} | awk 1"))),
+            word().prop_map(|w| (Unsafe::ReadsInput, format!("{w} | xargs echo"))),
             word().prop_map(|w| (Unsafe::ReadsInput, format!("git lfs pre-push {w}"))),
             word().prop_map(|w| (Unsafe::ReadsInput, format!("while read {w}; do :; done"))),
             word().prop_map(|w| (Unsafe::ReadsInput, format!("cat | {w}"))),
@@ -461,27 +498,32 @@ mod tests {
             comment in "[a-z ]{0,8}",
         ) {
             let script = format!("{shebang}\n# {comment}\necho hi\n");
-            prop_assert_eq!(append_safety(true, false, &script), Ok(()));
+            prop_assert_eq!(append_safety(true, false, true, &script), Ok(()));
             let with = format!("{script}{line}\n");
-            prop_assert_eq!(append_safety(true, false, &with), Err(reason));
+            prop_assert_eq!(append_safety(true, false, true, &with), Err(reason));
             // a comment never counts
             let commented = format!("{script}# {line}\n");
-            prop_assert_eq!(append_safety(true, false, &commented), Ok(()));
+            prop_assert_eq!(append_safety(true, false, true, &commented), Ok(()));
             // the reasons are tried in the order: project, shell, ends early, input
-            prop_assert_eq!(append_safety(false, false, &with), Err(Unsafe::OutsideProject));
+            prop_assert_eq!(append_safety(false, false, true, &with), Err(Unsafe::OutsideProject));
             let python = with.replacen(shebang, "#!/usr/bin/python3", 1);
-            prop_assert_eq!(append_safety(true, false, &python), Err(Unsafe::NotShell));
+            prop_assert_eq!(append_safety(true, false, true, &python), Err(Unsafe::NotShell));
             let both = format!("{script}git lfs pre-push\nexit 0\n");
-            prop_assert_eq!(append_safety(true, false, &both), Err(Unsafe::EndsEarly));
+            prop_assert_eq!(append_safety(true, false, true, &both), Err(Unsafe::EndsEarly));
+            // a hook git would skip is refused before anything is said about its text, and a
+            // husky file needs no executable bit
+            prop_assert_eq!(append_safety(true, false, false, &script), Err(Unsafe::NotExecutable));
+            prop_assert_eq!(append_safety(true, true, false, &script), Ok(()));
+            prop_assert_eq!(append_safety(false, false, false, &script), Err(Unsafe::OutsideProject));
         }
 
         #[test]
         fn a_husky_file_without_a_shebang_is_sh(body in "[a-z ]{0,10}") {
             let text = format!("echo {body}\n");
-            prop_assert_eq!(append_safety(true, true, &text), Ok(()));
-            prop_assert_eq!(append_safety(true, false, &text), Err(Unsafe::NotShell));
+            prop_assert_eq!(append_safety(true, true, true, &text), Ok(()));
+            prop_assert_eq!(append_safety(true, false, true, &text), Err(Unsafe::NotShell));
             let python = format!("#!/usr/bin/python3\n{text}");
-            prop_assert_eq!(append_safety(true, true, &python), Err(Unsafe::NotShell));
+            prop_assert_eq!(append_safety(true, true, true, &python), Err(Unsafe::NotShell));
         }
     }
 
@@ -496,6 +538,14 @@ mod tests {
     fn hook_file() -> impl Strategy<Value = HookFile> {
         prop_oneof![
             Just(HookFile::Missing),
+            Just(HookFile::Unreadable),
+            Just(HookFile::NotExecutable(SAFE.to_owned())),
+            Just(HookFile::Present(
+                "#!/bin/sh\nnpm test; exit 0\n".to_owned()
+            )),
+            Just(HookFile::Present(
+                "#!/bin/sh\nhead -c 10 >/dev/null\n".to_owned()
+            )),
             Just(HookFile::Present(SAFE.to_owned())),
             Just(HookFile::Present("#!/usr/bin/python3\n".to_owned())),
             Just(HookFile::Present("#!/bin/sh\nexit 0\n".to_owned())),
@@ -552,10 +602,11 @@ mod tests {
     fn applied(manager: &Manager, step: &HookStep) -> Manager {
         let after = |hook: &HookFile| match (step, hook) {
             (HookStep::Write { text, .. }, _) => HookFile::Present(text.clone()),
-            (HookStep::Append { line, .. }, HookFile::Present(old)) => {
-                HookFile::Present(format!("{old}\n{line}\n"))
-            }
-            (HookStep::Append { .. }, HookFile::Missing)
+            (
+                HookStep::Append { line, .. },
+                HookFile::Present(old) | HookFile::NotExecutable(old),
+            ) => HookFile::Present(format!("{old}\n{line}\n")),
+            (HookStep::Append { .. }, HookFile::Missing | HookFile::Unreadable)
             | (HookStep::Print { .. } | HookStep::Nothing(_), _) => hook.clone(),
         };
         match manager.clone() {
@@ -597,14 +648,20 @@ mod tests {
         }
     }
 
+    // Some(true) for a file that is not there, Some(false) for one that is, None for a file
+    // that is there and cannot be read (and for no file at all): nothing may be planned for it.
     fn missing_file(manager: &Manager) -> Option<bool> {
+        let state = |hook: &HookFile| match hook {
+            HookFile::Missing => Some(true),
+            HookFile::Present(_) | HookFile::NotExecutable(_) => Some(false),
+            HookFile::Unreadable => None,
+        };
         match manager {
-            Manager::HooksPath { hook, .. } | Manager::Plain { hook, .. } => {
-                Some(*hook == HookFile::Missing)
+            Manager::HooksPath { hook, .. } | Manager::Plain { hook, .. } => state(hook),
+            Manager::Lefthook { local, .. } => {
+                let (_name, hook) = local.as_ref()?;
+                state(hook)
             }
-            Manager::Lefthook { local, .. } => local
-                .as_ref()
-                .map(|(_name, hook)| *hook == HookFile::Missing),
             Manager::PreCommit => None,
         }
     }
@@ -750,6 +807,17 @@ mod tests {
             let key_indented = format!("  pre-push:\n{before}{after}x\n");
             prop_assert!(has_pre_push_key("pre-push:\n  commands:\n"));
             prop_assert!(has_pre_push_key(&key_at_column_zero));
+            // every spelling of the same key: a comment, quotes, a flow mapping
+            for spelled in [
+                "pre-push: # mine\n  commands: {}\n",
+                "\"pre-push\":\n  commands: {}\n",
+                "'pre-push':\n  commands: {}\n",
+                "pre-push: {commands: {}}\n",
+                "pre-push :\n",
+            ] {
+                let text = format!("{before}\n{spelled}{after}");
+                prop_assert!(has_pre_push_key(&text));
+            }
             prop_assert!(!has_pre_push_key(&key_indented));
             prop_assert!(!has_pre_push_key("# pre-push:\npre-push-other:\n"));
         }
@@ -771,6 +839,7 @@ mod tests {
             r#"if command -v shipit >/dev/null 2>&1; then exec shipit pre-push "$@"; fi"#
         );
         assert!(already_installed(GUARDED_LINE));
+        assert!(!already_installed("# TODO: shipit pre-push\n"));
         assert!(new_hook().ends_with(&format!("{GUARDED_LINE}\n")));
     }
 }

@@ -4,6 +4,7 @@
 )]
 
 use std::fs;
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::Path;
 
 // The names of the files at the top of the project, and those under `.config/` written as
@@ -25,6 +26,16 @@ pub(crate) fn config_names(top: &Path) -> Vec<String> {
     let mut all = names(top, "");
     all.extend(names(&top.join(".config"), ".config/"));
     all
+}
+
+// A link counts as there, even a broken one: a file is never made over it.
+pub(crate) fn path_exists(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok()
+}
+
+// What git needs to run a hook; a link is judged by what it leads to.
+pub(crate) fn is_executable(path: &Path) -> bool {
+    fs::metadata(path).is_ok_and(|meta| meta.permissions().mode() & 0o111 != 0)
 }
 
 // Whether the real place of `path` (the nearest part of it that exists, links followed) is in
