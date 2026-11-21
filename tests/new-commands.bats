@@ -12,6 +12,7 @@ COMMANDS=(
   "status"
   "start alpha"
   "coverage -- true"
+  "metric clone-ratio 1"
 )
 
 @test "new commands: a missing setup stops each" {

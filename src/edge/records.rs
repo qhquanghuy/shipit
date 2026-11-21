@@ -9,6 +9,7 @@ use std::io::{ErrorKind, Write as _};
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
+use serde_json::Value;
 
 use crate::edge::files::read_text;
 use crate::pure::block::toml_block;
@@ -17,7 +18,8 @@ use crate::pure::goal::GoalName;
 use crate::pure::goal_pick::roadmap_version;
 use crate::pure::logbook::{Logged, read_entries};
 use crate::pure::messages::{FILE_PROBLEM, NO_BLOCK, NOT_TOML, say};
-use crate::pure::receipt::Oid;
+use crate::pure::metric::MetricName;
+use crate::pure::receipt::{Oid, json_values};
 use crate::pure::review::ReceiptKind;
 use crate::pure::roadmap::{Roadmap, SliceName, parse_roadmap};
 use crate::pure::rules::invalid;
@@ -42,6 +44,49 @@ pub(crate) fn coverage_record_path(store: &Path, tree: &Oid) -> PathBuf {
         .join("receipts")
         .join("coverage")
         .join(format!("{tree}.json"))
+}
+
+pub(crate) fn metric_record_path(store: &Path, tree: &Oid, name: &MetricName) -> PathBuf {
+    store
+        .join("receipts")
+        .join("metric")
+        .join(tree.to_string())
+        .join(format!("{name}.json"))
+}
+
+// Every metric record of the store; one that cannot be read is skipped.
+pub(crate) fn metric_records(store: &Path) -> Vec<Value> {
+    let Ok(trees) = fs::read_dir(store.join("receipts").join("metric")) else {
+        return Vec::new();
+    };
+    trees
+        .filter_map(Result::ok)
+        .filter_map(|tree| fs::read_dir(tree.path()).ok())
+        .flatten()
+        .filter_map(Result::ok)
+        .filter_map(|file| json_values(&fs::read(file.path()).ok()?))
+        .filter_map(|docs| match <[Value; 1]>::try_from(docs) {
+            Ok([doc]) => Some(doc),
+            Err(_several) => None,
+        })
+        .collect()
+}
+
+// The kept metrics files: the goal each is named for, and its text when it can be read.
+pub(crate) fn kept_files(store: &Path) -> Vec<(GoalName, Option<String>)> {
+    let Ok(files) = fs::read_dir(store.join("metrics")) else {
+        return Vec::new();
+    };
+    let mut kept: Vec<(GoalName, Option<String>)> = files
+        .filter_map(Result::ok)
+        .filter_map(|file| {
+            let name = file.file_name().into_string().ok()?;
+            let goal = GoalName::parse(name.strip_suffix(".toml")?)?;
+            Some((goal, fs::read_to_string(file.path()).ok()))
+        })
+        .collect();
+    kept.sort_by(|a, b| a.0.cmp(&b.0));
+    kept
 }
 
 pub(crate) fn metrics_path(store: &Path, goal: &GoalName) -> PathBuf {

@@ -11,7 +11,7 @@ use crate::edge::records::{
     build_plan_path, coverage_record_path, goal_names, load_goal, store_dir,
 };
 use crate::edge::run::run_words;
-use crate::edge::slice_git::{changed_with_status, map_paths_at};
+use crate::edge::slice_git::{changed_with_status, map_paths_at, refuse_unclean_work};
 use crate::edge::store::write_json_atomic;
 use crate::pure::block::toml_block;
 use crate::pure::branch::{is_slice_branch, parse_slice_branch};
@@ -28,7 +28,6 @@ use crate::pure::tests_ran::{
     CoverageRecord, MapRule, local_problems, map_path, map_rule, parse_map_path, passed_tests,
     verdict,
 };
-use crate::pure::work::{UNCOMMITTED, hidden_paths, hidden_refusal};
 
 pub(crate) const HIDDEN: bool = false;
 pub(crate) const NEEDS_SETUP: bool = true;
@@ -48,17 +47,6 @@ fn words(args: &[OsString]) -> Result<(&OsString, &[OsString]), Failure> {
         [dashes, program, rest @ ..] if dashes == "--" => Ok((program, rest)),
         _ => Err(Failure::usage(USAGE)),
     }
-}
-
-fn refuse_unclean_work(git: &Git) -> Result<(), Failure> {
-    let hidden = hidden_paths(&git.ls_files_v_z()?);
-    if !hidden.is_empty() {
-        return Err(Failure::unclean(hidden_refusal(&hidden)));
-    }
-    if !git.status_porcelain()?.is_empty() {
-        return Err(Failure::unclean(UNCOMMITTED));
-    }
-    Ok(())
 }
 
 // Every committed map at HEAD, from git and never from the working tree or the store.

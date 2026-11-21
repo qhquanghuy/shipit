@@ -16,6 +16,7 @@ use crate::pure::review::{ReceiptKind, check_base};
 use crate::pure::roadmap::SliceName;
 use crate::pure::rules::invalid;
 use crate::pure::setup::{Setup, parse_setup, setup_label};
+use crate::pure::work::{UNCOMMITTED, hidden_paths, hidden_refusal};
 
 // The hash git gives the bytes of the file as they are, so a plan or a roadmap is keyed by what
 // the reviewer read and not by any filter of the project.
@@ -253,6 +254,18 @@ pub(crate) fn changed_with_status(
         }
     }
     Ok(changes)
+}
+
+// A record is of a commit's content, so work that is not committed has none.
+pub(crate) fn refuse_unclean_work(git: &Git) -> Result<(), Failure> {
+    let hidden = hidden_paths(&git.ls_files_v_z()?);
+    if !hidden.is_empty() {
+        return Err(Failure::unclean(hidden_refusal(&hidden)));
+    }
+    if !git.status_porcelain()?.is_empty() {
+        return Err(Failure::unclean(UNCOMMITTED));
+    }
+    Ok(())
 }
 
 // What `shipit check` judged: the base it used (its short name), the commit where the work left
