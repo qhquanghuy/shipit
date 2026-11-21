@@ -1,0 +1,17 @@
+DW3 = ["validate: a missing setup stops it", "lint: a missing setup stops it"]
+DW11 = [
+  "every_role_output_has_a_kind",
+  "every_form_agrees_with_its_spec",
+  "generated_outputs_pass",
+  "a_missing_part_is_named",
+  "an_unlisted_outcome_is_refused",
+  "validate: an invalid output exits 1 and lists each problem",
+]
+DW12 = [
+  "rejected_terms_are_found",
+  "word_boundaries",
+  "model_names_outside_the_model_pack_are_found",
+  "harness_name_once",
+  "every_embedded_file_is_clean",
+  "lint: a finding exits 1 with path and line",
+]
