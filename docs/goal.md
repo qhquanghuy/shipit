@@ -46,6 +46,20 @@ functional.
 | Composition | A slice's flow is one function applied to each slice. Slices share no changing state, so slices that touch separate work can run in parallel. |
 | Memoization | A receipt is a cached result keyed by the content of the work. Recheck computes it again to prove the cache honest. |
 
+## Talking to the owner
+
+Everything the owner reads must be simple and easy to understand: plain words, short sentences,
+the glossary's terms only, no jargon. The owner may not be a native English speaker.
+
+Every question to the owner, and every decision point, has the same three parts:
+
+1. **What**: the decision, in one sentence.
+2. **Context**: only the facts needed to decide, briefly.
+3. **Recommendation**: the options when there are several, each with its trade-off, and which one
+   the lead recommends and why.
+
+The decision-point template enforces this form.
+
 ## What gets built (version 1)
 
 ### 1. The `shipit` tool
@@ -130,7 +144,7 @@ one output of a known shape. A template fixes:
 - the **required parts** for each outcome, for example every fact a scout reports has a source;
 - a small machine-readable header that names the outcome and the input it answered.
 
-Templates exist for: the roadmap, the build plan, a scout's report, model advice, a review (informed or second
+Templates exist for: a decision point, the roadmap, the build plan, a scout's report, model advice, a review (informed or second
 opinion), a test drive, and a known issue. `shipit validate` checks a filled output against its
 template and refuses one with an unlisted outcome or a missing part. The lead hands an output to
 the next phase only after it validates.
