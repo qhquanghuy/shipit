@@ -94,6 +94,18 @@ LOG="$BATS_TEST_TMPDIR/log"
   [ "$(cat "$LOG")" = $'one\ntwo\nthree' ]
 }
 
+@test "check: each command sees SHIPIT_MERGE_BASE and SHIPIT_CHECK" {
+  local one="printf '%s|%s\\n' \"\$SHIPIT_MERGE_BASE\" \"\$SHIPIT_CHECK\" >> '$LOG'"
+  local two="printf '%s|%s\\n' \"\$SHIPIT_MERGE_BASE\" \"\$SHIPIT_CHECK\" >> '$LOG' # second"
+  start_repo "gate.check=$(checks "$one" "$two")"
+  commit_files 1
+  run_check
+  [ "$status" -eq 0 ]
+  local base
+  base=$(git merge-base main HEAD)
+  [ "$(cat "$LOG")" = "$base|$one"$'\n'"$base|$two" ]
+}
+
 @test "the first failing command stops the run: exit 1, named, no receipt" {
   start_repo "gate.check=$(checks true false 'touch ran-after')"
   commit_files 1

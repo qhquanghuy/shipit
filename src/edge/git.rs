@@ -5,6 +5,7 @@
 )]
 
 use std::ffi::{OsStr, OsString};
+use std::io::Write as _;
 use std::os::unix::ffi::OsStringExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -84,13 +85,39 @@ impl Git {
 
     // git's own stderr is discarded; the caller's message says what failed.
     pub(crate) fn output(&self, args: &[&OsStr]) -> Result<Vec<u8>, GitFailed> {
-        let output = Command::new("git")
+        self.output_fed(args, None)
+    }
+
+    // The input is written whole on its own thread while the output is read, so no size of
+    // either can fill a pipe and stop both sides; the pipe is closed when the input is done.
+    pub(crate) fn output_fed(
+        &self,
+        args: &[&OsStr],
+        input: Option<&[u8]>,
+    ) -> Result<Vec<u8>, GitFailed> {
+        let mut child = Command::new("git")
             .args(args)
             .current_dir(&self.top)
-            .stdin(Stdio::null())
+            .stdin(if input.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
+            .stdout(Stdio::piped())
             .stderr(Stdio::null())
-            .output()
+            .spawn()
             .map_err(|_why| GitFailed)?;
+        let pipe = child.stdin.take();
+        let output = std::thread::scope(|scope| {
+            scope.spawn(move || {
+                if let (Some(mut pipe), Some(bytes)) = (pipe, input) {
+                    // A git that stops reading early is judged by its exit status.
+                    pipe.write_all(bytes).ok();
+                }
+            });
+            child.wait_with_output()
+        })
+        .map_err(|_why| GitFailed)?;
         if output.status.success() {
             Ok(output.stdout)
         } else {
@@ -278,6 +305,26 @@ mod tests {
             .status()
             .expect("git runs");
         assert!(status.success());
+    }
+
+    #[test]
+    fn a_megabyte_of_input_is_fed_whole() {
+        let dir = scratch("git-fed");
+        let bytes: Vec<u8> = (0..1_048_576_u32)
+            .map(|i| u8::try_from(i % 251).unwrap_or(0))
+            .collect();
+        let file = dir.join("data");
+        fs::write(&file, &bytes).expect("a file");
+        let git = Git { top: dir.clone() };
+        let hash = |args: &[&OsStr], input| git.output_fed(args, input).expect("git hashes");
+        let by_path = hash(&[OsStr::new("hash-object"), file.as_os_str()], None);
+        let fed = hash(
+            &[OsStr::new("hash-object"), OsStr::new("--stdin")],
+            Some(&bytes),
+        );
+        assert_eq!(fed, by_path);
+        assert_eq!(fed.len(), 41);
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

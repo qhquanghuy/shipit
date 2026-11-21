@@ -245,7 +245,7 @@ fn refuse_changed_work(git: &Git, command: &str, commit: &Oid, tree: &Oid) -> Re
 fn run_commands(
     git: &Git,
     setup: &Setup,
-    (commit, tree): (&Oid, &Oid),
+    (commit, tree, merge_base): (&Oid, &Oid, &Oid),
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> Result<(), Failure> {
@@ -259,7 +259,11 @@ fn run_commands(
     for command in setup.gate.check.iter().map(CheckCommand::as_str) {
         writeln!(out, "check: {command}").ok();
         out.flush().ok();
-        let code = run_check(git.top(), &prefix, command).unwrap_or_else(|not_started| {
+        let vars = [
+            ("SHIPIT_MERGE_BASE", OsStr::new(merge_base.as_str())),
+            ("SHIPIT_CHECK", OsStr::new(command)),
+        ];
+        let code = run_check(git.top(), &prefix, command, &vars).unwrap_or_else(|not_started| {
             writeln!(err, "shipit: {}", not_started.message).ok();
             not_started.code
         });
@@ -325,7 +329,7 @@ pub(crate) fn run(
 
     let commit = head_commit(&git)?;
     let tree = git.tree_of(OsStr::new(HEAD))?;
-    run_commands(&git, &setup, (&commit, &tree), out, err)?;
+    run_commands(&git, &setup, (&commit, &tree, &merge_base), out, err)?;
 
     let time = now_utc();
     let path = check_receipt_path(&git.common_dir()?, &tree);

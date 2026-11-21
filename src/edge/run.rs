@@ -4,10 +4,11 @@
     reason = "this is the only module that runs the check commands"
 )]
 
-use std::io::ErrorKind;
+use std::ffi::OsStr;
+use std::io::{ErrorKind, Read as _, Write};
 use std::os::unix::process::ExitStatusExt as _;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
 
 const NOT_FOUND: i32 = 127;
 const NOT_STARTED: i32 = 126;
@@ -20,37 +21,84 @@ pub(crate) struct CannotRun {
     pub(crate) message: String,
 }
 
+fn exit_code(status: ExitStatus) -> i32 {
+    status
+        .code()
+        .or_else(|| status.signal().map(|signal| KILLED + signal))
+        .unwrap_or(NOT_STARTED)
+}
+
+// With a sink, stdout and stderr share one pipe, so their order is the program's; each chunk is
+// written to the sink and kept. Without one both streams are the caller's and nothing is kept.
+// The parent's write ends are dropped before reading, or the read would never end.
+pub(crate) fn run_words(
+    top: &Path,
+    program: &OsStr,
+    args: &[&OsStr],
+    vars: &[(&str, &OsStr)],
+    sink: Option<&mut dyn Write>,
+) -> Result<(i32, Vec<u8>), CannotRun> {
+    let cannot_run = |why: &std::io::Error| CannotRun {
+        code: if why.kind() == ErrorKind::NotFound {
+            NOT_FOUND
+        } else {
+            NOT_STARTED
+        },
+        message: format!("cannot run {}: {why}", program.to_string_lossy()),
+    };
+    let mut command = Command::new(program);
+    command
+        .args(args)
+        .current_dir(top)
+        .env("PWD", top)
+        .envs(vars.iter().copied())
+        .stdin(Stdio::null());
+    let Some(sink) = sink else {
+        let status = command.status().map_err(|why| cannot_run(&why))?;
+        return Ok((exit_code(status), Vec::new()));
+    };
+    let (mut reader, writer) = std::io::pipe().map_err(|why| cannot_run(&why))?;
+    let stderr = writer.try_clone().map_err(|why| cannot_run(&why))?;
+    command.stdout(writer).stderr(stderr);
+    let mut child = command.spawn().map_err(|why| cannot_run(&why))?;
+    drop(command);
+    let mut kept = Vec::new();
+    let mut chunk = [0_u8; 8192];
+    while let Ok(read) = reader.read(&mut chunk) {
+        let Some(bytes) = chunk.get(..read).filter(|bytes| !bytes.is_empty()) else {
+            break;
+        };
+        sink.write_all(bytes).ok();
+        sink.flush().ok();
+        kept.extend_from_slice(bytes);
+    }
+    let status = child.wait().map_err(|why| cannot_run(&why))?;
+    Ok((exit_code(status), kept))
+}
+
 // `<prefix…> bash -c <command>` in the repository top, as the shell's `cd` and `"${prefix[@]}"`
 // ran it; `$0` is `bash`, the same with or without a prefix.
-pub(crate) fn run_check(top: &Path, prefix: &[String], command: &str) -> Result<i32, CannotRun> {
+pub(crate) fn run_check(
+    top: &Path,
+    prefix: &[String],
+    command: &str,
+    vars: &[(&str, &OsStr)],
+) -> Result<i32, CannotRun> {
     let mut words = prefix
         .iter()
         .map(String::as_str)
-        .chain(["bash", "-c", command]);
-    let program = words.next().unwrap_or("bash");
-    let status = Command::new(program)
-        .args(words)
-        .current_dir(top)
-        .env("PWD", top)
-        .stdin(Stdio::null())
-        .status()
-        .map_err(|why| CannotRun {
-            code: if why.kind() == ErrorKind::NotFound {
-                NOT_FOUND
-            } else {
-                NOT_STARTED
-            },
-            message: format!("cannot run {program}: {why}"),
-        })?;
-    Ok(status
-        .code()
-        .or_else(|| status.signal().map(|signal| KILLED + signal))
-        .unwrap_or(NOT_STARTED))
+        .chain(["bash", "-c", command])
+        .map(OsStr::new);
+    let program = words.next().unwrap_or(OsStr::new("bash"));
+    let args: Vec<&OsStr> = words.collect();
+    run_words(top, program, &args, vars, None).map(|(code, _kept)| code)
 }
 
 #[cfg(test)]
 mod tests {
     use std::fs;
+
+    use proptest::prelude::*;
 
     use super::*;
     use crate::edge::testing::scratch;
@@ -58,17 +106,72 @@ mod tests {
     // The output of `command`, which writes to the file `out` in the top.
     fn written(name: &str, command: &str) -> (Result<i32, CannotRun>, String) {
         let top = scratch(name);
-        let result = run_check(&top, &[], &format!("{command} > out"));
+        let result = run_check(&top, &[], &format!("{command} > out"), &[]);
         let text = fs::read_to_string(top.join("out")).unwrap_or_default();
         fs::remove_dir_all(&top).ok();
         (result, text)
+    }
+
+    // (exit code, what was kept, what the sink got) of `sh -c <script>` run with a sink.
+    fn sunk(name: &str, script: &str, vars: &[(&str, &OsStr)]) -> (i32, Vec<u8>, Vec<u8>) {
+        let top = scratch(name);
+        let mut sink: Vec<u8> = Vec::new();
+        let args = [OsStr::new("-c"), OsStr::new(script)];
+        let (code, kept) =
+            run_words(&top, OsStr::new("sh"), &args, vars, Some(&mut sink)).expect("sh starts");
+        fs::remove_dir_all(&top).ok();
+        (code, kept, sink)
+    }
+
+    #[test]
+    fn a_sink_keeps_both_streams_in_order_and_echoes_them() {
+        let (code, kept, sink) = sunk("run-sink", "echo a; echo b >&2; echo c", &[]);
+        assert_eq!(code, 0);
+        assert_eq!(kept, b"a\nb\nc\n");
+        assert_eq!(sink, b"a\nb\nc\n");
+    }
+
+    #[test]
+    fn a_large_output_through_the_sink_does_not_block() {
+        let (code, kept, sink) = sunk("run-large", "head -c 1500000 /dev/zero; exit 3", &[]);
+        assert_eq!(code, 3);
+        assert_eq!(kept.len(), 1_500_000);
+        assert_eq!(sink, kept);
+    }
+
+    #[test]
+    fn without_a_sink_nothing_is_kept() {
+        let top = scratch("run-no-sink");
+        let args = [OsStr::new("-c"), OsStr::new("echo a; exit 5")];
+        let result = run_words(&top, OsStr::new("sh"), &args, &[], None);
+        assert_eq!(result, Ok((5, Vec::new())));
+        fs::remove_dir_all(&top).ok();
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 16,
+            failure_persistence: None,
+            ..ProptestConfig::default()
+        })]
+
+        #[test]
+        fn the_variables_reach_the_command(value in "[ -~]{0,30}") {
+            let (code, kept, _sink) = sunk(
+                "run-vars",
+                "printf %s \"$SHIPIT_PROBE\"",
+                &[("SHIPIT_PROBE", OsStr::new(&value))],
+            );
+            prop_assert_eq!(code, 0);
+            prop_assert_eq!(kept, value.into_bytes());
+        }
     }
 
     #[test]
     fn a_missing_prefix_program_gives_127_and_says_so_to_the_caller() {
         let top = scratch("run-missing");
         let prefix = ["shipit-no-such-program".to_owned()];
-        let failure = run_check(&top, &prefix, "true").expect_err("cannot start");
+        let failure = run_check(&top, &prefix, "true", &[]).expect_err("cannot start");
         assert_eq!(failure.code, 127);
         assert!(
             failure
@@ -83,15 +186,15 @@ mod tests {
     #[test]
     fn the_exit_code_passes_through() {
         let top = scratch("run-code");
-        assert_eq!(run_check(&top, &[], "exit 7"), Ok(7));
-        assert_eq!(run_check(&top, &[], "true"), Ok(0));
+        assert_eq!(run_check(&top, &[], "exit 7", &[]), Ok(7));
+        assert_eq!(run_check(&top, &[], "true", &[]), Ok(0));
         fs::remove_dir_all(&top).ok();
     }
 
     #[test]
     fn a_killed_command_gives_128_plus_the_signal() {
         let top = scratch("run-kill");
-        assert_eq!(run_check(&top, &[], "kill -9 $$"), Ok(137));
+        assert_eq!(run_check(&top, &[], "kill -9 $$", &[]), Ok(137));
         fs::remove_dir_all(&top).ok();
     }
 
@@ -112,7 +215,7 @@ mod tests {
         );
         let top = scratch("run-zero-prefix");
         let prefix = ["env".to_owned()];
-        assert_eq!(run_check(&top, &prefix, "echo \"$0\" > out"), Ok(0));
+        assert_eq!(run_check(&top, &prefix, "echo \"$0\" > out", &[]), Ok(0));
         assert_eq!(
             fs::read_to_string(top.join("out")).unwrap_or_default(),
             "bash\n"
@@ -125,7 +228,7 @@ mod tests {
         let top = scratch("run-pwd");
         let canonical = fs::canonicalize(&top).expect("canonical");
         assert_eq!(
-            run_check(&top, &[], "echo \"$PWD\" > out; pwd -P >> out"),
+            run_check(&top, &[], "echo \"$PWD\" > out; pwd -P >> out", &[]),
             Ok(0)
         );
         let text = fs::read_to_string(top.join("out")).unwrap_or_default();
