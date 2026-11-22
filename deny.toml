@@ -2,9 +2,6 @@
 version = 2
 yanked = "deny"
 unmaintained = "all"
-ignore = [
-    { id = "RUSTSEC-2026-0543", reason = "chrono is read in src/edge/clock.rs only; moving to jiff or time is a change of its own" },
-]
 
 [licenses]
 version = 2
