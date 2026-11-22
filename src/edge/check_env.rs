@@ -12,6 +12,7 @@ use crate::pure::receipt::Oid;
 #[derive(Debug)]
 pub(crate) struct CheckEnv {
     pub(crate) merge_base: Oid,
+    pub(crate) base_tip: Option<Oid>,
     pub(crate) command: String,
 }
 
@@ -19,6 +20,11 @@ pub(crate) fn check_env() -> Option<CheckEnv> {
     let merge_base = std::env::var("SHIPIT_MERGE_BASE").ok()?;
     Some(CheckEnv {
         merge_base: Oid::parse(&merge_base)?,
+        // A missing tip is not an error here: coverage then reads no listed files and asks for
+        // the map, which is the safe side.
+        base_tip: std::env::var("SHIPIT_BASE_TIP")
+            .ok()
+            .and_then(|tip| Oid::parse(&tip)),
         command: std::env::var("SHIPIT_CHECK").ok()?,
     })
 }

@@ -61,8 +61,8 @@ design (`shipit check --base <own branch>` compares the slice with itself, and a
 
 `base_ref` is the full ref the slice was compared with (`refs/heads/<base>` or `refs/remotes/origin/<base>`) and
 `base_commit` the commit it was at. `base_given` is true when `--base` named the base (CI's receipts say so); a receipt
-without it reads as not given, and `shipit verify` names the ref of a given base. When the slice changed only the setup file (docs/setup.md), the receipt also has
-`"setup_change": true` and `"setup_fields": ["gate.check"]` (the changed field paths, in the setup's key order, then other keys by name),
+without it reads as not given, and `shipit verify` names the ref of a given base. When the slice changed only the setup file and the files the base lists in `gate.setup_files` (docs/setup.md), the receipt also has
+`"setup_change": true` and `"setup_fields": ["gate.check", "deny.toml"]` (the changed field paths, in the setup's key order, then other keys by name, then the changed listed files by path, in git's order; a file path and a field name share the list),
 placed after `commands`; `shipit verify` says so. Receipts without a setup change have neither key.
 
 ## Coverage record

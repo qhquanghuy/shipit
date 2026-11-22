@@ -2,10 +2,12 @@ use std::collections::BTreeSet;
 
 use toml::{Table, Value};
 
+use crate::pure::failure::Failure;
+use crate::pure::repo_path::RepoPath;
 use crate::pure::rules::{Parsed, Problem};
 use crate::pure::setup::{
-    AGENTS_KEYS, AGENTS_OPTIONAL, GATE_KEYS, OWNER_KEYS, OWNER_OPTIONAL, PACKS_KEYS, SETUP_PATH,
-    TOP_KEYS,
+    AGENTS_KEYS, AGENTS_OPTIONAL, GATE_KEYS, GATE_OPTIONAL, OWNER_KEYS, OWNER_OPTIONAL, PACKS_KEYS,
+    SETUP_PATH, TOP_KEYS,
 };
 
 // A setup file as the comparison sees it: the base it names, and every key kept raw, so the
@@ -23,6 +25,23 @@ impl Flow {
 
     pub(crate) fn table(&self) -> &Table {
         &self.table
+    }
+
+    // The files whose change counts as a setup change. Raw like the rest of the baseline: an
+    // entry that is not a path is skipped, and a list that is not an array is empty.
+    pub(crate) fn setup_files(&self) -> Vec<RepoPath> {
+        self.table
+            .get("gate")
+            .and_then(Value::as_table)
+            .and_then(|gate| gate.get("setup_files"))
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item.as_str().and_then(RepoPath::parse))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 }
 
@@ -74,7 +93,7 @@ fn ordered_keys(schema: &[&str], base: &Table, branch: &Table) -> Vec<String> {
 
 fn schema_of(table: &str) -> Vec<&'static str> {
     match table {
-        "gate" => GATE_KEYS.to_vec(),
+        "gate" => GATE_KEYS.iter().chain(&GATE_OPTIONAL).copied().collect(),
         "agents" => AGENTS_KEYS
             .iter()
             .chain(&AGENTS_OPTIONAL)
@@ -123,9 +142,71 @@ pub(crate) fn setup_changes(base: &Table, branch: &Table) -> Vec<String> {
     changes
 }
 
-// A diff that touches the setup file and nothing else.
-pub(crate) fn setup_only(names: &[Vec<u8>]) -> bool {
-    matches!(names, [only] if only == SETUP_PATH.as_bytes())
+fn is_setup_file(name: &[u8], listed: &[RepoPath]) -> bool {
+    name == SETUP_PATH.as_bytes() || listed.iter().any(|path| path.touches(name))
+}
+
+// A diff that touches the setup file or listed files and nothing else.
+pub(crate) fn setup_only(names: &[Vec<u8>], listed: &[RepoPath]) -> bool {
+    !names.is_empty() && names.iter().all(|name| is_setup_file(name, listed))
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Touched {
+    pub(crate) fields: Vec<String>,
+    pub(crate) alone: bool,
+}
+
+// A listed file that the base tip already has as the slice has it is not the slice's change, as
+// with setup fields: the parent of a stacked slice was squash-merged into the base.
+#[derive(Debug)]
+pub(crate) struct Diffs {
+    pub(crate) since_fork: Vec<Vec<u8>>,
+    pub(crate) since_tip: Vec<Vec<u8>>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Judgement {
+    Clear,
+    Moved(Vec<String>),
+    Touched(Touched),
+}
+
+// None when the diff changes no setup field and no listed file: it leaves the checks alone.
+fn setup_touch(mut fields: Vec<String>, listed: &[RepoPath], diffs: &Diffs) -> Option<Touched> {
+    fields.extend(
+        diffs
+            .since_fork
+            .iter()
+            .filter(|name| name.as_slice() != SETUP_PATH.as_bytes())
+            .filter(|name| listed.iter().any(|path| path.touches(name)))
+            .filter(|name| diffs.since_tip.contains(name))
+            .map(|name| String::from_utf8_lossy(name).into_owned()),
+    );
+    (!fields.is_empty()).then(|| Touched {
+        fields,
+        alone: setup_only(&diffs.since_fork, listed),
+    })
+}
+
+// The listed files are the base tip's, never the slice's: a slice that drops a file from the
+// list is still judged by the list it forked from. The diff is listed only when it can matter.
+pub(crate) fn judge_diff(
+    tip: &Flow,
+    merge_base: Option<&Flow>,
+    slice: &Flow,
+    diffs: impl FnOnce() -> Result<Diffs, Failure>,
+) -> Result<Judgement, Failure> {
+    let fields = match setup_verdict(tip, merge_base, slice) {
+        SetupVerdict::Moved(fields) => return Ok(Judgement::Moved(fields)),
+        SetupVerdict::Same => Vec::new(),
+        SetupVerdict::Changed(fields) => fields,
+    };
+    let listed = tip.setup_files();
+    if fields.is_empty() && listed.is_empty() {
+        return Ok(Judgement::Clear);
+    }
+    Ok(setup_touch(fields, &listed, &diffs()?).map_or(Judgement::Clear, Judgement::Touched))
 }
 
 // Only `gate.base` is read, because the base's own setup says which branch the slice is judged
@@ -150,26 +231,15 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn only_a_diff_of_the_setup_file_alone_is_setup_only() {
-        let setup = SETUP_PATH.as_bytes().to_vec();
-        assert!(setup_only(std::slice::from_ref(&setup)));
-        assert!(!setup_only(&[]));
-        assert!(!setup_only(&[b"src/main.rs".to_vec()]));
-        assert!(!setup_only(&[setup.clone(), b"a".to_vec()]));
-        assert!(!setup_only(&[b"a".to_vec(), setup]));
-        assert!(!setup_only(&[b".config/shipit.toml.bak".to_vec()]));
-        assert!(!setup_only(&[b".config/shipit.json".to_vec()]));
-    }
-
     // Every field path of the schema, then one unknown key inside `gate` (placed after its
     // schema keys) and one at the top; `zzz` is a top-level table with no keys.
-    const PATHS: [&str; 18] = [
+    const PATHS: [&str; 19] = [
         "version",
         "gate.base",
         "gate.max_files",
         "gate.check",
         "gate.environment",
+        "gate.setup_files",
         "gate.extra",
         "agents.max_fix_rounds",
         "agents.effort_cap",
@@ -236,6 +306,81 @@ mod tests {
             })
     }
 
+    const SETUP: &str = ".config/shipit.toml";
+    // Names a diff can hold: the setup file, files a base may list (alone or as a folder), and
+    // near misses of each.
+    const NAMES: [&str; 17] = [
+        SETUP,
+        "deny.toml",
+        "ci",
+        "ci/a.yml",
+        "ci/b/c.yml",
+        "src/a.rs",
+        "deny.toml.bak",
+        "ci-x/a",
+        ".config/shipit.json",
+        ".config/shipit.toml.bak",
+        "denyatoml",
+        "deny.toml/x",
+        "conf",
+        "conf/lint.toml",
+        "conf/other",
+        "co",
+        "conf/lint.toml/x",
+    ];
+    const LISTABLE: [&str; 3] = ["deny.toml", "ci", "conf/lint.toml"];
+
+    // Equal, below, or a folder above: written without the implementation's byte arithmetic.
+    fn covered(name: &str, listed: &[&str]) -> bool {
+        listed.iter().any(|path| {
+            name == *path
+                || name.starts_with(&format!("{path}/"))
+                || path.starts_with(&format!("{name}/"))
+        })
+    }
+
+    fn diffs(since_fork: &[&str], since_tip: &[&str]) -> Diffs {
+        Diffs {
+            since_fork: bytes(since_fork),
+            since_tip: bytes(since_tip),
+        }
+    }
+
+    fn flow_with(cap: i64, listed: Option<&Vec<&str>>) -> Flow {
+        let mut gate = Table::new();
+        gate.insert("base".to_owned(), Value::String("main".to_owned()));
+        gate.insert("max_files".to_owned(), Value::Integer(cap));
+        if let Some(paths) = listed {
+            gate.insert(
+                "setup_files".to_owned(),
+                Value::Array(
+                    paths
+                        .iter()
+                        .map(|p| Value::String((*p).to_owned()))
+                        .collect(),
+                ),
+            );
+        }
+        let mut doc = Table::new();
+        doc.insert("gate".to_owned(), Value::Table(gate));
+        parse_baseline(&doc).unwrap()
+    }
+
+    fn arb_list() -> impl Strategy<Value = Option<Vec<&'static str>>> {
+        proptest::option::of(proptest::sample::subsequence(
+            LISTABLE.to_vec(),
+            0..=LISTABLE.len(),
+        ))
+    }
+
+    fn arb_names() -> impl Strategy<Value = Vec<&'static str>> {
+        proptest::sample::subsequence(NAMES.to_vec(), 0..=NAMES.len())
+    }
+
+    fn bytes(names: &[&str]) -> Vec<Vec<u8>> {
+        names.iter().map(|name| name.as_bytes().to_vec()).collect()
+    }
+
     fn changes(a: &Flow, b: &Flow) -> Vec<String> {
         setup_changes(a.table(), b.table())
     }
@@ -245,6 +390,103 @@ mod tests {
             failure_persistence: None,
             ..ProptestConfig::default()
         })]
+
+        // The base tip is the policy: the slice's own list (even one that drops or adds the
+        // file it changes) only shows up as a changed field, never as a listed file.
+        #[test]
+        fn a_diff_is_judged_by_the_base_list_and_setup_only_means_nothing_else_is_in_it(
+            base_list in arb_list(),
+            slice_list in arb_list(),
+            raised in any::<bool>(),
+            names in arb_names(),
+            differs_from_tip in arb_names(),
+        ) {
+            let tip = flow_with(1, base_list.as_ref());
+            let slice = flow_with(if raised { 2 } else { 1 }, slice_list.as_ref());
+            let judged =
+                judge_diff(&tip, Some(&tip), &slice, || Ok(diffs(&names, &differs_from_tip)));
+            let listed = base_list.clone().unwrap_or_default();
+            let mut fields = Vec::new();
+            if raised {
+                fields.push("gate.max_files".to_owned());
+            }
+            if base_list != slice_list {
+                fields.push("gate.setup_files".to_owned());
+            }
+            fields.extend(
+                names
+                    .iter()
+                    .filter(|name| **name != SETUP && covered(name, &listed))
+                    .filter(|name| differs_from_tip.contains(name))
+                    .map(|name| (*name).to_owned()),
+            );
+            let expected = if fields.is_empty() {
+                Judgement::Clear
+            } else {
+                let alone = !names.is_empty()
+                    && names.iter().all(|name| *name == SETUP || covered(name, &listed));
+                Judgement::Touched(Touched { fields, alone })
+            };
+            prop_assert_eq!(judged, Ok(expected));
+        }
+
+        #[test]
+        fn the_diff_is_listed_only_when_it_can_matter(
+            base_list in arb_list(),
+            raised in any::<bool>(),
+            moved in any::<bool>(),
+        ) {
+            let tip = flow_with(if moved { 3 } else { 1 }, base_list.as_ref());
+            let forked = flow_with(1, base_list.as_ref());
+            let slice = flow_with(if raised { 2 } else { 1 }, base_list.as_ref());
+            let asked = std::cell::Cell::new(false);
+            let judged = judge_diff(&tip, Some(&forked), &slice, || {
+                asked.set(true);
+                Ok(diffs(&[], &[]))
+            });
+            let listed_anything = base_list.as_ref().is_some_and(|list| !list.is_empty());
+            if moved {
+                prop_assert!(matches!(judged, Ok(Judgement::Moved(_))));
+            }
+            prop_assert_eq!(asked.get(), !moved && (raised || listed_anything));
+        }
+
+        #[test]
+        fn the_base_list_keeps_its_paths_and_skips_what_is_not_one(
+            good in proptest::collection::vec("[a-z]{1,4}(/[a-z]{1,4}){0,2}", 0..4),
+            junk in proptest::collection::vec(
+                prop_oneof![
+                    Just(Value::Integer(1)),
+                    Just(Value::Boolean(true)),
+                    Just(Value::String("/abs".to_owned())),
+                    Just(Value::String("a/../b".to_owned())),
+                    Just(Value::String("*.toml".to_owned())),
+                ],
+                0..3,
+            ),
+            as_array in any::<bool>(),
+        ) {
+            let mut gate = Table::new();
+            gate.insert("base".to_owned(), Value::String("main".to_owned()));
+            let items: Vec<Value> = good
+                .iter()
+                .map(|path| Value::String(path.clone()))
+                .chain(junk)
+                .collect();
+            gate.insert(
+                "setup_files".to_owned(),
+                if as_array { Value::Array(items) } else { Value::String("deny.toml".to_owned()) },
+            );
+            let mut doc = Table::new();
+            doc.insert("gate".to_owned(), Value::Table(gate));
+            let kept: Vec<String> = parse_baseline(&doc)
+                .unwrap()
+                .setup_files()
+                .iter()
+                .map(ToString::to_string)
+                .collect();
+            prop_assert_eq!(kept, if as_array { good } else { Vec::new() });
+        }
 
         #[test]
         fn setup_changes_names_every_differing_field(

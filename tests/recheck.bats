@@ -243,3 +243,18 @@ last_line() {
   [[ $(cat "$SUMMARY") == "recheck stopped: \"base branch \\\"nope\\\" not found"* ]]
   [ "$(wc -l <"$SUMMARY")" -eq 1 ]
 }
+
+@test "recheck on a slice branch refuses a listed file changed with code, naming the file" {
+  start_repo
+  printf 'deny\n' >deny.toml
+  git add deny.toml
+  git commit -q -m "a config"
+  write_setup "$(fixture_with 'gate.check=[]' | sed '/^check = /a setup_files = ["deny.toml"]')"
+  git checkout -q -b slice/x
+  printf 'weaker\n' >deny.toml
+  files 1
+  run_recheck slice/x
+  [ "$status" -eq 1 ]
+  [[ $stderr == "shipit: this slice changes the checks (deny.toml); the owner merges setup changes on main first"* ]]
+  [ "$(last_line "$SUMMARY")" = "check: failed (exit 1)" ]
+}
