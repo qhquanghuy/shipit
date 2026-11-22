@@ -958,3 +958,126 @@ rename_files() {
   [ "$status" -eq 2 ]
   [ "$stderr" = 'shipit: base branch "origin/main" not found (looked for origin/origin/main and origin/main); name the branch, not the remote: "main"' ]
 }
+
+# start_listing <json array> [path=value]...: start_repo, but the base's setup lists these
+# files (deny.toml and flake.nix exist in it).
+start_listing() {
+  local listed=$1 repo
+  shift
+  repo=$(make_repo)
+  cd "$repo"
+  printf 'deny\n' >deny.toml
+  printf 'flake\n' >flake.nix
+  git add deny.toml flake.nix
+  git commit -q -m "configs"
+  write_setup "$(fixture_with "${@:-gate.check=[]}" | sed "/^check = /a setup_files = $listed")"
+  git checkout -q -b feature
+}
+
+# with_listing <json array> [path=value]...: the fixture with that list.
+with_listing() {
+  local listed=$1
+  shift
+  fixture_with "${@:-gate.check=[]}" | sed "/^check = /a setup_files = $listed"
+}
+
+@test "a slice that changes only a listed file is a setup change: a notice naming the file, a marked receipt" {
+  start_listing '["deny.toml", "flake.nix"]'
+  printf 'weaker\n' >deny.toml
+  git commit -q -am "ignore an advisory"
+  run_check
+  [ "$status" -eq 0 ]
+  [ "$stderr" = "shipit: this slice changes the checks (deny.toml); setup change: the owner approves it by merging" ]
+  jq -e '.setup_change == true and .setup_fields == ["deny.toml"]' "$(store)"/receipts/check/*.json
+  run --separate-stderr "$SHIPIT_BIN" verify
+  [ "$status" -eq 0 ]
+  [[ $output == "valid receipt for "*" (setup change)" ]]
+}
+
+@test "a listed file changed together with code is refused, naming the file: no command, no receipt" {
+  start_listing '["deny.toml", "flake.nix"]' "gate.check=$(checks "echo ran >> '$LOG'")"
+  printf 'weaker\n' >deny.toml
+  printf 'x\n' >code
+  git add code
+  git commit -q -am "code and a config"
+  run_check
+  [ "$status" -eq 1 ]
+  [ "$stderr" = "$(changed_msg deny.toml)" ]
+  [ ! -e "$LOG" ]
+  no_receipt
+}
+
+@test "dropping a file from the list in the slice does not free it: the base's list applies" {
+  start_listing '["deny.toml", "flake.nix"]'
+  write_setup "$(with_listing '["flake.nix"]')"
+  printf 'weaker\n' >deny.toml
+  git commit -q -am "unlist and weaken"
+  run_check
+  [ "$status" -eq 0 ]
+  [ "$stderr" = "shipit: this slice changes the checks (gate.setup_files, deny.toml); setup change: the owner approves it by merging" ]
+  printf 'x\n' >code
+  git add code
+  git commit -q -m "and code"
+  run_check
+  [ "$status" -eq 1 ]
+  [ "$stderr" = "$(changed_msg 'gate.setup_files, deny.toml')" ]
+}
+
+@test "a symlink that takes the place of a folder above a listed path is a change to the listed path" {
+  start_listing '["conf/lint.toml"]'
+  mkdir x
+  printf 'weaker\n' >x/lint.toml
+  ln -s x conf
+  printf 'c\n' >code
+  git add -A
+  git commit -q -m "swap the folder for a link, with code"
+  run_check
+  [ "$status" -eq 1 ]
+  [ "$stderr" = "$(changed_msg conf)" ]
+  no_receipt
+}
+
+@test "a submodule that moves while a path inside it is listed is a change to the listed path" {
+  start_listing '["vendor/deny.toml"]'
+  local sub="$BATS_TEST_TMPDIR/sub"
+  git init -q -b main "$sub"
+  git -C "$sub" config user.name t
+  git -C "$sub" config user.email t@example.invalid
+  git -C "$sub" config commit.gpgsign false
+  printf 's\n' >"$sub/s"
+  git -C "$sub" add s
+  git -C "$sub" commit -q -m s
+  git checkout -q main
+  git -c protocol.file.allow=always submodule add -q "$sub" vendor
+  git commit -q -m "add a submodule"
+  git checkout -q feature
+  git merge -q --ff-only main
+  git -C vendor config user.name t
+  git -C vendor config user.email t@example.invalid
+  git -C vendor config commit.gpgsign false
+  git -C vendor commit -q --allow-empty -m inside
+  printf 'c\n' >code
+  git add -A
+  git commit -q -m "bump the submodule, with code"
+  run_check
+  [ "$status" -eq 1 ]
+  [ "$stderr" = "$(changed_msg vendor)" ]
+}
+
+@test "a stacked slice whose parent changed a listed file is not refused after the parent is squash-merged" {
+  start_listing '["deny.toml"]'
+  git checkout -q -b parent
+  printf 'weaker\n' >deny.toml
+  git commit -q -am "the parent changes the config"
+  git checkout -q -b child
+  printf 'c\n' >code
+  git add code
+  git commit -q -m "the child adds code"
+  git checkout -q main
+  git merge -q --squash parent
+  git commit -q -m "squash the parent"
+  git checkout -q child
+  run_check
+  [ "$status" -eq 0 ]
+  [ -z "$stderr" ]
+}

@@ -4,6 +4,7 @@ use serde::Serialize;
 
 use crate::pure::coverage_map::CoverageMap;
 use crate::pure::goal::{DoneWhen, GoalName, QualifiedDoneWhen};
+use crate::pure::repo_path::RepoPath;
 use crate::pure::roadmap::SliceName;
 use crate::pure::text::comma_list;
 
@@ -153,14 +154,20 @@ pub(crate) enum MapRule {
     Missing,
 }
 
-// An empty change and a change of the setup file alone need no map (setup-only and adoption
-// changes); any other change must add one, an empty map included. The branch `slice/<goal>/<slice>`
+// An empty change and a change of the setup file and the files the base lists alone need no map
+// (setup-only and adoption changes); any other change must add one, an empty map included. The branch `slice/<goal>/<slice>`
 // names its own map, so another slice's map added, or an older one removed, does not count.
 pub(crate) fn map_rule(
     changes: &[(char, String)],
     own: Option<(&GoalName, &SliceName)>,
+    setup_files: &[RepoPath],
 ) -> MapRule {
-    if changes.iter().all(|(_, path)| path == SETUP_FILE) {
+    if changes.iter().all(|(_, path)| {
+        path == SETUP_FILE
+            || setup_files
+                .iter()
+                .any(|listed| listed.touches(path.as_bytes()))
+    }) {
         return MapRule::NotNeeded;
     }
     let added: Vec<(GoalName, SliceName)> = changes
@@ -313,7 +320,14 @@ mod tests {
             statuses in proptest::collection::vec(prop_oneof![Just('A'), Just('M'), Just('D')], 3),
             with_map in any::<bool>(),
             with_setup in any::<bool>(),
+            listed_changed in any::<bool>(),
+            listed_dropped in any::<bool>(),
+            above_changed in any::<bool>(),
         ) {
+            let listed = RepoPath::parse("deny.toml").unwrap();
+            let nested = RepoPath::parse("conf/lint.toml").unwrap();
+            // The files the base lists; a path that only looks like one is a code change.
+            let lists = if listed_dropped { Vec::new() } else { vec![listed, nested] };
             let mut changes: Vec<(char, String)> = others
                 .iter()
                 .zip(&statuses)
@@ -322,17 +336,25 @@ mod tests {
             if with_setup {
                 changes.push(('M', ".config/shipit.toml".to_owned()));
             }
+            if listed_changed {
+                changes.push(('M', "deny.toml".to_owned()));
+            }
+            if above_changed {
+                changes.push(('A', "conf".to_owned()));
+            }
             if with_map {
                 changes.push(('A', ".shipit/coverage/demo/beta.toml".to_owned()));
             }
-            let expected = if others.is_empty() && !with_map {
+            let code = !others.is_empty()
+                || ((listed_changed || above_changed) && listed_dropped);
+            let expected = if !code && !with_map {
                 MapRule::NotNeeded
             } else if with_map {
                 MapRule::Added
             } else {
                 MapRule::Missing
             };
-            prop_assert_eq!(map_rule(&changes, None), expected);
+            prop_assert_eq!(map_rule(&changes, None, &lists), expected);
         }
 
         #[test]
@@ -353,7 +375,7 @@ mod tests {
                 changes.push(('A', ".shipit/coverage/demo/beta.toml".to_owned()));
             }
             let expected = if own_added { MapRule::Added } else { MapRule::Missing };
-            prop_assert_eq!(map_rule(&changes, Some((&demo, &beta))), expected);
+            prop_assert_eq!(map_rule(&changes, Some((&demo, &beta)), &[]), expected);
         }
 
         #[test]

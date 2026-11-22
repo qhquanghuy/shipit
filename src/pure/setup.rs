@@ -2,6 +2,7 @@ use serde::{Serialize, Serializer};
 use toml::{Table, Value};
 
 use crate::pure::base::BranchName;
+use crate::pure::repo_path::RepoPath;
 use crate::pure::rules::{
     Parsed, Problem, Problems, at, fail, integer_at_most, non_empty, object_at, optional, present,
     shape, whole,
@@ -13,9 +14,13 @@ pub(crate) const HEAD: &str = "HEAD";
 const ONE_OF: &str = "must be one of low, medium, high, xhigh, max";
 const TIER_REF: &str = "must be the number of an existing tier";
 const NOT_EMPTY: &str = "must be a non-empty string";
+const SETUP_FILES_ARRAY: &str = "must be an array of paths";
+const SETUP_FILES_ITEM: &str =
+    "must be a path inside the repository, written like deny.toml or .config/";
 const BRANCH: &str = "must be a branch name (see git check-ref-format --branch)";
 pub(crate) const TOP_KEYS: [&str; 5] = ["version", "gate", "agents", "packs", "owner"];
 pub(crate) const GATE_KEYS: [&str; 4] = ["base", "max_files", "check", "environment"];
+pub(crate) const GATE_OPTIONAL: [&str; 1] = ["setup_files"];
 pub(crate) const AGENTS_KEYS: [&str; 4] = ["max_fix_rounds", "effort_cap", "tiers", "roles"];
 pub(crate) const AGENTS_OPTIONAL: [&str; 1] = ["parallel"];
 pub(crate) const PACKS_KEYS: [&str; 3] = ["skill", "domain", "model"];
@@ -215,6 +220,7 @@ pub(crate) struct Gate {
     pub(crate) max_files: Cap,
     pub(crate) check: Vec<CheckCommand>,
     pub(crate) environment: Environment,
+    pub(crate) setup_files: Vec<RepoPath>,
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
@@ -269,6 +275,25 @@ fn strings<T>(value: &Value, path: &str, make: fn(String) -> T) -> Parsed<Vec<T>
         match non_empty(item) {
             Some(text) => found.push(make(text.to_owned())),
             None => problems.push(Problem::new(format!("{path}[{index}]"), NOT_EMPTY)),
+        }
+    }
+    if problems.is_empty() {
+        Ok(found)
+    } else {
+        Err(problems)
+    }
+}
+
+fn repo_paths(value: &Value, path: &str) -> Parsed<Vec<RepoPath>> {
+    let Some(items) = value.as_array() else {
+        return fail(path, SETUP_FILES_ARRAY);
+    };
+    let mut problems = Vec::new();
+    let mut found = Vec::new();
+    for (index, item) in items.iter().enumerate() {
+        match item.as_str().and_then(RepoPath::parse) {
+            Some(parsed) => found.push(parsed),
+            None => problems.push(Problem::new(format!("{path}[{index}]"), SETUP_FILES_ITEM)),
         }
     }
     if problems.is_empty() {
@@ -529,7 +554,7 @@ fn parse_gate(value: &Value) -> Parsed<Gate> {
     let path = ".gate";
     let object = object_at(value, path)?;
     let mut problems = Problems::default();
-    problems.add(shape(path, object, &GATE_KEYS, &[]));
+    problems.add(shape(path, object, &GATE_KEYS, &GATE_OPTIONAL));
     let base = problems.take(at(
         object,
         "base",
@@ -548,12 +573,17 @@ fn parse_gate(value: &Value) -> Parsed<Gate> {
         strings(value, ".gate.check", CheckCommand)
     }));
     let environment = problems.take(present(object, "environment", parse_environment));
+    // Optional so that a setup written before the key existed stays valid.
+    let setup_files = problems.take(optional(object, "setup_files", |value| {
+        repo_paths(value, ".gate.setup_files")
+    }));
     problems.finish(|| {
         Some(Gate {
             base: base?,
             max_files: max_files?,
             check: check?,
             environment: environment?,
+            setup_files: setup_files?.unwrap_or_default(),
         })
     })
 }
@@ -855,6 +885,7 @@ mod tests {
         put(&mut expected, "/agents/parallel/slices", int(3));
         put(&mut expected, "/agents/parallel/agents", int(4));
         put(&mut expected, "/owner/example_max_lines", int(15));
+        put(&mut expected, "/gate/setup_files", Value::Array(Vec::new()));
         assert_eq!(
             serde_json::to_value(&setup).unwrap(),
             serde_json::to_value(expected).unwrap()
@@ -1070,6 +1101,11 @@ mod tests {
         "[a-z]{1,8}"
     }
 
+    fn arb_repo_path() -> impl Strategy<Value = RepoPath> {
+        proptest::collection::vec("[a-z][a-z0-9._-]{0,5}", 1..4)
+            .prop_map(|segments| RepoPath::parse(&segments.join("/")).unwrap())
+    }
+
     fn arb_role(cap: Effort, n: u64) -> impl Strategy<Value = Role> {
         (0..n, proptest::option::of(arb_effort_to(cap))).prop_map(|(tier, effort)| Role {
             tier: TierNumber(tier + 1),
@@ -1089,6 +1125,7 @@ mod tests {
             0_u64..10,
             proptest::collection::vec(arb_text(), 0..3),
             proptest::collection::vec(arb_text(), 0..3),
+            proptest::collection::vec(arb_repo_path(), 0..3),
         );
         let strings = (arb_text(), arb_text(), arb_text());
         let limits = (
@@ -1128,7 +1165,7 @@ mod tests {
             .prop_map(
                 |(
                     (
-                        (base, cap_value, fix_rounds, check, run),
+                        (base, cap_value, fix_rounds, check, run, setup_files),
                         (skill, domain, model),
                         limits,
                         cap,
@@ -1149,6 +1186,7 @@ mod tests {
                             environment: Environment {
                                 prefix: run.into_iter().map(NonEmpty).collect(),
                             },
+                            setup_files,
                         },
                         agents: Agents {
                             max_fix_rounds: fix_rounds,
@@ -1617,6 +1655,49 @@ mod tests {
             );
             prop_assert_eq!(number("/agents/parallel/slices"), Some(u64::from(&setup.agents.parallel.slices)));
             prop_assert_eq!(number("/agents/parallel/agents"), Some(u64::from(&setup.agents.parallel.agents)));
+        }
+
+        #[test]
+        fn setup_files_is_optional_and_empty_by_default(written in any::<bool>()) {
+            let mut value = fixture();
+            if written {
+                put(&mut value, "/gate/setup_files", Value::Array(Vec::new()));
+            }
+            let parsed = value.as_table().map(parse_setup);
+            prop_assert_eq!(parsed.map(|setup| setup.map(|s| s.gate.setup_files)), Some(Ok(Vec::new())));
+        }
+
+        #[test]
+        fn setup_files_is_a_list_of_paths_and_any_other_kind_or_item_is_reported(
+            items in proptest::collection::vec(
+                prop_oneof![
+                    arb_repo_path().prop_map(|path| text(path.as_str())),
+                    proptest::sample::select(vec!["", "/a", "../a", "a/../b", "*.toml", "a//b", " a"]).prop_map(text),
+                    proptest::sample::select(kinds()),
+                ],
+                0..4,
+            ),
+            wrong in proptest::sample::select(kinds()),
+            whole_wrong in any::<bool>(),
+        ) {
+            let mut value = fixture();
+            let chosen = if whole_wrong && !wrong.is_array() { wrong } else { Value::Array(items.clone()) };
+            put(&mut value, "/gate/setup_files", chosen.clone());
+            let expected: Vec<String> = match &chosen {
+                Value::Array(listed) => listed
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, item)| item.as_str().and_then(RepoPath::parse).is_none())
+                    .map(|(index, _)| format!(
+                        ".gate.setup_files[{index}]: must be a path inside the repository, written like deny.toml or .config/"
+                    ))
+                    .collect(),
+                Value::String(_) | Value::Integer(_) | Value::Float(_) | Value::Boolean(_)
+                | Value::Datetime(_) | Value::Table(_) => {
+                    vec![".gate.setup_files: must be an array of paths".to_owned()]
+                }
+            };
+            prop_assert_eq!(lines_of(&value), expected);
         }
 
         #[test]

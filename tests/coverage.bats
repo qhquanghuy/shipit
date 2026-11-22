@@ -170,3 +170,39 @@ run_check() {
   [ "$status" -eq 0 ]
   [[ $output == *"coverage v1/x: no done-when item"* ]]
 }
+
+@test "coverage: a change of the files the base lists needs no map" {
+  bare_repo true
+  printf 'deny\n' >deny.toml
+  git add deny.toml
+  git commit -q -m "a config"
+  write_setup "$(fixture_with "gate.check=[\"$SHIPIT_BIN coverage -- true\"]" | sed '/^check = /a setup_files = ["deny.toml"]')"
+  git checkout -q -b slice/v1/x
+  printf 'weaker\n' >deny.toml
+  git commit -q -am "config"
+  run_check
+  [ "$status" -eq 0 ]
+  [[ $stderr == "shipit: this slice changes the checks (deny.toml); setup change"* ]]
+  [[ $stderr != *"adds no done-when map"* ]]
+}
+
+@test "coverage: the list is the base tip's, also when the base added it after the slice forked" {
+  bare_repo true
+  printf 'deny\n' >deny.toml
+  git add deny.toml
+  git commit -q -m "a config"
+  git checkout -q -b slice/v1/x
+  local listed
+  listed=$(fixture_with "gate.check=[\"$SHIPIT_BIN coverage -- true\"]" | sed '/^check = /a setup_files = ["deny.toml"]')
+  write_setup "$listed"
+  printf 'weaker\n' >deny.toml
+  git commit -q -am "list and weaken"
+  git checkout -q main
+  git commit -q --allow-empty -m "the base moves on"
+  write_setup "$listed"
+  git checkout -q slice/v1/x
+  run_check
+  [ "$status" -eq 0 ]
+  [[ $stderr == *"this slice changes the checks (deny.toml); setup change"* ]]
+  [[ $stderr != *"adds no done-when map"* ]]
+}

@@ -11,14 +11,14 @@ use crate::edge::run::run_check;
 use crate::edge::store::{check_receipt_path, write_json_atomic};
 use crate::pure::base::{BaseRef, BranchName, SelfBase, base_verdict, origin_notice};
 use crate::pure::baseline::{
-    Flow, SetupVerdict, parse_baseline, setup_changes, setup_only, setup_verdict,
+    Diffs, Flow, Judgement, Touched, judge_diff, parse_baseline, setup_changes, setup_only,
 };
 use crate::pure::failure::Failure;
 use crate::pure::receipt::{BaseUsed, CheckReceipt, Oid};
 use crate::pure::rules::invalid;
 use crate::pure::setup::{CheckCommand, HEAD, SETUP_PATH, Setup, setup_label, toml_table};
 use crate::pure::size::size_verdict;
-use crate::pure::text::comma_list;
+use crate::pure::text::{comma_list, plain};
 use crate::pure::work::{
     UNCOMMITTED, WorkChange, WorkFacts, change_verdict, dirty_paths, first_five, hidden_paths,
     hidden_refusal,
@@ -29,7 +29,7 @@ pub(crate) const NEEDS_SETUP: bool = true;
 pub(crate) const USAGE: &str = "usage: shipit check [--base <name>]";
 pub(crate) const SUMMARY: &str = "Refuses a dirty tree, measures the size against the cap, runs the setup's check commands in order, and on a full pass writes a check receipt for this exact version of the work.";
 pub(crate) const EXITS: [&str; 4] = [
-    "receipt written (marked setup_change when the slice only changes the setup file)",
+    "receipt written (marked setup_change when the slice only changes the setup file or the files it lists)",
     "a check failed, a check changed the work, the change is over the cap, or the slice changes the checks together with other files",
     "usage or setup error (bad arguments, a base that is not a branch name, missing or invalid setup file, base branch not found, no shared history with it, a base that is the branch itself, sparse checkout, git failed, the receipt could not be written)",
     "uncommitted changes, or a tracked file hidden from git",
@@ -164,44 +164,42 @@ fn changed_setup(fields: &[String], base: &BranchName) -> Failure {
     Failure::no(format!(
         "this slice changes the checks ({}); the owner merges setup changes on {base} first \
          (or merge/rebase {base} if it moved on)",
-        comma_list(fields)
+        comma_list(fields.iter().map(|field| plain(field)))
     ))
 }
 
 // A branch that could change the checks along with its code could vouch for itself, so the
-// owner merges those first. A slice that edits the setup file alone only asks the owner: it is
-// marked in the receipt and approved by merging.
+// owner merges those first. A slice that edits the setup file and the files the base lists
+// alone only asks the owner: it is marked in the receipt and approved by merging.
 fn approve_setup_change(
-    git: &Git,
-    changes: &[String],
-    since: &Oid,
+    touched: Touched,
     base: &BranchName,
     err: &mut dyn Write,
 ) -> Result<Vec<String>, Failure> {
-    if !setup_only(&git.changed_names(since)?) {
-        return Err(changed_setup(changes, base));
+    if !touched.alone {
+        return Err(changed_setup(&touched.fields, base));
     }
     writeln!(
         err,
         "shipit: this slice changes the checks ({}); setup change: the owner approves it by \
          merging",
-        comma_list(changes)
+        comma_list(touched.fields.iter().map(|field| plain(field)))
     )
     .ok();
-    Ok(changes.to_vec())
+    Ok(touched.fields)
 }
 
 fn judge_setup(
     git: &Git,
     slice: &Flow,
     (tip, base): (Option<&Flow>, &BranchName),
-    (base_ref, merge_base): (&BaseRef, &Oid),
+    (base_ref, merge_base, base_commit): (&BaseRef, &Oid, &Oid),
     err: &mut dyn Write,
 ) -> Result<Option<Vec<String>>, Failure> {
     let Some(tip) = tip else {
         // A base with no setup file is the adoption: it vouches for nothing, so only the setup
         // file alone may come with it, or a slice could name an old branch to skip every check.
-        if setup_only(&git.changed_names(merge_base)?) {
+        if setup_only(&git.changed_names(merge_base)?, &[]) {
             return Ok(None);
         }
         return Err(changed_setup(
@@ -214,12 +212,16 @@ fn judge_setup(
     let forked = read_flow(git, OsStr::new(merge_base.as_str()), &base_ref.to_string())
         .ok()
         .flatten();
-    match setup_verdict(tip, forked.as_ref(), slice) {
-        SetupVerdict::Same => Ok(None),
-        SetupVerdict::Moved(fields) => Err(changed_setup(&fields, base)),
-        SetupVerdict::Changed(fields) => {
-            approve_setup_change(git, &fields, merge_base, base, err).map(Some)
-        }
+    let diffs = || {
+        Ok(Diffs {
+            since_fork: git.changed_names(merge_base)?,
+            since_tip: git.changed_names(base_commit)?,
+        })
+    };
+    match judge_diff(tip, forked.as_ref(), slice, diffs)? {
+        Judgement::Clear => Ok(None),
+        Judgement::Moved(fields) => Err(changed_setup(&fields, base)),
+        Judgement::Touched(touched) => approve_setup_change(touched, base, err).map(Some),
     }
 }
 
@@ -268,7 +270,7 @@ fn refuse_changed_work(git: &Git, command: &str, commit: &Oid, tree: &Oid) -> Re
 fn run_commands(
     git: &Git,
     setup: &Setup,
-    (commit, tree, merge_base): (&Oid, &Oid, &Oid),
+    (commit, tree, merge_base, base_tip): (&Oid, &Oid, &Oid, &Oid),
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> Result<(), Failure> {
@@ -285,6 +287,7 @@ fn run_commands(
         let vars = [
             ("SHIPIT_MERGE_BASE", OsStr::new(merge_base.as_str())),
             ("SHIPIT_CHECK", OsStr::new(command)),
+            ("SHIPIT_BASE_TIP", OsStr::new(base_tip.as_str())),
         ];
         let code = run_check(git.top(), &prefix, command, &vars).unwrap_or_else(|not_started| {
             writeln!(err, "shipit: {}", not_started.message).ok();
@@ -339,7 +342,7 @@ pub(crate) fn run(
         &git,
         &slice,
         (tip.as_ref(), &base),
-        (&base_ref, &merge_base),
+        (&base_ref, &merge_base, &base_commit),
         err,
     )?;
     let files = git.changed_files_count(&merge_base)?;
@@ -355,7 +358,13 @@ pub(crate) fn run(
 
     let commit = head_commit(&git)?;
     let tree = git.tree_of(OsStr::new(HEAD))?;
-    run_commands(&git, &setup, (&commit, &tree, &merge_base), out, err)?;
+    run_commands(
+        &git,
+        &setup,
+        (&commit, &tree, &merge_base, &base_commit),
+        out,
+        err,
+    )?;
 
     let time = now_utc();
     let path = check_receipt_path(&git.common_dir()?, &tree);
@@ -464,6 +473,21 @@ mod tests {
         #[test]
         fn base_x_parses_to_x_for_any_branch_name_x(x in "[a-z][a-z0-9]{0,9}(/[a-z0-9]{1,5}){0,2}") {
             prop_assert_eq!(parse_args(&os(&["--base", &x])), Ok(Some(name(&x))));
+        }
+
+        // A file name is the slice author's text; a terminal or a CI log must only see it escaped.
+        #[test]
+        fn a_file_name_with_a_control_character_never_reaches_a_message_raw(
+            file in "[a-z]{0,3}[\u{0}-\u{1f}\u{7f}\u{9b}][a-z]{0,3}",
+            alone in any::<bool>(),
+        ) {
+            let touched = Touched { fields: vec![file], alone };
+            let mut err = Vec::new();
+            let shown = match approve_setup_change(touched, &name("main"), &mut err) {
+                Ok(_fields) => String::from_utf8_lossy(&err).trim_end().to_owned(),
+                Err(failure) => failure.message,
+            };
+            prop_assert!(!shown.chars().any(char::is_control), "{}", shown.escape_default());
         }
     }
 }

@@ -139,12 +139,16 @@ fn plain(
     };
     let checks =
         plain_checks(&table).map_err(|problems| Failure::usage(invalid(&label, &problems)))?;
+    let base_tip = git
+        .commit_of(OsStr::new(&base_ref.full()))
+        .ok_or_else(|| Failure::usage(format!("cannot resolve {base_ref} to a commit")))?;
     for command in &checks.commands {
         writeln!(out, "check: {command}").ok();
         out.flush().ok();
         let vars = [
             ("SHIPIT_MERGE_BASE", OsStr::new(merge_base.as_str())),
             ("SHIPIT_CHECK", OsStr::new(command)),
+            ("SHIPIT_BASE_TIP", OsStr::new(base_tip.as_str())),
         ];
         let code =
             run_check(git.top(), &checks.prefix, command, &vars).unwrap_or_else(|not_started| {

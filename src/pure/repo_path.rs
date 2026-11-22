@@ -24,6 +24,20 @@ impl RepoPath {
         &self.0
     }
 
+    // A symlink or a submodule that replaces a folder shows in git as that one name, so a name
+    // above the path counts as a change to it, like the path itself and what is below it.
+    pub(crate) fn touches(&self, name: &[u8]) -> bool {
+        let path = self.0.as_bytes();
+        let below = name
+            .strip_prefix(path)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with(b"/"));
+        let above = !name.is_empty()
+            && path
+                .strip_prefix(name)
+                .is_some_and(|rest| rest.starts_with(b"/"));
+        below || above
+    }
+
     // The path itself and every folder above it, shortest first.
     pub(crate) fn self_and_parents(&self) -> impl Iterator<Item = &str> {
         self.0
@@ -63,6 +77,30 @@ mod tests {
             prop_assert_eq!(plain.to_string(), text.clone());
             prop_assert_eq!(&folder, &plain);
             prop_assert_eq!(serde_json::to_string(&plain).ok(), Some(format!("\"{text}\"")));
+        }
+
+        #[test]
+        fn a_path_is_touched_by_itself_what_is_below_it_and_each_folder_above_it_and_nothing_else(
+            text in path(),
+            below in path(),
+            tail in "[a-z0-9._-]{1,3}",
+        ) {
+            let parsed = RepoPath::parse(&text).expect("a normal path");
+            prop_assert!(parsed.touches(text.as_bytes()));
+            let under = format!("{text}/{below}");
+            let longer = format!("{text}{tail}");
+            prop_assert!(parsed.touches(under.as_bytes()));
+            prop_assert!(!parsed.touches(longer.as_bytes()));
+            prop_assert!(!parsed.touches(b""));
+            for parent in parsed.self_and_parents() {
+                prop_assert!(parsed.touches(parent.as_bytes()));
+            }
+            // A name that stops inside a segment is a sibling, not a parent.
+            for cut in 1..text.len() {
+                if text.as_bytes().get(cut) != Some(&b'/') {
+                    prop_assert!(!parsed.touches(&text.as_bytes()[..cut]));
+                }
+            }
         }
 
         #[test]
