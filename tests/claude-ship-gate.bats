@@ -264,3 +264,102 @@ gate() {
     [ -z "$output" ]
   done
 }
+
+@test "a cd to a folder under the home folder is read and judged there" {
+  local elsewhere
+  elsewhere=$(mktemp -d "$BATS_TEST_TMPDIR/elsewhere.XXXXXX")
+  cp -r "$REPO" "$HOME/proj"
+  run_hook claude-ship-gate "$(bash_input "$elsewhere" "cd ~/proj && git push origin main" bypassPermissions)" "$elsewhere"
+  [ "$(decision)" = deny ]
+  gate "cd ~/proj && git status" bypassPermissions
+  [ -z "$output" ]
+  gate "cd ~/proj && git push origin main" bypassPermissions
+  [ "$(decision)" = deny ]
+}
+
+@test "a cd to another folder never takes the working folder out of the judgement" {
+  local plain="$BATS_TEST_TMPDIR/plain" command
+  git init -q "$plain"
+  for command in \
+    "cd $plain && git push origin main" \
+    "cd $plain && bash -c 'cd $REPO && git push origin main'" \
+    "cd $plain && env -S 'git -C $REPO push origin main'" \
+    "cd $plain && gh pr merge 1 -R owner/repo" \
+    "cd $plain && cp evil $REPO/.git/hooks/pre-commit" \
+    "git push origin main && cd $plain"; do
+    gate "$command" bypassPermissions
+    [ "$(decision)" = deny ]
+  done
+}
+
+# A commit from before the setup file: the repository is still the project's.
+old_commit() {
+  git commit-tree -m old "$(git hash-object -t tree /dev/null)"
+}
+
+@test "a worktree or a checkout from before the setup file is judged as the project" {
+  local old wt="$BATS_TEST_TMPDIR/w"
+  old=$(old_commit)
+  git worktree add -q --detach "$wt" "$old"
+  run_hook claude-ship-gate "$(bash_input "$wt" "git push origin main" bypassPermissions)" "$wt"
+  [ "$(decision)" = deny ]
+  gate "cd $wt && git push origin main" bypassPermissions
+  [ "$(decision)" = deny ]
+  git checkout -q --detach "$old"
+  [ ! -e .config/shipit.toml ]
+  for command in "git push origin main" "gh pr merge 1"; do
+    gate "$command" bypassPermissions
+    [ "$(decision)" = deny ]
+  done
+}
+
+@test "a repository is a project by its default branch or its store, and not by another branch" {
+  local plain="$BATS_TEST_TMPDIR/other"
+  git init -q -b main "$plain"
+  git -C "$plain" config user.name t
+  git -C "$plain" config user.email t@example.invalid
+  git -C "$plain" commit -q --allow-empty -m first
+  git -C "$plain" checkout -q -b side
+  mkdir -p "$plain/.config"
+  cp "$REPO/.config/shipit.toml" "$plain/.config/shipit.toml"
+  git -C "$plain" add .config
+  git -C "$plain" commit -q -m setup
+  git -C "$plain" checkout -q main
+  # The setup file is on a branch that is not the default: no project.
+  run_hook claude-ship-gate "$(bash_input "$plain" "git push origin main" bypassPermissions)" "$plain"
+  [ -z "$output" ]
+  # On the default branch, a checkout from before it is still the project.
+  git -C "$plain" checkout -q --detach
+  git -C "$plain" branch -q -f main side
+  git -C "$plain" checkout -q --detach "$(git -C "$plain" rev-list --max-parents=0 side)"
+  run_hook claude-ship-gate "$(bash_input "$plain" "git push origin main" bypassPermissions)" "$plain"
+  [ "$(decision)" = deny ]
+  # The store folder of the repository makes it one too.
+  local store="$BATS_TEST_TMPDIR/store"
+  git init -q -b main "$store"
+  run_hook claude-ship-gate "$(bash_input "$store" "git push origin main" bypassPermissions)" "$store"
+  [ -z "$output" ]
+  mkdir "$store/.git/shipit"
+  run_hook claude-ship-gate "$(bash_input "$store" "git push origin main" bypassPermissions)" "$store"
+  [ "$(decision)" = deny ]
+}
+
+@test "origin's main stands in for the default branch when origin/HEAD is missing and main is gone" {
+  git push -q origin main
+  git fetch -q origin
+  git symbolic-ref --quiet refs/remotes/origin/HEAD && git remote set-head origin -d
+  local old
+  old=$(old_commit)
+  git checkout -q --detach "$old"
+  git branch -q -D main
+  gate "git push origin main" bypassPermissions
+  [ "$(decision)" = deny ]
+}
+
+@test "what could empty the rule that a repository is a project asks" {
+  local command
+  for command in "git branch -D main" "git branch -m main old" "git branch -rd origin/main" "git fetch . +x:refs/remotes/origin/main"; do
+    gate "$command" bypassPermissions
+    [ "$(decision)" = deny ]
+  done
+}

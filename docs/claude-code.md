@@ -51,11 +51,16 @@ plain text. For git it is a list: in a command that names git, only these pass w
   changes the config.
 - Subcommands that read: `status`, `log`, `diff`, `show`, `rev-parse`, `rev-list`, `ls-files`,
   `ls-remote`, `blame`, `grep`, `describe`, `shortlog`, `cat-file`, `merge-base`, `name-rev`,
-  `for-each-ref`, `fetch`.
+  `for-each-ref`, `fetch`, `ls-tree`, `show-ref`, `cherry`, `range-diff`, `check-ignore`, `help`,
+  `version`.
 - Subcommands that edit the work and the branches: `add`, `rm`, `mv`, `restore`, `commit`,
-  `switch`, `checkout`, `branch`, `stash`, `reset`, `cherry-pick`, `revert`, `worktree`; also
-  `rebase` without an option that runs a program, `merge` while the branch is not a base, `tag` to
-  list, `notes` to read, `config` and `remote` to read.
+  `switch`, `checkout`, `branch`, `stash`, `reset`, `cherry-pick`, `revert`, `worktree`, `clean` (as
+  `reset` passes) and `init` (not with `--template` or `--separate-git-dir`, which copy hooks or
+  move the repository); also `apply` only to check (`--check`, `--stat`, `--numstat`,
+  `--summary`: a patch can add a symbolic link into `.git`); `rebase` without an option
+  that runs a program, `merge` while the branch is not a base, `tag` to list, `notes` to read,
+  `config` and `remote` to read, `reflog` without `expire` or `delete`, and `symbolic-ref` with
+  one name and no `-d` or `-m`.
 - Everything else asks, such as `submodule`, `bisect`, `filter-branch`, `send-pack`, an alias or
   a typo, and an option that hands git a program to run.
 
@@ -67,6 +72,30 @@ send a push elsewhere (a remote's push or mirror setting, `push.default` other t
 ```sh silent
 git push -u origin slice/v1/demo
 git push origin HEAD:refs/heads/slice/v1/demo
+```
+
+A command is judged in the working folder and in every folder it changes to with `cd`, so a
+ship command cannot hide behind a `cd` to a folder that is no project. `cd ~/dir` is read, with
+`~` as `$HOME`; any other tilde asks. A folder is in a ShipIt project when the repository is: the
+setup file is in the working tree, at `HEAD`, at the tip of the default branch (origin's `HEAD`;
+without it `origin/main`, `origin/master`, then `main` or `master`), or the store folder of the
+repository exists. So a worktree or a checkout of a commit from before the setup file is judged
+too; a repository whose only setup file is on another branch is no project. A session that starts
+or resumes in a project makes its store folder (`<git common dir>/shipit/`), so that a commit, a
+checkout or a branch change cannot make the repository look like no project; for the same reason
+`git branch` with `-d`, `-D`, `-m`, `-M`, `-c`, `-C`, `-f` or a long form of them, and `git fetch`
+with a refspec that holds a colon, ask. If the setup file is removed on purpose, a leftover
+`.git/shipit/` keeps the repository gated: remove that folder to undo it. The reads and edits
+that pass without a question:
+
+```sh silent
+cd ~/work/app && git status
+git reflog -n 5
+git ls-tree -r HEAD && git show-ref && git cherry -v main
+git symbolic-ref --short HEAD && git push -u origin slice/v1/demo
+git apply --check fix.patch && git clean -n
+git help log && git version
+git status; rg -n pattern src
 ```
 
 Every other push asks, and in bypass mode is refused, and so does every write with `gh`:
@@ -81,11 +110,56 @@ gh pr merge 1
 gh release create v1.0.0
 ```
 
+The goals of the store, `<git common dir>/shipit/goals/`, are the one place under `.git` that
+passes: the skills write them. Every `.git` in the command must be followed at once by
+`/shipit/goals/`, with no `..` part after it and no `receipts/` anywhere. Anything else naming
+`.git` asks, and so does `.git` as a path part of its own. A link made there reaches the hooks and
+the receipts, and an archive can hold one, so in a text that names the goals only `mkdir`, `cp`
+(with no option but `-p`, `-f`, `-n`, `-i`, `-v`, `-t`, `-T`, `--target-directory` and `--`), `cat`,
+`ls`, `head`, `tail`, `wc` and `shipit` may run, and nothing may be redirected into a file (`2>&1`
+and `/dev/null` are fine). Any other program in the same command makes it ask, so write the store
+copy as a command of its own.
+
+```sh silent
+mkdir -p .git/shipit/goals/v1 && cp a.md .git/shipit/goals/v1/roadmap.v1.md
+cat .git/shipit/goals/v1/roadmap.v1.md
+ls /path/to/repo/.git/shipit/goals/
+shipit validate build-plan .git/shipit/goals/v1/slices/x/build-plan.md
+```
+
+```sh asks
+cp a.md .git/shipit/goals/../../hooks/pre-push
+ln -s ../../../hooks .git/shipit/goals/v1/h
+cp -rL a .git/shipit/goals/v1/
+cp -P link .git/shipit/goals/v1/h
+git status; cp a.md .git/shipit/goals/v1/a.md
+git branch -D main
+git fetch . +old:refs/remotes/origin/main
+cat a.md > .git/shipit/goals/v1/b.md
+git apply fix.patch
+git init --separate-git-dir ../elsewhere
+BASH_ENV=x.sh git status
+cd /other/repo && git push origin main
+cp a.md .git/shipit/receipts/check/x.json
+cat .git/shipit/goals/v1/a.md .git/config
+ls .git/shipit/goalsx/
+cd .git && ls
+git reflog expire --all
+git symbolic-ref HEAD refs/heads/main
+git status; sh script.sh
+git status; source /dev/stdin
+git status; rg --pre sh pattern
+```
+
 A heredoc commit message and commands such as `git add -A`, `git log @{u}..` and `git fetch` pass.
 A message is text only when the command starts with `git` or `gh`, and the words of `echo`,
 `grep`, `ls`, `cat` and a few like them are text. Also asking: any `GIT_` or `GH_` variable, a
-path under `.git/`, a shell given a string to run, any run of `python`, `perl`, `ruby`, `node` or
-`script`, a comment, and an MCP tool that writes to a branch that is not a slice branch.
+path under `.git/` other than the goals, `.git` as a path part, a shell given a string or a file
+to run (`sh -c …`, `bash f.sh`, `sh < f.sh`), `source` or `.` reading a pipe or a device such as
+`/dev/stdin`, a command slot of a text program (`rg --pre`, `ag --pager`, `man -P`), any run of
+`python`, `perl`, `ruby`, `node` or `script`, a comment, and an MCP tool that writes to a branch
+that is not a slice branch. A line `shipit-branch: slice/v1/x.` may end in a full stop: a branch
+name cannot.
 
 ## Sessions
 
@@ -102,14 +176,23 @@ Known, and not caught:
 
 - git aliases, `gh alias`, git's own helpers by path, scripts and task runners, `curl` to the API,
   `gh workflow run`;
+- a symbolic link inside `.git/shipit/goals/` placed by other means (a file tool, a patch applied
+  earlier, an archive): a text gate cannot see it, and only ShipIt and the skills write there;
+- a write to `.git/hooks` with a file tool (no Bash call), and a path under `.git` named from a
+  folder outside every project;
+- a push from another repository whose remote is the project's own remote: that repository is
+  judged by its own setup, not the project's;
 - a program name built by a glob or a variable with no `git` or `gh` word in the text (`gi[t] push`,
   `$x push`), and any encoded script: a text gate cannot read what it does not spell out;
 - an MCP write that names its branch in a field other than `branch`;
 - false asks, on purpose: a word `eval`, `xargs`, `exec`, `su`, `ssh` or `watch` in a command that
   names git or gh, `ls ~/.config/gh`, a `for` loop over `git add`, a command substitution in such a
   command, `git clone`, `git pull`, `git submodule` and `git tag v1`, a `python` or `perl` run,
-  a text that names `.git/`, `nix develop -c git commit -m …` that holds `git push` in the
-  message, and `git config` with a key and no flag that reads;
+  `cd /other/repo && git push origin main` from inside a project (the working folder is always
+  judged), a text that names `.git/`, `.git/shipit/goals` without its closing slash, `git apply`
+  to apply a patch, `tar` or `mv` into the goals, `bash script.sh`
+  and `bash -o x`, `git reflog expire`, `git init --template`, `nix develop -c git commit -m …`
+  that holds `git push` in the message, and `git config` with a key and no flag that reads;
 - agents started outside the `Agent` tool, and a reviewer continued after the work changed;
 - resumed agents and teammate messages count towards the cap but are never refused, and Claude
   Code's own internal agents may count too; whether a `Stop` always lists the background tasks is

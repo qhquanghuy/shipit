@@ -1,4 +1,3 @@
-use std::collections::BTreeSet;
 use std::ffi::{OsStr, OsString};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -8,13 +7,13 @@ use serde_json::Value;
 use crate::commands::check::settle_base;
 use crate::commands::setup::load_setup_table;
 use crate::edge::git::Git;
-use crate::edge::hook_process::{exists, project_dir, read_hook_input};
+use crate::edge::hook_process::{exists, home_dir, make_folder, project_dir, read_hook_input};
+use crate::edge::records::store_dir;
 use crate::pure::claude_hook::{HookInput, answer_json, mcp_ship, parse_input, resolve};
 use crate::pure::failure::Failure;
 use crate::pure::setup::{HEAD, SETUP_PATH};
-use crate::pure::shell_words::{Parse, parse};
 use crate::pure::ship_gate::{
-    Answer, Facts, named_folders, rewires_push, ship_answer, ship_reasons, triggered,
+    Answer, Facts, judged_dirs, named_folders, rewires_push, ship_answer, ship_reasons, triggered,
 };
 
 pub(crate) const HIDDEN: bool = true;
@@ -31,9 +30,64 @@ pub(crate) const EXITS: [&str; 4] = [
 // Larger than any command a person types, and as much as the hook is asked to hold.
 const INPUT_LIMIT: usize = 8 * 1024 * 1024;
 
-// A project is a repository with the setup file in the working tree or at HEAD.
+// The tip of the default branch: what origin says its HEAD is, else origin's or a local main or
+// master. A folder checked out at a commit from before the setup file is still in the same repository.
+fn default_branch_has_setup(git: &Git) -> bool {
+    let origin = lines_of(
+        git,
+        &[
+            "symbolic-ref",
+            "--quiet",
+            "--short",
+            "refs/remotes/origin/HEAD",
+        ],
+    );
+    let tips: Vec<String> = if origin.is_empty() {
+        [
+            "refs/remotes/origin/main",
+            "refs/remotes/origin/master",
+            "refs/heads/main",
+            "refs/heads/master",
+        ]
+        .map(str::to_owned)
+        .to_vec()
+    } else {
+        origin
+            .iter()
+            .filter_map(|line| line.strip_prefix("origin/"))
+            .map(|name| format!("refs/remotes/origin/{name}"))
+            .collect()
+    };
+    tips.iter()
+        .any(|tip| git.file_exists(OsStr::new(tip), SETUP_PATH))
+}
+
+// A project is a repository, not a checkout: the setup file is in the working tree, at HEAD or
+// at the tip of the default branch, or the store folder of the repository exists. A repository
+// whose only setup file is on some other branch is no project.
 pub(crate) fn shipit_project(git: &Git) -> bool {
-    exists(&git.top().join(SETUP_PATH)) || git.file_exists(OsStr::new(HEAD), SETUP_PATH)
+    exists(&git.top().join(SETUP_PATH))
+        || git.file_exists(OsStr::new(HEAD), SETUP_PATH)
+        || default_branch_has_setup(git)
+        || git
+            .common_dir()
+            .is_ok_and(|common| exists(&store_dir(&common)))
+}
+
+// A session that starts in a project makes the store folder of its repository, so that the
+// repository stays one when a commit, a checkout or a branch no longer shows the setup file. Only
+// the working tree and HEAD count here: a repository whose setup is elsewhere is not made one.
+pub(crate) fn settle_project(dir: &Path) -> Result<(), String> {
+    let Ok(git) = Git::at(dir) else {
+        return Ok(());
+    };
+    if !exists(&git.top().join(SETUP_PATH)) && !git.file_exists(OsStr::new(HEAD), SETUP_PATH) {
+        return Ok(());
+    }
+    let common = git
+        .common_dir()
+        .map_err(|_why| "cannot find the git folder of the project".to_owned())?;
+    make_folder(&store_dir(&common))
 }
 
 fn lines_of(git: &Git, args: &[&str]) -> Vec<String> {
@@ -149,23 +203,27 @@ fn judge_command(input: &HookInput, command: &str) -> Answer {
     if !triggered(command) {
         return Answer::Pass;
     }
-    let mut dirs: BTreeSet<Option<String>> = BTreeSet::from([None]);
-    if let Parse::Plain { segments, .. } = parse(command) {
-        dirs.extend(segments.into_iter().map(|segment| segment.dir));
-    }
+    let home = home_dir();
+    let home = home.as_deref();
     // A folder the command names for git itself (`-C`, `--git-dir`, GIT_DIR) is judged too.
     let named: Vec<PathBuf> = named_folders(command)
         .into_iter()
-        .map(|(dir, folder)| resolve(&resolve(&input.cwd, dir.as_deref()), Some(folder.as_str())))
+        .map(|(dir, folder)| {
+            resolve(
+                &resolve(&input.cwd, home, dir.as_deref()),
+                None,
+                Some(folder.as_str()),
+            )
+        })
         .collect();
     let anywhere = named.iter().any(|folder| in_project(folder))
-        || dirs
+        || judged_dirs(command)
             .iter()
-            .any(|dir| in_project(&resolve(&input.cwd, dir.as_deref())));
+            .any(|dir| in_project(&resolve(&input.cwd, home, dir.as_deref())));
     if !anywhere {
         return Answer::Pass;
     }
-    let reasons = ship_reasons(command, &|dir| facts_at(&resolve(&input.cwd, dir)));
+    let reasons = ship_reasons(command, &|dir| facts_at(&resolve(&input.cwd, home, dir)));
     ship_answer(input.mode, &reasons)
 }
 
