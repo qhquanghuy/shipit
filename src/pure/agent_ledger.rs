@@ -2,8 +2,6 @@
 // The files are the edge's; what an entry means, and what each hook event does to the entries,
 // is decided here.
 
-use chrono::DateTime;
-
 // A start that never became an agent (another hook may refuse the call) stops counting after
 // this long.
 const RESERVATION_SECONDS: i64 = 120;
@@ -39,16 +37,72 @@ pub(crate) fn safe_id(text: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
-pub(crate) fn seconds(utc: &str) -> Option<i64> {
-    DateTime::parse_from_rfc3339(utc)
-        .ok()
-        .map(|time| time.timestamp())
+// Times are kept as `YYYY-MM-DDTHH:MM:SSZ`, in UTC, the one form ShipIt writes. The calendar is
+// the proleptic Gregorian one, in Howard Hinnant's day arithmetic: eras of 400 years, years that
+// start on March 1st so the leap day comes last.
+const DAY: i64 = 24 * 60 * 60;
+const ERA_DAYS: i64 = 146_097;
+// Days from 0000-03-01 to 1970-01-01.
+const EPOCH_SHIFT: i64 = 719_468;
+
+fn days_since_1970(year: i64, month: i64, day: i64) -> i64 {
+    let year = if month <= 2 { year - 1 } else { year };
+    let year_of_era = year.rem_euclid(400);
+    let day_of_year = (153 * ((month + 9) % 12) + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    year.div_euclid(400) * ERA_DAYS + day_of_era - EPOCH_SHIFT
 }
 
+fn date_of(days: i64) -> (i64, i64, i64) {
+    let days = days + EPOCH_SHIFT;
+    let day_of_era = days.rem_euclid(ERA_DAYS);
+    let year_of_era =
+        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_from_march = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_from_march + 2) / 5 + 1;
+    let month = (month_from_march + 2) % 12 + 1;
+    let year = days.div_euclid(ERA_DAYS) * 400 + year_of_era + i64::from(month <= 2);
+    (year, month, day)
+}
+
+fn digits(text: &str, width: usize) -> Option<i64> {
+    if text.len() == width && text.bytes().all(|byte| byte.is_ascii_digit()) {
+        text.parse().ok()
+    } else {
+        None
+    }
+}
+
+// Only the form ShipIt writes is a time. A date that does not exist (a February 30th, a month 13,
+// a day 0) is none: only a real date comes back from its own day count.
+pub(crate) fn seconds(utc: &str) -> Option<i64> {
+    let (date, clock) = utc.strip_suffix('Z')?.split_once('T')?;
+    let (year, rest) = date.split_once('-')?;
+    let (month, day) = rest.split_once('-')?;
+    let (hour, rest) = clock.split_once(':')?;
+    let (minute, second) = rest.split_once(':')?;
+    let (year, month, day) = (digits(year, 4)?, digits(month, 2)?, digits(day, 2)?);
+    let (hour, minute, second) = (digits(hour, 2)?, digits(minute, 2)?, digits(second, 2)?);
+    let days = days_since_1970(year, month, day);
+    let real = date_of(days) == (year, month, day) && hour < 24 && minute < 60 && second < 60;
+    real.then_some(days * DAY + hour * 3600 + minute * 60 + second)
+}
+
+// A time outside the years 0000 to 9999 has no text in that form.
 pub(crate) fn utc_text(at: i64) -> String {
-    DateTime::from_timestamp(at, 0)
-        .map(|time| time.format("%Y-%m-%dT%H:%M:%SZ").to_string())
-        .unwrap_or_default()
+    let (year, month, day) = date_of(at.div_euclid(DAY));
+    let second = at.rem_euclid(DAY);
+    if (0..=9999).contains(&year) {
+        format!(
+            "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+            second / 3600,
+            second % 3600 / 60,
+            second % 60
+        )
+    } else {
+        String::new()
+    }
 }
 
 pub(crate) fn file_name(entry: &Entry) -> String {
