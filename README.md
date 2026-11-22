@@ -123,6 +123,8 @@ the base branch's check commands, never the pull request's own. The job summary 
 **Machine facts.** `shipit doctor` shows the system, the common tools, the setup's health and the machine notes
 (`docs/machine-notes.md`). Hooks and CI are guardrails, not security.
 
+**Claude Code.** ShipIt installs as a Claude Code plugin whose hooks gate reviews, shipping, global installs and parallel agents: see `docs/claude-code.md`.
+
 Known gaps:
 
 - A slice that sets `gate.base` to its own name passes the hook; CI's `--base` is the gate.

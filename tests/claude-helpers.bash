@@ -1,4 +1,5 @@
 # shellcheck shell=bash
+# shellcheck disable=SC2154 # status, output and stderr are set by bats `run`
 # Helpers for the tests of the Claude Code hooks. Load with: load helpers, then load claude-helpers
 
 # shipit_repo: a repo as make_repo makes it, with no check commands in its setup, so that
@@ -33,6 +34,7 @@ run_hook() {
   if [[ -z $folder ]]; then
     folder=$(mktemp -d "${BATS_TEST_TMPDIR:?run under bats}/scratch.XXXXXX")
   fi
+  # shellcheck disable=SC2016 # the script is for the inner bash, which expands it
   run --separate-stderr bash -c 'cd "$1" && exec "$2" "$3"' _ "$folder" "$SHIPIT_BIN" "$command" <<<"$input"
   [ "$status" -eq 0 ]
   if [[ -n $output ]]; then
