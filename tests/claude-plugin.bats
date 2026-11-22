@@ -267,3 +267,22 @@ doc_lines() {
     [ "$(decision)" = deny ]
   done < <(doc_lines asks)
 }
+
+# The tests feed the gates a tool name; a gate only judges what its matcher routes to it. A
+# matcher of plain names is an exact match, any other is a regular expression.
+@test "the matchers name every tool the gate tests feed" {
+  local name matched
+  matched() {
+    jq -e --arg tool "$1" --arg gate "$2" \
+      '[.hooks.PreToolUse[] | select(.matcher as $m | if ($m | test("^[A-Za-z_|]+$")) then ($tool | test("^(" + $m + ")$")) else ($tool | test($m)) end) | .hooks[].args[0]] | index($gate) != null' \
+      "$PLUGIN/hooks/hooks.json" >/dev/null
+  }
+  while IFS= read -r name; do
+    matched "$name" claude-ship-gate
+  done < <({ grep -ohE 'tool_name: "[^"]+"' "$PLUGIN/tests/claude-ship-gate.bats" "$PLUGIN/tests/claude-helpers.bash" | cut -d'"' -f2 | grep -v '^Agent$'; echo Bash; echo Monitor; } | sort -u)
+  matched Bash claude-install-gate
+  matched Monitor claude-install-gate
+  matched Agent claude-agent-gate
+  matched Task claude-agent-gate
+  ! matched Read claude-ship-gate
+}

@@ -40,7 +40,7 @@
         ]
       },
       {
-        "matcher": "Bash",
+        "matcher": "Bash|Monitor",
         "hooks": [
           {
             "type": "command",
@@ -59,7 +59,7 @@
         ]
       },
       {
-        "matcher": "^mcp__.*(merge|create_release|create_tag|push)",
+        "matcher": "^mcp__",
         "hooks": [
           {
             "type": "command",
