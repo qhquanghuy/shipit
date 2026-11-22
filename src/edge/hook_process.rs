@@ -1,6 +1,6 @@
 #![expect(
     clippy::disallowed_methods,
-    reason = "this is the only module that tests for a file, reads CLAUDE_PROJECT_DIR and asks whether the input is a terminal for the hooks"
+    reason = "this is the only module that tests for a file, reads CLAUDE_PROJECT_DIR and HOME and asks whether the input is a terminal for the hooks"
 )]
 
 use std::io::IsTerminal as _;
@@ -17,6 +17,13 @@ pub(crate) fn exists(path: &Path) -> bool {
 // The folder Claude Code started the session in, when it says so.
 pub(crate) fn project_dir() -> Option<PathBuf> {
     std::env::var_os("CLAUDE_PROJECT_DIR")
+        .filter(|dir| !dir.is_empty())
+        .map(PathBuf::from)
+}
+
+// The home folder, for a `cd ~/x` that the gate resolves.
+pub(crate) fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
         .filter(|dir| !dir.is_empty())
         .map(PathBuf::from)
 }

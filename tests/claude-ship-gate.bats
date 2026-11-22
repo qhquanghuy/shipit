@@ -264,3 +264,26 @@ gate() {
     [ -z "$output" ]
   done
 }
+
+@test "a cd to a folder under the home folder is read and judged there" {
+  local elsewhere
+  elsewhere=$(mktemp -d "$BATS_TEST_TMPDIR/elsewhere.XXXXXX")
+  cp -r "$REPO" "$HOME/proj"
+  run_hook claude-ship-gate "$(bash_input "$elsewhere" "cd ~/proj && git push origin main" bypassPermissions)" "$elsewhere"
+  [ "$(decision)" = deny ]
+  gate "cd ~/proj && git status" bypassPermissions
+  [ -z "$output" ]
+  gate "cd ~/proj && git push origin main" bypassPermissions
+  [ "$(decision)" = deny ]
+}
+
+@test "a command in a folder that is no ShipIt project is not judged by the folder it left" {
+  local plain="$BATS_TEST_TMPDIR/plain"
+  git init -q "$plain"
+  gate "cd $plain && git push origin main" bypassPermissions
+  [ -z "$output" ]
+  gate "cd $plain && git status && cd $REPO && git push origin main" bypassPermissions
+  [ "$(decision)" = deny ]
+  gate "git push origin main && cd $plain" bypassPermissions
+  [ "$(decision)" = deny ]
+}

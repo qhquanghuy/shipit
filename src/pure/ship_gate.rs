@@ -4,6 +4,7 @@
 use crate::pure::branch::parse_slice_branch;
 use crate::pure::shell_words::{
     Parse, Segment, leading_program, message_values, parse, program, raw_words, raw_words_unquoted,
+    unquoted,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -68,7 +69,13 @@ const GLOBAL_OPTION: &str =
 const UNKNOWN_GIT: &str = "runs a git subcommand ShipIt does not list (an alias, a typo, submodule, bisect, filter-branch, send-pack and the rest)";
 const RUNS_PROGRAM: &str = "gives git a program to run (--exec, --upload-pack and the like)";
 const MERGES_BASE: &str = "merges into the base branch";
-const DOT_GIT: &str = "names a path under .git/";
+const DOT_GIT: &str =
+    "names .git, or a path under it, other than the goals folder .git/shipit/goals/";
+const REFLOG: &str = "changes the reflog (expire, delete)";
+const SYMBOLIC_REF: &str = "changes a symbolic ref (HEAD and the like)";
+const UNSAFE_PATHS: &str = "applies a patch outside the repository (--unsafe-paths)";
+const RUNS_COMMAND: &str =
+    "gives a text program a command to run (rg --pre, ag --pager, man -P and the like)";
 const CONFIRM: &str =
     "confirms a goal completion (shipit complete --confirm), which only the owner may do";
 const MERGE: &str = "merges a pull request";
@@ -92,7 +99,7 @@ const DATA_PROGRAMS: [&str; 16] = [
 // The git subcommands that pass silently: they only read, or they edit the work and the
 // branches in ways the check and the review see. `push`, `merge`, `rebase`, `tag`, `notes`,
 // `config` and `remote` pass only in the forms judged below. Everything else asks.
-const GIT_READS: [&str; 17] = [
+const GIT_READS: [&str; 24] = [
     "status",
     "log",
     "diff",
@@ -110,8 +117,15 @@ const GIT_READS: [&str; 17] = [
     "name-rev",
     "for-each-ref",
     "fetch",
+    "ls-tree",
+    "show-ref",
+    "cherry",
+    "range-diff",
+    "check-ignore",
+    "help",
+    "version",
 ];
-const GIT_EDITS: [&str; 13] = [
+const GIT_EDITS: [&str; 16] = [
     "add",
     "rm",
     "mv",
@@ -125,6 +139,9 @@ const GIT_EDITS: [&str; 13] = [
     "cherry-pick",
     "revert",
     "worktree",
+    "apply",
+    "clean",
+    "init",
 ];
 // A subcommand that moves the branch or the config: a push in the same command is never the
 // plain one.
@@ -360,6 +377,25 @@ fn reads_notes(args: &[String]) -> bool {
         .is_none_or(|first| first == "list" || first == "show")
 }
 
+// `git reflog expire` and `git reflog delete` change it; the rest shows it.
+fn writes_reflog(args: &[String]) -> bool {
+    args.iter().any(|word| word == "expire" || word == "delete")
+}
+
+// `git symbolic-ref [--short] [-q] <name>` reads; a second argument, `-d` or `-m` writes.
+fn reads_symbolic_ref(args: &[String]) -> bool {
+    let reads_only = args
+        .iter()
+        .filter(|word| word.starts_with('-'))
+        .all(|word| {
+            matches!(
+                word.as_str(),
+                "-q" | "--quiet" | "--short" | "--recurse" | "--no-recurse"
+            )
+        });
+    reads_only && args.iter().filter(|word| !word.starts_with('-')).count() <= 1
+}
+
 // The global options of a git command, then its subcommand. Only `-C <dir>`, `--no-pager`,
 // `--git-dir` and `--work-tree` (the folders are judged apart) are plain; any other option
 // can run a program or change the config.
@@ -416,6 +452,7 @@ fn runs_a_program(sub: &str, word: &str) -> bool {
     .any(|name| word.starts_with(name))
         || (matches!(sub, "fetch" | "ls-remote") && word == "-u")
         || (sub == "grep" && word.starts_with("-O"))
+        || (sub == "init" && word.starts_with("--template"))
         || (sub == "rebase" && (word == "--interactive" || cluster_has(word, &['x', 'i'])))
         || (sub == "merge" && (word == "-s" || word.starts_with("--strategy")))
 }
@@ -434,7 +471,11 @@ fn changes_context(segments: &[Segment]) -> bool {
                             if segment
                                 .words
                                 .get(at + 1 + index)
-                                .is_some_and(|sub| CHANGERS.contains(&sub.as_str()))
+                                .is_some_and(|sub| {
+                                    let args = segment.words.get(at + 2 + index..).unwrap_or_default();
+                                    CHANGERS.contains(&sub.as_str())
+                                        && !(sub == "symbolic-ref" && reads_symbolic_ref(args))
+                                })
                     )
             });
             changes_git || segment.words.iter().any(|word| word == FOLDER_WORD)
@@ -489,6 +530,11 @@ impl Judge<'_> {
             "remote" if changes_remote(args) => add(reasons, REMOTE),
             "tag" if !lists_tags(args) => add(reasons, TAGS),
             "notes" if !reads_notes(args) => add(reasons, NOTES),
+            "reflog" if writes_reflog(args) => add(reasons, REFLOG),
+            "symbolic-ref" if !reads_symbolic_ref(args) => add(reasons, SYMBOLIC_REF),
+            "apply" if args.iter().any(|word| word == "--unsafe-paths") => {
+                add(reasons, UNSAFE_PATHS);
+            }
             "merge" => {
                 let facts = (self.facts)(dir);
                 if facts
@@ -499,7 +545,7 @@ impl Judge<'_> {
                     add(reasons, MERGES_BASE);
                 }
             }
-            "config" | "remote" | "tag" | "notes" | "rebase" => {}
+            "config" | "remote" | "tag" | "notes" | "rebase" | "reflog" | "symbolic-ref" => {}
             known if GIT_READS.contains(&known) || GIT_EDITS.contains(&known) => {}
             _ => add(reasons, UNKNOWN_GIT),
         }
@@ -654,8 +700,8 @@ pub(crate) fn interpreter_strings(words: &[String]) -> Vec<Option<&str>> {
     found
 }
 
-// A shell that is given a string to run, or any other interpreter at all: a program the reader
-// did not read.
+// A shell that is given a string or a file to run, or any other interpreter at all: a program
+// the reader did not read. A file may have been written a moment ago by the same command.
 fn runs_a_program_text(words: &[String]) -> bool {
     words.iter().enumerate().any(|(at, word)| {
         runs_as(word, &SCRIPTERS)
@@ -663,7 +709,39 @@ fn runs_a_program_text(words: &[String]) -> bool {
                 && words
                     .iter()
                     .skip(at + 1)
-                    .any(|later| is_shell_string_flag(later)))
+                    .any(|later| is_shell_string_flag(later) || !later.starts_with('-')))
+    })
+}
+
+// `source` and `.` run what they read: a pipe or a device such as /dev/stdin is a program the
+// reader did not see.
+fn sources_a_stream(segment: &Segment) -> bool {
+    matches!(
+        leading_program(segment.words.iter().map(String::as_str)),
+        Some("source" | ".")
+    ) && (segment.reads_stdin
+        || segment
+            .words
+            .iter()
+            .any(|word| word.starts_with("/dev/") || word.starts_with("/proc/")))
+}
+
+// The options of a program that only reads text, that hand it a command to run.
+fn runs_a_command(segment: &Segment) -> bool {
+    let flag = |word: &str, long: &str| {
+        word == long
+            || word
+                .strip_prefix(long)
+                .is_some_and(|rest| rest.starts_with('='))
+    };
+    let owner = leading_program(segment.words.iter().map(String::as_str));
+    segment.words.iter().any(|word| match owner {
+        Some("rg") => flag(word, "--pre") || flag(word, "--hostname-bin"),
+        Some("ag") => flag(word, "--pager"),
+        Some("man") => {
+            flag(word, "--pager") || flag(word, "--html") || cluster_has(word, &['P', 'H'])
+        }
+        Some(_) | None => false,
     })
 }
 
@@ -680,6 +758,9 @@ fn plain_reasons(
     for segment in segments {
         let data = message_values(&segment.words);
         let text_only = is_text_only(segment);
+        if text_only && runs_a_command(segment) {
+            add(reasons, RUNS_COMMAND);
+        }
         for (at, word) in segment.words.iter().enumerate() {
             if data.get(at) == Some(&true) {
                 continue;
@@ -711,7 +792,8 @@ fn plain_reasons(
         .filter(|segment| !is_text_only(segment))
         .any(|segment| {
             runs_a_program_text(&segment.words)
-                || (segment.reads_pipe
+                || sources_a_stream(segment)
+                || (segment.reads_stdin
                     && segment
                         .words
                         .iter()
@@ -748,6 +830,91 @@ pub(crate) fn named_folders(command: &str) -> Vec<(Option<String>, String)> {
     found
 }
 
+const GOALS_FOLDER: &str = "/shipit/goals/";
+
+fn is_name_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.')
+}
+
+// A `.git` followed by a slash is a path under .git/, and passes only as `.git/shipit/goals/` (the
+// goals of the store, which the skills write) with no `..` part after it and no `receipts/`
+// anywhere. A text cannot show where a link inside goals/ points: only ShipIt and the skills
+// write there.
+fn dot_git_beyond_goals(text: &str) -> bool {
+    text.match_indices(".git").any(|(at, found)| {
+        let after = text.get(at + found.len()..).unwrap_or_default();
+        match after.strip_prefix(GOALS_FOLDER) {
+            Some(tail) => {
+                text.contains("receipts/")
+                    || tail
+                        .split(|c: char| !is_name_char(c))
+                        .any(|part| part == "..")
+            }
+            None => after.starts_with('/'),
+        }
+    })
+}
+
+// `.git` as the whole last part of a path in a word (`cd .git`, `--git-dir=x/.git`): not `.github`,
+// `x.git`, and not `.git/…`, which the other rule judges.
+fn is_bare_dot_git(word: &str) -> bool {
+    word.match_indices(".git").any(|(at, found)| {
+        let before = word.get(..at).and_then(|head| head.chars().next_back());
+        let after = word
+            .get(at + found.len()..)
+            .and_then(|tail| tail.chars().next());
+        !before.is_some_and(is_name_char) && !after.is_some_and(|c| is_name_char(c) || c == '/')
+    })
+}
+
+fn names_dot_git(command: &str, parsed: &Parse) -> bool {
+    // Writes under .git/ (the config, the hooks) are redirects that the words do not show.
+    let bare = match parsed {
+        Parse::Plain { segments, .. } => segments
+            .iter()
+            .filter(|segment| !is_text_only(segment))
+            .any(|segment| {
+                let data = message_values(&segment.words);
+                segment
+                    .words
+                    .iter()
+                    .zip(data)
+                    .any(|(word, is_data)| !is_data && is_bare_dot_git(word))
+            }),
+        Parse::Complex => false,
+    };
+    bare || dot_git_beyond_goals(command) || dot_git_beyond_goals(&unquoted(command))
+}
+
+// The folders the command runs git or gh in: a `cd` to another repository is judged by the folder
+// of the command that follows, not by the one it left. A text that no segment shows as naming
+// git or gh (a redirect, a heredoc) is judged in every folder it passes.
+pub(crate) fn judged_dirs(command: &str) -> Vec<Option<String>> {
+    let Parse::Plain { segments, .. } = parse(command) else {
+        return vec![None];
+    };
+    let names_git = |segment: &&Segment| {
+        let text = segment.words.join(" ");
+        raw_words(&text).into_iter().any(is_git_or_gh)
+            || raw_words_unquoted(&text)
+                .iter()
+                .any(|word| is_git_or_gh(word))
+            || confirms_completion(&text)
+    };
+    let mut dirs: Vec<Option<String>> = segments
+        .iter()
+        .filter(names_git)
+        .map(|segment| segment.dir.clone())
+        .collect();
+    if dirs.is_empty() {
+        dirs = segments.iter().map(|segment| segment.dir.clone()).collect();
+        dirs.push(None);
+    }
+    dirs.sort();
+    dirs.dedup();
+    dirs
+}
+
 pub(crate) fn ship_reasons(command: &str, facts: &dyn Fn(Option<&str>) -> Facts) -> Vec<String> {
     let parsed = parse(command);
     let mut reasons = Vec::new();
@@ -757,8 +924,7 @@ pub(crate) fn ship_reasons(command: &str, facts: &dyn Fn(Option<&str>) -> Facts)
     if confirms_completion(command) {
         add(&mut reasons, CONFIRM);
     }
-    // A write under .git/ (the config, the hooks) is a redirect that the words do not show.
-    if command.contains(".git/") {
+    if names_dot_git(command, &parsed) {
         add(&mut reasons, DOT_GIT);
     }
     match &parsed {
@@ -881,7 +1047,7 @@ mod tests {
             ][..]),
             2 => proptest::sample::select(&[
                 "$x", "$(echo", "`x`", "(", ")", "{", "}", "!", "~", "if", "then", "fi", "for",
-                "done", "\\", "<<'EOF'", "<<EOF", "{a,b}",
+                "done", "\u{5c}", "<<'EOF'", "<<EOF", "{a,b}",
             ][..]),
         ]
     }
@@ -900,7 +1066,7 @@ mod tests {
         "}",
         "!",
         "~",
-        "\\",
+        "\u{5c}",
         "<<'EOF'",
         "<<EOF",
         "{a,b}",
@@ -1008,6 +1174,9 @@ mod tests {
             "remote" if args.is_empty() => Git::Ok,
             "notes" if args.iter().all(|w| w.starts_with('-')) => Git::Ok,
             "merge" => Git::Changes,
+            "symbolic-ref" if args.len() <= 1 && args.iter().all(|w| !w.starts_with('-')) => {
+                Git::Ok
+            }
             "symbolic-ref" | "update-ref" | "reset" | "branch" | "pull" => Git::Asks,
             known if OK_SUBS.contains(&known) => {
                 if CHANGERS.contains(&known) {
@@ -1180,6 +1349,8 @@ mod tests {
                 "blame", "grep", "describe", "shortlog", "cat-file", "merge-base", "name-rev",
                 "for-each-ref", "fetch", "add", "rm", "mv", "restore", "commit", "switch",
                 "checkout", "branch", "stash", "reset", "cherry-pick", "revert", "worktree",
+                "ls-tree", "show-ref", "cherry", "range-diff", "check-ignore", "help", "version",
+                "apply", "clean", "init",
             ][..]),
             words in proptest::collection::vec(
                 proptest::sample::select(&["x", "foo", "-la", "config", "remote", "push", "HEAD~1"][..]),
@@ -1480,16 +1651,219 @@ mod tests {
             prop_assert_eq!(reasons(&any_flags), vec![FEEDS.to_owned()], "{}", any_flags);
             let bare = format!("git status; {path}{scripter} script.sh");
             prop_assert_eq!(reasons(&bare), vec![FEEDS.to_owned()], "{}", bare);
-            // A shell's -e is errexit, and a shell that runs a file reads no string.
+            // A shell's -e is errexit, and a shell given no string and no file has nothing to run.
             for command in [
-                format!("git status; {path}{shell} -e script.sh"),
-                format!("git status; {path}{shell} script.sh"),
+                format!("git status; {path}{shell} -e"),
                 format!("git status; {path}{shell} --version"),
                 format!("git status; echo {flag} {scripter}"),
+                format!("git status; echo {shell} {text}.sh"),
             ] {
                 prop_assert_eq!(reasons(&command), Vec::<String>::new(), "{}", command);
             }
         }
+
+        // A file may have been written by the same command: `echo 'git push' > f.sh && sh f.sh`.
+        #[test]
+        fn a_shell_given_a_file_is_a_program_nobody_read(
+            shell in proptest::sample::select(&SHELLS[..]),
+            path in prop_oneof![Just(""), Just("/bin/"), Just("./")],
+            option in prop_oneof![Just(""), Just("-e "), Just("-x "), Just("--norc ")],
+            file in "[a-z]{1,8}[.]sh",
+        ) {
+            for command in [
+                format!("git status; {path}{shell} {option}{file}"),
+                format!("echo x > {file} && git status; {path}{shell} {option}./{file}"),
+                format!("git status; env X=1 {path}{shell} {option}{file}"),
+                format!("git status; {path}{shell} < {file}"),
+                format!("git status; {path}{shell} {option}<{file}"),
+            ] {
+                prop_assert_eq!(reasons(&command), vec![FEEDS.to_owned()], "{}", command);
+            }
+        }
+
+        #[test]
+        fn source_reading_a_pipe_or_a_device_is_a_program_nobody_read(
+            source in prop_oneof![Just("source"), Just(".")],
+            device in prop_oneof![Just("/dev/stdin"), Just("/dev/fd/0"), Just("/proc/self/fd/0")],
+            file in "[a-z]{1,8}[.]sh",
+        ) {
+            for command in [
+                format!("git status; {source} {device}"),
+                format!("git status; echo x | {source} {file}"),
+                format!("git status; echo x | {source} {device}"),
+            ] {
+                prop_assert_eq!(reasons(&command), vec![FEEDS.to_owned()], "{}", command);
+            }
+            for command in [
+                format!("git status; {source} ./{file}"),
+                format!("git status; {source} {file} && git log"),
+                format!("git status; echo {source} {device}"),
+            ] {
+                prop_assert_eq!(reasons(&command), Vec::<String>::new(), "{}", command);
+            }
+        }
+
+        // The command slots of the programs that otherwise only read text.
+        #[test]
+        fn a_command_slot_of_a_text_program_asks(
+            command in "[a-z]{1,8}",
+            pattern in "[a-z]{1,8}",
+        ) {
+            for text in [
+                format!("rg --pre {command} {pattern} src"),
+                format!("rg --pre={command} {pattern}"),
+                format!("rg --hostname-bin {command} {pattern}"),
+                format!("ag --pager {command} {pattern}"),
+                format!("ag --pager={command} {pattern}"),
+                format!("man -P {command} {pattern}"),
+                format!("man -P{command} {pattern}"),
+                format!("man -aP {command} {pattern}"),
+                format!("man --pager={command} {pattern}"),
+                format!("man -H{command} {pattern}"),
+                format!("A=1 rg --pre 'git push origin main' {pattern}"),
+            ] {
+                prop_assert_eq!(reasons(&format!("git status; {text}")), vec![RUNS_COMMAND.to_owned()], "{}", text);
+            }
+            for text in [
+                format!("rg -n {pattern} src"),
+                format!("rg -P {pattern}"),
+                format!("rg --pre-glob {pattern} {command}"),
+                format!("ag -i {pattern}"),
+                format!("ag --nopager {pattern}"),
+                format!("man {pattern}"),
+                format!("man -k {pattern}"),
+                format!("grep --pre {command} {pattern}"),
+                format!("echo man -P {command}"),
+            ] {
+                prop_assert_eq!(reasons(&format!("git status; {text}")), Vec::<String>::new(), "{}", text);
+            }
+        }
+        // The goals of the store are the skills' own place; nothing else of .git passes.
+        #[test]
+        fn only_the_goals_folder_of_the_store_may_be_named_under_dot_git(
+            root in "/?[a-z]{1,6}(/[a-z]{1,6}){0,2}",
+            goal in name(),
+            other in name(),
+            file in "[a-z]{1,6}[.]md",
+        ) {
+            let goals = format!("{root}/.git/shipit/goals");
+            for command in [
+                format!("mkdir -p {goals}/{goal} && cp a {goals}/{goal}/roadmap.v1.md"),
+                format!("cat {goals}/{goal}/{file}"),
+                format!("ls {goals}/"),
+                format!("ls -la {goals}/{goal}/slices/{other} | wc -l"),
+                format!("shipit validate build-plan {goals}/{goal}/slices/{other}/build-plan.md"),
+                format!("cp ../{file} {goals}/{goal}/{file}"),
+                format!("cp {goals}/{goal}/{file} {goals}/{other}/{file}"),
+                format!("cp a '{goals}/{goal}/{file}'"),
+                format!("git status && cp a {goals}/{goal}/{file}"),
+            ] {
+                prop_assert_eq!(reasons(&command), Vec::<String>::new(), "{}", command);
+            }
+            for command in [
+                format!("cp x {goals}/../../hooks/{other}"),
+                format!("cp x {goals}/{goal}/../../../hooks/{other}"),
+                format!("cat {goals}/{goal}/.."),
+                format!("cp x {goals}/{goal}/{file} ../{other}"),
+                format!("cp x {root}/.git/shipit/receipts/check/{file}"),
+                format!("cp x {goals}/{goal}/receipts/{file}"),
+                format!("cat {goals}/{goal}/{file} {root}/.git/config"),
+                format!("cat {root}/.git/config {goals}/{goal}/{file}"),
+                format!("cat {goals}x/{file}"),
+                format!("ls {goals}"),
+                format!("cp x {root}/.git/hooks/{other}"),
+                format!("cp x {root}/.g'it'/hooks/{other}"),
+                format!("cp x '{root}/.git'/shipit/goals/../hooks/{other}"),
+                format!("echo x > {root}/.git/shipit/goals/../hooks/{other}"),
+                // `.git` as a path part of its own.
+                format!("cd {root}/.git && cp x hooks/{other}"),
+                "cd .git && ls".to_owned(),
+                format!("git --git-dir={root}/.git status"),
+                format!("cp x {root}/.git"),
+            ] {
+                prop_assert!(reasons(&command).contains(&DOT_GIT.to_owned()), "{}", command);
+            }
+            // A name that only holds the letters is no path part, and a message is text.
+            for command in [
+                format!("git add .gitignore .github/{file}"),
+                format!("git fetch https://example.com/{other}.git"),
+                format!("git log -- ..git {other}.gitx"),
+                format!("git commit -m 'the .git folder, and {other}.git'"),
+                format!("ls .git {other}"),
+            ] {
+                prop_assert_eq!(reasons(&command), Vec::<String>::new(), "{}", command);
+            }
+        }
+
+        #[test]
+        fn harmless_git_reads_and_edits_pass_and_the_forms_that_write_ask(
+            reference in "[a-z]{1,6}[0-9]",
+            file in "[a-z]{1,6}[.]patch",
+        ) {
+            for command in [
+                "git reflog".to_owned(),
+                format!("git reflog show {reference}"),
+                format!("git reflog -n 5 {reference}@{{1}}"),
+                "git reflog exists HEAD".to_owned(),
+                format!("git ls-tree -r {reference}"),
+                "git show-ref --heads".to_owned(),
+                format!("git cherry -v {reference}"),
+                format!("git range-diff {reference}...{reference} {reference}"),
+                format!("git check-ignore -v {reference}"),
+                "git symbolic-ref HEAD".to_owned(),
+                "git symbolic-ref --short -q HEAD".to_owned(),
+                "git help log".to_owned(),
+                "git version".to_owned(),
+                "git --version".to_owned(),
+                format!("git apply {file}"),
+                format!("git apply --index --check {file}"),
+                format!("git clean -fdn {reference}"),
+                format!("git init -b {reference} d"),
+                // A read of a symbolic ref moves nothing, so a push may follow it.
+                "git symbolic-ref --short HEAD && git push -u origin slice/v1/x".to_owned(),
+            ] {
+                prop_assert_eq!(reasons(&command), Vec::<String>::new(), "{}", command);
+            }
+            for command in [
+                format!("git reflog expire --all {reference}"),
+                format!("git reflog delete {reference}@{{1}}"),
+                format!("git symbolic-ref HEAD refs/heads/{reference}"),
+                "git symbolic-ref -d HEAD".to_owned(),
+                format!("git symbolic-ref -m {reference} HEAD"),
+                "git symbolic-ref --delete HEAD".to_owned(),
+                format!("git apply --unsafe-paths {file}"),
+                format!("git init --template={reference} d"),
+                format!("git init --template {reference}"),
+                format!("git symbolic-ref HEAD {reference} && git push -u origin slice/v1/x"),
+            ] {
+                prop_assert!(asks(&command), "{}", command);
+                prop_assert!(denies_in_bypass(&command), "{}", command);
+            }
+        }
+
+        // A `cd` to another repository is judged by where the git command runs.
+        #[test]
+        fn the_folders_judged_are_those_where_git_or_gh_runs(
+            a in "[a-z]{1,5}[0-9]",
+            b in "[a-z]{1,5}[0-9]",
+        ) {
+            prop_assume!(a != b);
+            let dirs = |command: String| judged_dirs(&command);
+            prop_assert_eq!(dirs(format!("cd /{a} && git push origin x")), vec![Some(format!("/{a}"))]);
+            prop_assert_eq!(dirs(format!("cd /{a} && gh pr merge 1")), vec![Some(format!("/{a}"))]);
+            prop_assert_eq!(dirs(format!("cd /{a} && shipit complete d --confirm")), vec![Some(format!("/{a}"))]);
+            prop_assert_eq!(dirs(format!("cd ~/{a} && git log")), vec![Some(format!("~/{a}"))]);
+            prop_assert_eq!(
+                dirs(format!("git status && cd /{a} && git log && cd {b} && git log")),
+                vec![None, Some(format!("/{a}")), Some(format!("/{a}/{b}"))]
+            );
+            // No segment names git: the cwd and the folders passed are all judged.
+            prop_assert_eq!(dirs(format!("cd /{a}\necho x > .git/hooks/{b}")), vec![None, Some(format!("/{a}"))]);
+            prop_assert_eq!(dirs(format!("echo x > .git/hooks/{b}")), vec![None]);
+            // Unreadable: the cwd.
+            prop_assert_eq!(dirs(format!("cd /{a} && git push $x")), vec![None]);
+        }
+
         #[test]
         fn a_folder_the_command_names_for_git_is_named_with_its_segment_folder(
             dir in "[a-z]{1,6}",

@@ -1,0 +1,17 @@
+DW7 = [
+  "branch_line_rules",
+]
+DW9 = [
+  "only_the_goals_folder_of_the_store_may_be_named_under_dot_git",
+  "harmless_git_reads_and_edits_pass_and_the_forms_that_write_ask",
+  "the_folders_judged_are_those_where_git_or_gh_runs",
+  "a_shell_given_a_file_is_a_program_nobody_read",
+  "source_reading_a_pipe_or_a_device_is_a_program_nobody_read",
+  "a_command_slot_of_a_text_program_asks",
+  "cd_to_a_folder_under_home_is_read_and_any_other_tilde_is_complex",
+  "a_segment_reads_stdin_from_a_pipe_or_a_file_and_from_nothing_else",
+  "a_folder_is_read_from_the_cwd_and_joined_with_a_relative_dir",
+  "a cd to a folder under the home folder is read and judged there",
+  "a command in a folder that is no ShipIt project is not judged by the folder it left",
+  "the push form the doc calls silent passes the ship gate, and the forms it says ask do ask",
+]

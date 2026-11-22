@@ -1,4 +1,3 @@
-use std::collections::BTreeSet;
 use std::ffi::{OsStr, OsString};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -8,13 +7,12 @@ use serde_json::Value;
 use crate::commands::check::settle_base;
 use crate::commands::setup::load_setup_table;
 use crate::edge::git::Git;
-use crate::edge::hook_process::{exists, project_dir, read_hook_input};
+use crate::edge::hook_process::{exists, home_dir, project_dir, read_hook_input};
 use crate::pure::claude_hook::{HookInput, answer_json, mcp_ship, parse_input, resolve};
 use crate::pure::failure::Failure;
 use crate::pure::setup::{HEAD, SETUP_PATH};
-use crate::pure::shell_words::{Parse, parse};
 use crate::pure::ship_gate::{
-    Answer, Facts, named_folders, rewires_push, ship_answer, ship_reasons, triggered,
+    Answer, Facts, judged_dirs, named_folders, rewires_push, ship_answer, ship_reasons, triggered,
 };
 
 pub(crate) const HIDDEN: bool = true;
@@ -149,23 +147,27 @@ fn judge_command(input: &HookInput, command: &str) -> Answer {
     if !triggered(command) {
         return Answer::Pass;
     }
-    let mut dirs: BTreeSet<Option<String>> = BTreeSet::from([None]);
-    if let Parse::Plain { segments, .. } = parse(command) {
-        dirs.extend(segments.into_iter().map(|segment| segment.dir));
-    }
+    let home = home_dir();
+    let home = home.as_deref();
     // A folder the command names for git itself (`-C`, `--git-dir`, GIT_DIR) is judged too.
     let named: Vec<PathBuf> = named_folders(command)
         .into_iter()
-        .map(|(dir, folder)| resolve(&resolve(&input.cwd, dir.as_deref()), Some(folder.as_str())))
+        .map(|(dir, folder)| {
+            resolve(
+                &resolve(&input.cwd, home, dir.as_deref()),
+                None,
+                Some(folder.as_str()),
+            )
+        })
         .collect();
     let anywhere = named.iter().any(|folder| in_project(folder))
-        || dirs
+        || judged_dirs(command)
             .iter()
-            .any(|dir| in_project(&resolve(&input.cwd, dir.as_deref())));
+            .any(|dir| in_project(&resolve(&input.cwd, home, dir.as_deref())));
     if !anywhere {
         return Answer::Pass;
     }
-    let reasons = ship_reasons(command, &|dir| facts_at(&resolve(&input.cwd, dir)));
+    let reasons = ship_reasons(command, &|dir| facts_at(&resolve(&input.cwd, home, dir)));
     ship_answer(input.mode, &reasons)
 }
 
