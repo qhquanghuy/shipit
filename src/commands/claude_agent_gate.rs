@@ -7,14 +7,12 @@ use crate::commands::verify::verify_at;
 use crate::edge::agent_store::Ledger;
 use crate::edge::clock::now_utc;
 use crate::edge::git::Git;
-use crate::edge::hook_process::{exists, read_hook_input};
+use crate::edge::hook_process::{exists, run_gate};
 use crate::edge::slice_git::load_policy;
 use crate::pure::agent_ledger::{Change, Entry, admit, seconds};
 use crate::pure::base::BranchName;
 use crate::pure::branch::is_slice_branch;
-use crate::pure::claude_hook::{
-    HookInput, Target, agent_call, answer_json, parse_input, review_target, safe_field,
-};
+use crate::pure::claude_hook::{HookInput, Target, agent_call, review_target, safe_field};
 use crate::pure::failure::{Exit, Failure};
 use crate::pure::setup::{HEAD, SETUP_PATH};
 use crate::pure::ship_gate::Answer;
@@ -30,8 +28,6 @@ pub(crate) const EXITS: [&str; 4] = [
     "internal failure: the hook blocks",
     "",
 ];
-
-const INPUT_LIMIT: usize = 8 * 1024 * 1024;
 
 fn deny(text: String) -> Answer {
     Answer::Deny(text)
@@ -157,12 +153,5 @@ pub(crate) fn run(
     out: &mut dyn Write,
     _err: &mut dyn Write,
 ) -> Result<(), Failure> {
-    if !args.is_empty() {
-        return Err(Failure::usage(USAGE));
-    }
-    let input = read_hook_input(INPUT_LIMIT).and_then(|bytes| parse_input(&bytes));
-    if let Some(json) = answer_json(&decide(&input)) {
-        writeln!(out, "{json}").ok();
-    }
-    Ok(())
+    run_gate(args, out, USAGE, decide)
 }
