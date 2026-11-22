@@ -560,9 +560,9 @@ check_start_order() {
   while IFS=: read -r n line; do
     [[ $line =~ ^[0-9]+\.\  ]] || { echo "shipit-slice: a line that is not a numbered step names shipit start: ${line:0:70}"; bad=1; continue; }
     [[ $n -gt $receipt ]] || { echo "shipit-slice: shipit start comes before the build plan review"; bad=1; }
-  done < <(grep -n '`shipit start' <<<"$body" || true)
-  grep -q '`shipit start' <<<"$body" || { echo "shipit-slice: no step runs shipit start"; bad=1; }
-  if grep -nF '`shipit start' "$(skill_file "$root" shipit-roadmap)"; then
+  done < <(grep -nE 'shipit[[:space:]]+start' <<<"$body" || true)
+  grep -qE 'shipit[[:space:]]+start' <<<"$body" || { echo "shipit-slice: no step runs shipit start"; bad=1; }
+  if grep -nE 'shipit[[:space:]]+start' "$(skill_file "$root" shipit-roadmap)"; then
     echo "shipit-roadmap: a line names shipit start"
     bad=1
   fi
@@ -606,4 +606,22 @@ check_start_order() {
   run check_start_order "$BATS_TEST_TMPDIR/copy2"
   [ "$status" -eq 1 ]
   [[ $output == *"not a numbered step names shipit start"* ]]
+}
+
+@test "skills: shipit start in prose, or with extra spaces, is also found in shipit-slice" {
+  copy_plugin "$BATS_TEST_TMPDIR/copy"
+  sed -i '/^- \*\*blocked\*\*/s/^- \*\*blocked\*\*: /- **blocked**: run shipit start first. /' "$BATS_TEST_TMPDIR/copy/skills/shipit-slice/SKILL.md"
+  run check_start_order "$BATS_TEST_TMPDIR/copy"
+  [ "$status" -eq 1 ]
+  [[ $output == *"not a numbered step names shipit start"* ]]
+  copy_plugin "$BATS_TEST_TMPDIR/copy2"
+  sed -i '/^- \*\*blocked\*\*/s/^- \*\*blocked\*\*: /- **blocked**: run `shipit  start` first. /' "$BATS_TEST_TMPDIR/copy2/skills/shipit-slice/SKILL.md"
+  run check_start_order "$BATS_TEST_TMPDIR/copy2"
+  [ "$status" -eq 1 ]
+  [[ $output == *"not a numbered step names shipit start"* ]]
+  copy_plugin "$BATS_TEST_TMPDIR/copy3"
+  sed -i 's/^Never: write code/Never: write code, run shipit start/' "$BATS_TEST_TMPDIR/copy3/skills/shipit-roadmap/SKILL.md"
+  run check_start_order "$BATS_TEST_TMPDIR/copy3"
+  [ "$status" -eq 1 ]
+  [[ $output == *"shipit-roadmap: a line names shipit start"* ]]
 }

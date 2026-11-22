@@ -44,9 +44,6 @@ The skills run commands and write files. In a headless run (`claude -p`) every q
       "Bash(gh pr view *)",
       "Bash(gh pr diff *)",
       "Bash(mktemp -d /tmp/shipit.XXXXXX)",
-      "Bash(mkdir -p *)",
-      "Bash(cp *)",
-      "Bash(printf *)",
       "Bash(sha256sum *)",
       "Bash(./test.sh *)",
       "Edit(//tmp/shipit.*/**)",
@@ -61,6 +58,11 @@ A skill makes its own drafts folder with `mktemp -d /tmp/shipit.XXXXXX`, so `Edi
 **The worktree.** The slice's worktree is made at `../wt/<slice>`, outside the folder of the session. Start the session with `--add-dir ../wt`, or the owner approves the prompt for it. This is a known gap until a follow-up slice.
 
 **The store.** The harness treats files under the git folder as sensitive: it asks for each write into the store, and a headless run refuses. The rules above do not change that. In a headless run the skills stop and hand the owner the exact `mkdir -p` and `cp` commands to run. This is a known gap until a follow-up slice.
+
+These commands are not in the list; they ask:
+
+- Asks: the store copy (`mkdir -p` and `cp`): the skills hand the owner the exact commands. A follow-up slice adds a command of ShipIt for the store copy.
+- Asks: the review's link hash, once per link: its `printf`, piped to the hash.
 
 ## Run it
 
