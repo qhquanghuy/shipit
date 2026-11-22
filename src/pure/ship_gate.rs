@@ -70,7 +70,7 @@ const RUNS_PROGRAM: &str = "gives git a program to run (--exec, --upload-pack an
 const MERGES_BASE: &str = "merges into the base branch";
 const DOT_GIT: &str =
     "names .git, or a path under it, other than the goals folder .git/shipit/goals/";
-const GOALS_ONLY: &str = "does more than read, copy or make folders under .git/shipit/goals/ (only mkdir, cp without -r -R -a -L -s -l -H, cat, ls, head, tail, wc and shipit may run in such a command, with no redirect into a file)";
+const GOALS_ONLY: &str = "does more than read, copy or make folders under .git/shipit/goals/ (only mkdir, cp without -r -R -a -L -s -l -H, cat, ls, head, tail, wc, diff and shipit may run in such a command, with no redirect into a file)";
 const BRANCH_REWRITE: &str =
     "deletes, renames, copies or force-moves a branch (a base branch holds the setup file)";
 const FETCH_REFSPEC: &str =
@@ -862,27 +862,40 @@ pub(crate) fn named_folders(command: &str) -> Vec<(Option<String>, String)> {
     found
 }
 
-const GOALS_FOLDER: &str = "/shipit/goals/";
+const GOALS_FOLDER: &str = "/shipit/goals";
 // A link made in goals/ can point at the hooks or the receipts, and an archive can hold one, so
 // the programs that may run in a text naming the goals are a list, not a ban.
-const GOALS_PROGRAMS: [&str; 8] = ["mkdir", "cp", "cat", "ls", "head", "tail", "wc", "shipit"];
+const GOALS_PROGRAMS: [&str; 9] = [
+    "mkdir", "cp", "cat", "ls", "head", "tail", "wc", "diff", "shipit",
+];
 // The letters of the `cp` options that only copy a file: `-p -f -n -i -v`, and `-t` and `-T` that name
 // the target. Any other option can copy a link as a link (`-P`, `-d`, `--preserve=links`) or build
 // paths from the source (`--parents`).
 const COPY_LETTERS: &str = "pfnivtT";
 
+// The goals folder itself, or a path under it: `goals` ends the name (`goalsx`, `goals~` and
+// `goals$?` are other folders).
+fn goals_tail(after: &str) -> Option<&str> {
+    after.strip_prefix(GOALS_FOLDER).filter(|tail| {
+        matches!(
+            tail.chars().next(),
+            None | Some('/' | ' ' | '\t' | '\n' | '\'' | '"' | ';' | '&' | '|' | '<' | '>')
+        )
+    })
+}
+
 fn is_name_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.')
 }
 
-// A `.git` followed by a slash is a path under .git/, and passes only as `.git/shipit/goals/` (the
+// A `.git` followed by a slash is a path under .git/, and passes only as `.git/shipit/goals` (the
 // goals of the store, which the skills write) with no `..` part after it and no `receipts/`
 // anywhere. A text cannot show where a link inside goals/ points: only ShipIt and the skills
 // write there.
 fn dot_git_beyond_goals(text: &str) -> bool {
     text.match_indices(".git").any(|(at, found)| {
         let after = text.get(at + found.len()..).unwrap_or_default();
-        match after.strip_prefix(GOALS_FOLDER) {
+        match goals_tail(after) {
             Some(tail) => {
                 text.contains("receipts/")
                     || tail
@@ -939,7 +952,7 @@ fn only_copies_and_reads(command: &str, parsed: &Parse) -> bool {
 fn names_goals(text: &str) -> bool {
     text.match_indices(".git").any(|(at, found)| {
         text.get(at + found.len()..)
-            .is_some_and(|after| after.starts_with(GOALS_FOLDER))
+            .is_some_and(|after| goals_tail(after).is_some())
     })
 }
 

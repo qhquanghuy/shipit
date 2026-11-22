@@ -64,6 +64,23 @@ plain text. For git it is a list: in a command that names git, only these pass w
 - Everything else asks, such as `submodule`, `bisect`, `filter-branch`, `send-pack`, an alias or
   a typo, and an option that hands git a program to run.
 
+When the gate cannot read a command it asks, and the ask says why: `cannot be read as plain
+commands by ShipIt: it holds <cause>; it may ship (write plain commands, and name branches in plain
+text)`. The cause is one of these:
+
+- a `$` or a backquote other than `$?`
+- a subshell, a group or a shell keyword (`(`, `{`, `!`, `if`, `for`, `while`, `case`, `function` and the like)
+- a `~` other than in `cd ~/<folder>`
+- a comment (a word that starts with `#`)
+- a brace expansion (`{a,b}` or `{1..3}`)
+- a backslash outside quotes
+- a quote or a heredoc that is not closed
+- a heredoc ShipIt does not read (`<<<`, no delimiter, or an unquoted delimiter whose text has `$`, a backquote or a backslash)
+- a redirect ShipIt does not read (`<(`, `>|`, `<>` or no target)
+- a folder ShipIt does not follow (`cd` alone, with `-`, an option, a glob, `$?` or two folders, a `cd` that may not run, `pushd`, `popd`, or a git `-C`, `--git-dir` or `--work-tree` that holds `$?`)
+
+`$?` is read as text, so `echo "exit=$?"` passes; a `cd`, or a git `-C`, `--git-dir` or `--work-tree`, whose folder holds it does not.
+
 The only silent push is an explicit push of a slice branch, in a command that does not also
 switch, merge, rebase, reset, configure or change folder, in a repository whose config does not
 send a push elsewhere (a remote's push or mirror setting, `push.default` other than `simple` or
@@ -112,17 +129,20 @@ gh release create v1.0.0
 
 The goals of the store, `<git common dir>/shipit/goals/`, are the one place under `.git` that
 passes: the skills write them. Every `.git` in the command must be followed at once by
-`/shipit/goals/`, with no `..` part after it and no `receipts/` anywhere. Anything else naming
+`/shipit/goals`, then the end of the word, a `/`, a blank, a quote or a shell separator, with no
+`..` part after it and no `receipts/` anywhere. Anything else naming
 `.git` asks, and so does `.git` as a path part of its own. A link made there reaches the hooks and
 the receipts, and an archive can hold one, so in a text that names the goals only `mkdir`, `cp`
 (with no option but `-p`, `-f`, `-n`, `-i`, `-v`, `-t`, `-T`, `--target-directory` and `--`), `cat`,
-`ls`, `head`, `tail`, `wc` and `shipit` may run, and nothing may be redirected into a file (`2>&1`
+`ls`, `head`, `tail`, `wc`, `diff` and `shipit` may run, and nothing may be redirected into a file (`2>&1`
 and `/dev/null` are fine). Any other program in the same command makes it ask, so write the store
 copy as a command of its own.
 
 ```sh silent
 mkdir -p .git/shipit/goals/v1 && cp a.md .git/shipit/goals/v1/roadmap.v1.md
 cat .git/shipit/goals/v1/roadmap.v1.md
+ls .git/shipit/goals
+diff a.md .git/shipit/goals/v1/roadmap.v1.md
 ls /path/to/repo/.git/shipit/goals/
 shipit validate build-plan .git/shipit/goals/v1/slices/x/build-plan.md
 ```
@@ -143,6 +163,7 @@ cd /other/repo && git push origin main
 cp a.md .git/shipit/receipts/check/x.json
 cat .git/shipit/goals/v1/a.md .git/config
 ls .git/shipit/goalsx/
+ls .git/shipit/goals~
 cd .git && ls
 git reflog expire --all
 git symbolic-ref HEAD refs/heads/main
@@ -264,7 +285,7 @@ Known, and not caught:
   names git or gh, `ls ~/.config/gh`, a `for` loop over `git add`, a command substitution in such a
   command, `git clone`, `git pull`, `git submodule` and `git tag v1`, a `python` or `perl` run,
   `cd /other/repo && git push origin main` from inside a project (the working folder is always
-  judged), a text that names `.git/`, `.git/shipit/goals` without its closing slash, `git apply`
+  judged), a text that names `.git/`, `git apply`
   to apply a patch, `tar` or `mv` into the goals, `bash script.sh`
   and `bash -o x`, `git reflog expire`, `git init --template`, `nix develop -c git commit -m …`
   that holds `git push` in the message, and `git config` with a key and no flag that reads;
