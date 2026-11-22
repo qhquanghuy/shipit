@@ -6,12 +6,22 @@ bats_require_minimum_version 1.5.0
 # of the build step only; the run on GitHub is proven by the proof step gates-github-proof.
 # It holds the whole step, not a pattern: patterns missed a subshell, `builtin cd`, `CARGO_HOME`
 # and `--config`. So any edit of the step fails here, and whoever edits the step edits this test.
-# Blank and comment lines are left out: they change nothing, and a comment must not end the step.
+# Only blank lines are left out, and YAML comment lines (indent 6 or less) after the last line of
+# the step, which are the next step's comment. Every other line is held, a `#` line in the `run`
+# script too: GitHub fills in `${{ }}` there before bash runs it, so such a line can change the script.
 
 ACTION="$BATS_TEST_DIRNAME/../action.yml"
 
 @test "action: shipit is built in the action's own folder with the stable toolchain, and the step is held word for word" {
-  actual=$(awk '/^    - name: Build ShipIt$/ { on = 1; print; next } on && /^    - / { exit } on && NF && $1 !~ /^#/' "$ACTION")
+  actual=$(awk '
+    /^    - name: Build ShipIt$/ { on = 1; print; next }
+    on && /^    - / { exit }
+    on && NF {
+      match($0, /^ */)
+      if (RLENGTH <= 6 && substr($0, RLENGTH + 1, 1) == "#") { pending = pending $0 "\n"; next }
+      printf "%s", pending; pending = ""; print
+    }
+  ' "$ACTION")
   expected=$(cat <<'STEP'
     - name: Build ShipIt
       shell: bash
