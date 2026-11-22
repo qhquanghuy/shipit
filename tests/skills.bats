@@ -545,3 +545,38 @@ check_short() {
   [ "$status" -eq 1 ]
   [[ $output == *"shipit: "*" lines, over 200"* ]]
 }
+
+# check_start_order: the build plan is reviewed before `shipit start`; the roadmap skill never runs it.
+check_start_order() {
+  local root=$1 file receipt start line bad=0
+  five_skills "$root" || return 1
+  file=$(skill_file "$root" shipit-slice)
+  receipt=$(grep -n '`shipit receipt plan-review' "$file" | head -1 | cut -d: -f1 || true)
+  start=$(grep -n '^[0-9]*\. .*`shipit start' "$file" | head -1 | cut -d: -f1 || true)
+  if [[ -z $receipt || -z $start ]]; then
+    echo "shipit-slice: no plan-review receipt line or no shipit start line"
+    return 1
+  fi
+  [[ $start -gt $receipt ]] || { echo "shipit-slice: shipit start comes before the build plan review"; bad=1; }
+  file=$(skill_file "$root" shipit-roadmap)
+  while IFS= read -r line; do
+    [[ $line == *'refuses'* || $line == Never:* ]] || { echo "shipit-roadmap: a line runs shipit start: ${line:0:70}"; bad=1; }
+  done < <({ section "$file" Outcomes; section "$file" Steps; } | grep -F '`shipit start' || true)
+  return "$bad"
+}
+
+@test "skills: the build plan is reviewed before shipit start, and the roadmap skill never starts a slice" {
+  run check_start_order "$SHIPIT_SRC"
+  [ "$output" = "" ]
+  [ "$status" -eq 0 ]
+  copy_plugin "$BATS_TEST_TMPDIR/copy"
+  sed -i '/^1\. /s/^1\. /1. Run `shipit start <slice>`. /' "$BATS_TEST_TMPDIR/copy/skills/shipit-slice/SKILL.md"
+  run check_start_order "$BATS_TEST_TMPDIR/copy"
+  [ "$status" -eq 1 ]
+  [[ $output == *"shipit-slice: shipit start comes before the build plan review"* ]]
+  copy_plugin "$BATS_TEST_TMPDIR/copy2"
+  sed -i '/^9\. /s/hands each slice/runs `shipit start` for each slice and hands each slice/' "$BATS_TEST_TMPDIR/copy2/skills/shipit-roadmap/SKILL.md"
+  run check_start_order "$BATS_TEST_TMPDIR/copy2"
+  [ "$status" -eq 1 ]
+  [[ $output == *"shipit-roadmap: a line runs shipit start"* ]]
+}

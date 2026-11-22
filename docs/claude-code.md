@@ -191,7 +191,7 @@ Only `shipit:slice` may start agents: leaving `Agent` out of `tools` is what sto
 
 **Sessions and messages.** Name a session with `claude -n "$(shipit session-name <goal> <slice>)"` as under Sessions; a slice session ends with one message to the lead, which confirms with `shipit status`.
 
-**How slices run.** The last decision point of `shipit-roadmap` offers four ways: one session per slice; lead fan-out (the lead runs the slices in each slice's worktree); the `Workflow` tool, which only the owner's explicit opt-in chooses; and one agent per slice (`shipit:slice`, started by the lead in the slice's worktree).
+**How slices run.** The last decision point of `shipit-roadmap` offers four ways: one session per slice; lead fan-out (the lead runs the slices in each slice's worktree); the `Workflow` tool, which only the owner's explicit opt-in chooses; and one agent per slice (`shipit:slice`, started by the lead in the main working copy; it makes the slice's worktree itself).
 
 **One agent per slice.** The slice agent is one layer below the lead; its makers, reader, reviewers and tester are one layer deeper. Measured with the plugin loaded:
 - The agent cap counts nested agents. One slice agent needs room for itself and its widest moment, two reviewers: 3 agents. With `agents.parallel.agents = 4` one slice agent runs at a time; for n at once the lead proposes `agents.parallel.agents = 3 × n` as a setup-only pull request.
