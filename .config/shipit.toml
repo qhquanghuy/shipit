@@ -14,11 +14,45 @@ check = [
   "shipit lint",
   "shipit measure clones",
   "cargo deny check",
-  "base=\"$(shipit measure merge-base)\" && gitleaks git --redact --no-banner --log-opts=\"$base..HEAD\" .",
+  "base=\"$(shipit measure merge-base)\" && gitleaks git --redact --no-banner --log-opts=\"--text $base..HEAD\" .",
   "nix flake check --print-build-logs",
   "shipit coverage -- env -u SHIPIT_MERGE_BASE -u SHIPIT_CHECK -u SHIPIT_BRANCH -u SHIPIT_BIN -u CARGO_TARGET_DIR bash -c 'cargo build --locked && cargo test --locked && bats --tap tests'",
   "shipit metric clone-ratio \"$(shipit measure clone-ratio)\"",
   "shipit metric cognitive-complexity \"$(shipit measure cognitive-complexity)\"",
+]
+
+# A slice must not weaken the checks it is judged by, so a change to a file a check reads counts
+# as a setup change, which the owner approves by merging and which never comes with code. A path
+# that does not exist yet is listed too: the tool reads it as soon as someone adds it.
+# deny.toml and its two other places: cargo deny, its ignore list and licence rules.
+# .gitleaks.toml, .gitleaksignore: the secret scan, its rules and ignored fingerprints.
+# .gitattributes: a `binary` line there hides a file from the scan.
+# clippy.toml, .clippy.toml, rustfmt.toml, .rustfmt.toml: the lint and format settings, which the
+# flake's clippy and fmt checks read.
+# .cargo/config.toml, .cargo/config: cargo reads them for every build, test and lint run (flags, aliases).
+# flake.nix, flake.lock: the dev shell and every Nix check, so a fake tool or a pinned old one.
+# .shellcheckrc: the shellcheck rules of the flake's lint check.
+# .github/workflows, action.yml: CI, the gate that judges the pull request, and the recheck action it runs.
+# Cargo.toml is not listed (the owner's call): it holds the lint levels, but listing it would make
+# every dependency change a setup change. Cargo.lock is left out for the same reason.
+setup_files = [
+  "deny.toml",
+  ".deny.toml",
+  ".cargo/deny.toml",
+  ".gitleaks.toml",
+  ".gitleaksignore",
+  ".gitattributes",
+  "clippy.toml",
+  ".clippy.toml",
+  "rustfmt.toml",
+  ".rustfmt.toml",
+  ".cargo/config.toml",
+  ".cargo/config",
+  "flake.nix",
+  "flake.lock",
+  ".shellcheckrc",
+  ".github/workflows",
+  "action.yml",
 ]
 
 # Every check runs in the dev shell, which has pmd, lizard, cargo-deny and gitleaks.
