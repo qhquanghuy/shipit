@@ -201,6 +201,45 @@ Only `shipit:slice` may start agents: leaving `Agent` out of `tools` is what sto
 
 **Pushes, pull requests and the store.** A skill pushes only `git push -u origin slice/<goal>/<slice>`, alone in its Bash call. It opens the pull request with `gh pr create --title <title> --body-file <file>`. `gh pr create`, `gh pr edit` and `gh pr comment` pass the gate in every mode, so no gate stops a gh write: the skills' rule, to post to a pull request only when the owner says yes, is prose. Store files are copied in with one plain `mkdir -p … && cp …` through Bash, because the harness protects the git folder: a file-tool write there asks in default mode, goes to the classifier in auto mode, and is refused in dontAsk mode, and an allow rule does not change that.
 
+### Permissions the skills need
+
+The skills run commands and write files. In a headless run (`claude -p`) every question becomes a refusal, so give the permissions first. Put this in `.claude/settings.json`, or give the same rules with `--allowedTools`. Replace `./test.sh` with your project's own test command, and add `Read(<folder>/**)` if the plugin is loaded from a folder of your own.
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "Bash(shipit *)",
+      "Bash(git status *)",
+      "Bash(git log *)",
+      "Bash(git diff *)",
+      "Bash(git show *)",
+      "Bash(git rev-parse *)",
+      "Bash(git fetch *)",
+      "Bash(git grep *)",
+      "Bash(git worktree add *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git push -u origin slice/*)",
+      "Bash(gh pr create *)",
+      "Bash(gh pr view *)",
+      "Bash(gh pr diff *)",
+      "Bash(mktemp -d)",
+      "Bash(mkdir -p *)",
+      "Bash(cp *)",
+      "Bash(grep *)",
+      "Bash(cat *)",
+      "Bash(ls *)",
+      "Bash(./test.sh *)",
+      "Edit(//tmp/**)",
+      "Read(~/.claude/plugins/**)"
+    ]
+  }
+}
+```
+
+The store is in the git folder; a skill copies a file into it with one `mkdir -p` and one `cp`, which these rules allow. A skill makes its own temporary folder with `mktemp -d` under `/tmp`, so `Edit(//tmp/**)` lets it write drafts there.
+
 ## Limits
 
 Known, and not caught:

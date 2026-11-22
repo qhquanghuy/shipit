@@ -19,8 +19,8 @@ load helpers
 # these come from `shipit help <command>`, which cannot drift), messages without the `shipit: `
 # prefix, receipt fields, store paths and default values.
 
-# Flags of git, nix and cargo that the docs mention; any other flag must be one of shipit's.
-EXTERNAL_FLAGS=(--all-targets --branch --check --command --ignore-submodules --print-build-logs --release --pager --pre --short --template --numstat --separate-git-dir --stat --target-directory --body-file --title --git-common-dir --name-status --comments --detach --format)
+# Flags of git, gh, nix, cargo and claude (--allowed reads the start of --allowedTools) that the docs mention; any other flag must be one of shipit's.
+EXTERNAL_FLAGS=(--all-targets --branch --check --command --ignore-submodules --print-build-logs --release --pager --pre --short --template --numstat --separate-git-dir --stat --target-directory --body-file --allowed --title --git-common-dir --name-status --comments --detach --format)
 
 # files_in <root>: README.md, every file in docs/ and every skill under <root>.
 files_in() {

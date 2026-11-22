@@ -20,6 +20,45 @@ Status: early. `shipit help` lists the commands, and `shipit help <command>` giv
 
 The owner's guide is `docs/guide.md`: the three jobs of the owner, the skills, the roles and the decision points.
 
+### Permissions the skills need
+
+The skills run commands and write files. In a headless run (`claude -p`) every question becomes a refusal, so give the permissions first. Put this in `.claude/settings.json`, or give the same rules with `--allowedTools`. Replace `./test.sh` with your project's own test command, and add `Read(<folder>/**)` if the plugin is loaded from a folder of your own.
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "Bash(shipit *)",
+      "Bash(git status *)",
+      "Bash(git log *)",
+      "Bash(git diff *)",
+      "Bash(git show *)",
+      "Bash(git rev-parse *)",
+      "Bash(git fetch *)",
+      "Bash(git grep *)",
+      "Bash(git worktree add *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git push -u origin slice/*)",
+      "Bash(gh pr create *)",
+      "Bash(gh pr view *)",
+      "Bash(gh pr diff *)",
+      "Bash(mktemp -d)",
+      "Bash(mkdir -p *)",
+      "Bash(cp *)",
+      "Bash(grep *)",
+      "Bash(cat *)",
+      "Bash(ls *)",
+      "Bash(./test.sh *)",
+      "Edit(//tmp/**)",
+      "Read(~/.claude/plugins/**)"
+    ]
+  }
+}
+```
+
+The store is in the git folder; a skill copies a file into it with one `mkdir -p` and one `cp`, which these rules allow. A skill makes its own temporary folder with `mktemp -d` under `/tmp`, so `Edit(//tmp/**)` lets it write drafts there.
+
 ## Run it
 
 With Nix, without cloning:

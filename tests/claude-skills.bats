@@ -106,3 +106,68 @@ forbidden_text() {
     [ -n "$output" ] || { echo "not found: $word"; return 1; }
   done
 }
+
+# allow_rules <doc>: the Bash(...) rules of the allow list under "Permissions the skills need".
+allow_rules() {
+  awk '/^#+ Permissions the skills need$/ { on = 1; next } /^#+ / { on = 0 } on' "$1" |
+    grep -oE '"Bash\([^"]*\)"' | sed -e 's/^"Bash(//' -e 's/)"$//'
+}
+
+# needed_commands <skills dir>: every command a skill names in a code span that the harness asks about:
+# shipit, git, gh, mkdir, cp and mktemp, one per line, a compound split at &&, placeholders filled.
+needed_commands() {
+  local file span part
+  for file in "$1"/*/SKILL.md; do
+    grep -oE '`(shipit [a-z]|git |gh |mkdir -p |cp |mktemp )[^`]*`' "$file" | tr -d '`' | while IFS= read -r span; do
+      while IFS= read -r part; do
+        printf '%s\n' "$(fill "$part")"
+      done < <(sed 's/ && /\n/g' <<<"$span")
+    done
+  done
+}
+
+# covered <command> <rules file>: succeeds when an allow rule matches the command.
+covered() {
+  local command=$1 rule prefix
+  while IFS= read -r rule; do
+    if [[ $rule == *' *' ]]; then
+      prefix=${rule% \*}
+      [[ $command == "$prefix" || $command == "$prefix "* ]] && return 0
+    else
+      # shellcheck disable=SC2053
+      [[ $command == $rule ]] && return 0
+    fi
+  done <"$2"
+  return 1
+}
+
+# uncovered_commands <skills dir> <doc>: one line for each command a skill names that no rule allows.
+uncovered_commands() {
+  local command rules=$BATS_TEST_TMPDIR/rules.$$
+  allow_rules "$2" >"$rules"
+  [[ -s $rules ]] || { echo "no allow rules in $2"; return 0; }
+  while IFS= read -r command; do
+    covered "$command" "$rules" || echo "no allow rule for: $command"
+  done < <(needed_commands "$1" | sort -u)
+}
+
+@test "claude skills: every command a skill runs is covered by the allow list in the docs, and both lists are the same" {
+  run uncovered_commands "$SKILLS" "$SHIPIT_SRC/docs/claude-code.md"
+  [ "$output" = "" ]
+  [ "$status" -eq 0 ]
+  diff <(allow_rules "$SHIPIT_SRC/README.md") <(allow_rules "$SHIPIT_SRC/docs/claude-code.md")
+  [ -n "$(allow_rules "$SHIPIT_SRC/README.md")" ]
+  mkdir -p "$BATS_TEST_TMPDIR/docs"
+  grep -v '"Bash(gh pr create \*)"' "$SHIPIT_SRC/docs/claude-code.md" >"$BATS_TEST_TMPDIR/docs/claude-code.md"
+  run uncovered_commands "$SKILLS" "$BATS_TEST_TMPDIR/docs/claude-code.md"
+  [[ $output == *"no allow rule for: gh pr create"* ]]
+  grep -v '"Bash(shipit \*)"' "$SHIPIT_SRC/docs/claude-code.md" >"$BATS_TEST_TMPDIR/docs/claude-code.md"
+  run uncovered_commands "$SKILLS" "$BATS_TEST_TMPDIR/docs/claude-code.md"
+  [[ $output == *"no allow rule for: shipit "* ]]
+  grep -v '"Bash(git push' "$SHIPIT_SRC/docs/claude-code.md" >"$BATS_TEST_TMPDIR/docs/claude-code.md"
+  run uncovered_commands "$SKILLS" "$BATS_TEST_TMPDIR/docs/claude-code.md"
+  [[ $output == *"no allow rule for: git push -u origin slice/v1/demo"* ]]
+  sed 's/"Bash(cp \*)"/"Bash(cp)"/' "$SHIPIT_SRC/docs/claude-code.md" >"$BATS_TEST_TMPDIR/docs/claude-code.md"
+  run uncovered_commands "$SKILLS" "$BATS_TEST_TMPDIR/docs/claude-code.md"
+  [[ $output == *"no allow rule for: cp "* ]]
+}

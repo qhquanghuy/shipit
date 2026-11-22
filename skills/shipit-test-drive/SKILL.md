@@ -11,7 +11,7 @@ Does the test drive of one slice. The tester (`shipit:tester`) runs it, started 
 ## Output
 One `test-drive`: `shipit template test-drive`, checked with `shipit validate test-drive <file>`.
 ## Effects
-Runs the result inside the folder. Writes files only inside the folder. For a missing tool it follows the recipe of the machine notes.
+Runs the result inside the folder, with the commands its docs give, and `shipit validate` for the report. Writes files only inside the folder. For a missing tool it follows the recipe of the machine notes.
 Never: read the source, the build plan or the repository; edit anything outside the folder; install a tool globally (the plugin's install gate refuses it); start agents.
 ## Outcomes
 - **pass**: every done-when item is `[pass]` and no finding is a must fix. Next: the lead records it with `shipit receipt test-drive <slice>`, then the slice goes on to the pull request.

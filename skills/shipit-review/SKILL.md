@@ -14,7 +14,7 @@ Reviews one change in full and merges the result into one `review`. The owner, t
 ## Output
 One merged `review`: `shipit template review`, checked with `shipit validate review <file>`. Its agents fill `explanation`, `informed-review` and `second-opinion`.
 ## Effects
-Reads git and gh. Starts `shipit:reader`, then two reviewers at once. Writes every output in a temporary folder outside the repository; in a slice only, copies them into the store and records the receipts. In v1 every review is full.
+Reads git and gh: `git diff`, `git log`, `git fetch`, `gh pr view`, `gh pr diff`, `grep` and `sha256sum`. Starts `shipit:reader`, then two reviewers at once. Writes every output in a temporary folder that it makes itself with `mktemp -d` (it never asks the owner for one); in a slice only, copies them into the store and records the receipts. In v1 every review is full.
 Never: edit code, push, merge, or review the work itself as the lead. Post to the pull request only when the owner says yes: no gate stops a gh write, so this is a rule of prose.
 ## Outcomes
 - **approve**: both reviews approve (the worse of the two decides the outcome; from worst to best: rework, approve-after-fixes, approve). Next: the owner decides whether to ship; in a slice `shipit-slice` goes on to the test drive if the roadmap marks one, then the pull request.
@@ -62,7 +62,7 @@ Written by the informed reviewer, who knows the build plan; checked in step 7.
 - Look here: first every changed test from step 2a (path and line; edited, removed or weakened, and does it still prove what it proved), then two or three spots the informed reviewer is least sure of, each a step on a path.
 ## Store files
 - The store is `<git common dir>/shipit`. Find it with `git rev-parse --git-common-dir`, run alone, and type the printed path into the next command. A skill never spells the git folder itself.
-- Write: draft with the file tools in a temporary folder, validate the draft there, then copy it in with one plain command: `mkdir -p <git common dir>/shipit/goals/<goal>/slices/<slice>/reviews/round-<k> && cp <draft> <git common dir>/shipit/goals/<goal>/slices/<slice>/reviews/round-<k>/<name>`. A store file is never edited in place.
+- Write: draft with the file tools in a temporary folder made with `mktemp -d`, validate the draft there, then copy it in with one plain command: `mkdir -p <git common dir>/shipit/goals/<goal>/slices/<slice>/reviews/round-<k> && cp <draft> <git common dir>/shipit/goals/<goal>/slices/<slice>/reviews/round-<k>/<name>`. A store file is never edited in place.
 - Read: with the file tools, or `cat` and `ls`.
 ## Claims
 Every agent report and every review ends with three lists, each of which may be the single item `none`. **Verified:** checked by running something; each item names the command or test that ran. **Inferred:** reasoned from the code or the docs, not run; this is the list the owner must check. **Unverifiable:** could not be checked here, and why.
