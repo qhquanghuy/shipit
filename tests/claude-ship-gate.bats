@@ -180,7 +180,7 @@ gate() {
 
 @test "a slice push asks when the config can send it elsewhere" {
   local config
-  for config in "remote.origin.push refs/heads/slice/v1/x:refs/heads/main" "push.default matching" "help.autocorrect immediate"; do
+  for config in "remote.origin.push refs/heads/slice/v1/x:refs/heads/main" "push.default matching" "push.default upstream" "help.autocorrect immediate"; do
     # shellcheck disable=SC2086
     git config $config
     gate "git push -u origin slice/v1/x" bypassPermissions
@@ -234,4 +234,33 @@ gate() {
   run --separate-stderr timeout 10 "$SHIPIT_BIN" claude-ship-gate <"$input"
   [ "$status" -eq 0 ]
   [ -z "$output" ]
+}
+
+# push.default=upstream sends a branch to the branch it tracks: main, for a slice cut from it.
+@test "a slice cut from main asks under push.default=upstream, and not under simple" {
+  git push -q origin main
+  git fetch -q origin
+  git checkout -q -b slice/v1/z origin/main
+  printf 'z\n' >z.txt
+  git add z.txt
+  git commit -q -m "z"
+  git config push.default upstream
+  gate "git push origin slice/v1/z" bypassPermissions
+  [ "$(decision)" = deny ]
+  [[ $(reason) == *"can send it elsewhere"* ]]
+  git config push.default simple
+  gate "git push origin slice/v1/z" bypassPermissions
+  [ -z "$output" ]
+}
+
+@test "git commands that are not on the list ask, and the ones on it pass" {
+  local command
+  for command in "git -c core.fsmonitor='g\"\"it push origin main #' status" "git rebase --exec 'g\"\"it push origin main' HEAD~1" "git submodule foreach 'g\"\"it push origin main'" "git psuh origin main"; do
+    gate "$command" bypassPermissions
+    [ "$(decision)" = deny ]
+  done
+  for command in "git status" "git add -A && git commit -m 'x' && git push -u origin slice/v1/x" "git add config" "git log -- config" "git fetch"; do
+    gate "$command" bypassPermissions
+    [ -z "$output" ]
+  done
 }

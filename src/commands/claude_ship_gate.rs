@@ -105,6 +105,7 @@ fn facts_at(dir: &Path) -> Facts {
     let rewires = lines_of(&git, &["config", "--list"]).join("\n");
     Facts {
         rewires_push: rewires_push(&rewires),
+        current: git.current_branch(),
         base: base_names(&git),
         heads: refs(&git, "refs/heads/"),
         tags: refs(&git, "refs/tags/"),

@@ -58,7 +58,7 @@ fn is_assignment(word: &str) -> bool {
 }
 
 // The program of a segment: its first word that is not a `NAME=value` prefix.
-fn leading_program<'a>(mut words: impl Iterator<Item = &'a str>) -> Option<&'a str> {
+pub(crate) fn leading_program<'a>(mut words: impl Iterator<Item = &'a str>) -> Option<&'a str> {
     words.find(|word| !is_assignment(word)).map(program)
 }
 
