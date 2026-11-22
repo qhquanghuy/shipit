@@ -8,7 +8,7 @@ use crate::pure::finding::{
 use crate::pure::goal::goal_items;
 use crate::pure::kinds::form;
 use crate::pure::markdown::{Kind, Line, lines};
-use crate::pure::markdown_parts::{bold_marker, heading, list_item};
+use crate::pure::markdown_parts::{bold_marker, heading, list_item, without_code_spans};
 use crate::pure::messages::{FILE_PROBLEM, NO_BLOCK, NOT_TOML, say};
 use crate::pure::roadmap::{Element, meets_problems, parse_roadmap};
 use crate::pure::setup::toml_table;
@@ -69,6 +69,12 @@ pub(crate) enum Check {
     FileLines,
     // The item contains one of the phrases and then the name of a slice or proof step.
     NamesElement(&'static [&'static str]),
+    // The item names what ran in a code span.
+    CodeSpan,
+    // The item points at a line of a file: a diff or line link, or `<file>:<line>` somewhere in it.
+    Place,
+    // Any item will do; the part only has to say something, or `none`.
+    Item,
 }
 
 impl Spec {
@@ -427,6 +433,24 @@ fn is_file_lines(item: &str) -> bool {
         && !text.trim().is_empty()
 }
 
+// A diff or line link, or a word that is `<file>:<line>` or `<file>:<first>-<last>` once the marks around it are
+// gone, so a step can say where it is the way a reader's tool opens it.
+fn names_a_place(item: &str) -> bool {
+    (item.contains("https://") && (item.contains("#diff-") || item.contains("#L")))
+        || item.split_whitespace().any(|word| {
+            let word = word
+                .trim_matches(|c: char| matches!(c, '`' | '(' | ')' | '[' | ']' | ',' | ';' | '.'))
+                .trim_end_matches(':');
+            word.rsplit_once(':').is_some_and(|(path, lines)| {
+                let range = match lines.split_once('-') {
+                    Some((first, last)) => first.parse::<u64>().ok().zip(last.parse::<u64>().ok()),
+                    None => lines.parse::<u64>().ok().map(|line| (line, line)),
+                };
+                !path.is_empty() && range.is_some_and(|(first, last)| first <= last)
+            })
+        })
+}
+
 // A name after a phrase; a spike is not in the roadmap, so any name will do for it. Without the
 // roadmap's names (it did not parse) nothing can be held against them.
 fn names_an_element(item: &str, phrases: &[&str], names: Option<&[String]>) -> bool {
@@ -471,6 +495,12 @@ impl Check {
                     comma_list(phrases.iter().map(|phrase| phrase.trim_end()))
                 )
             }),
+            Self::CodeSpan => (without_code_spans(item) == item)
+                .then(|| "must name the command or test that ran, in a code span".to_owned()),
+            Self::Place => (!names_a_place(item)).then(|| {
+                "must hold a diff link (https://...#diff-...) or <file>:<line>".to_owned()
+            }),
+            Self::Item => None,
         }
     }
 }
@@ -837,14 +867,15 @@ mod tests {
                     format!("{}because of {seed}", chosen(&fits, seed))
                 }
                 Some(Check::Contains(phrases)) => format!("a {}word", chosen(phrases, seed)),
-                Some(Check::FileLines) if seed.is_multiple_of(2) => {
+                Some(Check::FileLines | Check::Place) if seed.is_multiple_of(2) => {
                     "src/a.rs:3-5: words".to_owned()
                 }
-                Some(Check::FileLines) => "src/a.rs:4: words".to_owned(),
+                Some(Check::FileLines | Check::Place) => "src/a.rs:4: words".to_owned(),
+                Some(Check::CodeSpan) => format!("ran `cargo test` {seed}"),
+                Some(Check::Item) | None => format!("words {seed}"),
                 Some(Check::NamesElement(phrases)) => {
                     format!("a thing, {}alpha and more", chosen(phrases, seed))
                 }
-                None => format!("words {seed}"),
             }
         };
         vec![format!("- {item}")]
@@ -1365,7 +1396,7 @@ mod tests {
         // A hidden must-fix finding would pass under `approve`: nested, plain, or after a heading.
         #[test]
         fn a_finding_outside_the_findings_list_is_refused(
-            kind in prop::sample::select(vec!["second-opinion", "informed-review", "test-drive"]),
+            kind in prop::sample::select(vec!["second-opinion", "informed-review", "review", "plan-review", "test-drive"]),
             place in 0_usize..9,
             seed in any::<u64>(),
         ) {
@@ -1753,6 +1784,194 @@ mod tests {
                 "too long: {count} lines (owner.max_lines is {})",
                 max - 1
             )])
+        );
+    }
+
+    const CLAIM_KINDS: [&str; 4] = ["review", "informed-review", "second-opinion", "plan-review"];
+    const CLAIMS: [&str; 3] = ["Verified", "Inferred", "Unverifiable"];
+
+    // A review kind that has these parts, with the outcome picked by index.
+    fn review_with(parts: &[&str], kind: &str, outcome: usize) -> (&'static Spec, &'static str) {
+        let spec = spec_of(kind);
+        let listed = &spec.outcomes[outcome % spec.outcomes.len()];
+        assert!(parts.iter().all(|part| listed.parts.contains(part)));
+        (spec, listed.name)
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            failure_persistence: None,
+            ..ProptestConfig::default()
+        })]
+
+        // Every outcome of a review kind asks for all three lists; none is optional.
+        #[test]
+        fn every_review_outcome_needs_the_three_claim_lists(
+            kind in prop::sample::select(CLAIM_KINDS.to_vec()),
+            outcome in 0_usize..3,
+            claim in prop::sample::select(CLAIMS.to_vec()),
+            seed in any::<u64>(),
+        ) {
+            let (spec, outcome) = review_with(&CLAIMS, kind, outcome);
+            let mut parts = bodies(spec, outcome, seed);
+            parts.retain(|(part, _)| *part != claim);
+            let text = render(spec, outcome, seed, &parts);
+            prop_assert_eq!(problems_of(spec, &text), vec![format!("part \"{claim}\" is missing")]);
+        }
+
+        #[test]
+        fn a_claim_list_may_be_the_single_item_none(
+            kind in prop::sample::select(CLAIM_KINDS.to_vec()),
+            outcome in 0_usize..3,
+            claim in prop::sample::select(CLAIMS.to_vec()),
+        ) {
+            let (spec, outcome) = review_with(&CLAIMS, kind, outcome);
+            let text = with_body(spec, outcome, claim, &["none"]);
+            prop_assert!(validate(spec, &ctx(1000), &text).is_ok());
+        }
+
+        // Inferred and Unverifiable take any item, but must have one; Verified needs a code span.
+        #[test]
+        fn verified_items_name_what_ran_in_a_code_span(
+            kind in prop::sample::select(CLAIM_KINDS.to_vec()),
+            words in "[a-z][a-z ]{0,10}",
+            span in "[a-z][a-z ]{0,10}",
+        ) {
+            let (spec, outcome) = review_with(&CLAIMS, kind, 0);
+            let bare = with_body(spec, outcome, "Verified", &[&words]);
+            prop_assert_eq!(
+                problems_of(spec, &bare),
+                vec!["part \"Verified\" item 1 must name the command or test that ran, in a code span".to_owned()]
+            );
+            let named = with_body(spec, outcome, "Verified", &[&format!("`{span}`: {words}")]);
+            prop_assert!(validate(spec, &ctx(1000), &named).is_ok());
+            for claim in ["Inferred", "Unverifiable"] {
+                let any = with_body(spec, outcome, claim, &[&words]);
+                prop_assert!(validate(spec, &ctx(1000), &any).is_ok());
+            }
+        }
+
+        // A step of the reading path and a spot of look here say where they are: a diff link or a line.
+        #[test]
+        fn a_step_says_where_it_is(
+            kind in prop::sample::select(vec!["review", "informed-review"]),
+            part in prop::sample::select(vec!["Reading path", "Look here"]),
+            path in "[a-z][a-z/.]{0,8}",
+            line in 0_u64..500,
+            first in 0_u64..500,
+            last in 0_u64..500,
+            style in 0_usize..6,
+        ) {
+            let (spec, outcome) = review_with(&["Reading path"], kind, 0);
+            let place = [
+                format!("`f` at {path}:{line}"),
+                format!("`f` ({path}:{first}-{last})"),
+                format!("`f` https://github.com/o/r/pull/1/files#diff-ab{path}R{line}"),
+                format!("`f` at {path}"),
+                format!("`f` at {path}:{line}x"),
+                "`f` https://github.com/o/r".to_owned(),
+            ][style].clone();
+            let accepted = match style {
+                0 | 2 => true,
+                1 => first <= last,
+                _ => false,
+            };
+            let text = with_body(spec, outcome, part, &[&place]);
+            let got = validate(spec, &ctx(1000), &text);
+            prop_assert_eq!(got.is_ok(), accepted, "{} {:?}", place, got);
+            if !accepted {
+                prop_assert_eq!(
+                    got,
+                    Err(vec![format!(
+                        "part \"{part}\" item 1 must hold a diff link (https://...#diff-...) or <file>:<line>"
+                    )])
+                );
+            }
+        }
+
+        // Look here cannot be none, and the reading path and other files can.
+        #[test]
+        fn none_in_look_here_is_refused_and_in_the_other_two_accepted(
+            kind in prop::sample::select(vec!["review", "informed-review"]),
+        ) {
+            let (spec, outcome) = review_with(&["Reading path"], kind, 0);
+            for part in ["Reading path", "Other files"] {
+                let text = with_body(spec, outcome, part, &["none"]);
+                prop_assert!(validate(spec, &ctx(1000), &text).is_ok());
+            }
+            let text = with_body(spec, outcome, "Look here", &["none"]);
+            prop_assert!(validate(spec, &ctx(1000), &text).is_err());
+        }
+
+        #[test]
+        fn other_files_name_a_risk(
+            kind in prop::sample::select(vec!["review", "informed-review"]),
+            risk in prop::sample::select(vec!["high", "medium", "low", "none", ""]),
+        ) {
+            let (spec, outcome) = review_with(&["Other files"], kind, 0);
+            let text = with_body(spec, outcome, "Other files", &[&format!("tests: risk: {risk} words")]);
+            prop_assert_eq!(
+                validate(spec, &ctx(1000), &text).is_ok(),
+                ["high", "medium", "low"].contains(&risk)
+            );
+        }
+
+        // An approval cannot carry a teach-back that is wrong, or a gap in the done-when items.
+        #[test]
+        fn an_approval_cannot_contradict_its_own_parts(
+            case in prop::sample::select(vec![
+                ("review", "Teach-back", "[wrong] "),
+                ("informed-review", "Teach-back", "[wrong] "),
+                ("plan-review", "Done-when", "[gap] "),
+            ]),
+            why in "[a-z][a-z ]{0,8}",
+        ) {
+            let (kind, part, start) = case;
+            let spec = spec_of(kind);
+            let said = format!("{start}{why}");
+            let approved = with_body(spec, "approve", part, &[&said]);
+            prop_assert_eq!(
+                problems_of(spec, &approved),
+                vec![format!(
+                    "part \"{part}\" item 1 starts with {}, which does not fit the outcome approve",
+                    start.trim_end()
+                )]
+            );
+            let reworked = with_body(spec, "rework", part, &[&said]);
+            prop_assert!(validate(spec, &ctx(1000), &reworked).is_ok());
+        }
+    }
+
+    // A filled review as an agent writes it: flows under sub-headings with a diagram in a fence stay
+    // inside their part.
+    #[test]
+    fn a_reading_path_may_hold_flows_and_a_diagram() {
+        let spec = spec_of("review");
+        let mut parts = bodies(spec, "approve", 1);
+        if let Some((_, body)) = parts.iter_mut().find(|(name, _)| *name == "Reading path") {
+            *body = vec![
+                "### Flow: shipit run".to_owned(),
+                String::new(),
+                "- `run` takes args, returns a result: src/a.rs:4 risk: low".to_owned(),
+                String::new(),
+                "```mermaid".to_owned(),
+                "sequenceDiagram".to_owned(),
+                "  A->>B: call".to_owned(),
+                "```".to_owned(),
+            ];
+        }
+        let text = render(spec, "approve", 1, &parts);
+        assert!(text.contains("### Flow: shipit run"));
+        assert!(validate(spec, &ctx(1000), &text).is_ok());
+    }
+
+    #[test]
+    fn a_plan_review_marks_each_done_when_item() {
+        let spec = spec_of("plan-review");
+        let text = with_body(spec, "approve-after-fixes", "Done-when", &["DW1 words"]);
+        assert_eq!(
+            problems_of(spec, &text),
+            ["part \"Done-when\" item 1 must start with one of: [covered], [gap], then say why"]
         );
     }
 }

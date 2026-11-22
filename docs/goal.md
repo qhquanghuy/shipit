@@ -1,6 +1,6 @@
 # ShipIt: goal
 
-Status: version 4, approved by the owner on 2026-11-22 (v3 approved 2026-11-22; v2 and v1 approved 2026-11-21). Terms are defined in [vocab.md](vocab.md).
+Status: version 5, approved by the owner on 2026-11-22 (v4 and v3 approved 2026-11-22; v2 and v1 approved 2026-11-21). Terms are defined in [vocab.md](vocab.md).
 
 ## Goal
 
@@ -75,6 +75,17 @@ The human reviewer reads the change, so the code must be simple to read:
 
 A **reader** (a low-rank model) explains the change without seeing the build plan. The informed
 reviewer compares that explanation with the goal, or with what the pull request claims when there is no goal. It is a signal, not a gate.
+
+A review also gives the reader of the change a **reading path**: one flow for each entry point the
+change adds or alters, with the steps in call order, a risk word where care is needed, and a link
+to each line; the files on no path, grouped with a risk word; and **look here**, which opens with
+every test the change edited, removed or weakened, and then the spots the reviewer is least sure of.
+
+Every review, and every report an agent gives, ends with three lists: **Verified** (checked by
+running something; each item names the command or test), **Inferred** (reasoned, not run) and
+**Unverifiable** (could not be checked here, and why). A list may be the single item `none`.
+
+A bug fix starts with a test that reproduces the bug, committed failing before the fix.
 
 ## Keep a file only if a tool reads it or a test checks it against the code
 
@@ -189,8 +200,11 @@ one output of a known shape. A template fixes:
 - the **required parts** for each outcome, for example every fact a scout reports has a source;
 - a small machine-readable header that names the outcome and the input it answered.
 
-Templates exist for: a decision point, the roadmap, the build plan, a scout's report, model advice, a review (informed or second
-opinion), a test drive, and a known issue. `shipit validate` checks a filled output against its
+Templates exist for: a decision point, the roadmap, the build plan, a scout's report, model advice, an explanation,
+a review (`review`, the merged review the owner reads; `informed-review` and `second-opinion`, the two
+reviews it is made from), a review of a roadmap or a build plan (`plan-review`), a test drive, and a
+known issue. `review`, `informed-review`, `second-opinion` and `plan-review` end with the
+Verified, Inferred and Unverifiable lists for every outcome. `shipit validate` checks a filled output against its
 template and refuses one with an unlisted outcome or a missing part. The lead hands an output to
 the next phase only after it validates.
 
@@ -198,7 +212,7 @@ the next phase only after it validates.
 |---|---|---|
 | scout | report | found, partial, not found |
 | planner | roadmap, build plan | ready for review |
-| reviewer | review | approve, approve after fixes, rework |
+| reviewer | review, or a review of a roadmap or a build plan | approve, approve after fixes, rework |
 | tester | test drive | pass, findings |
 | researcher | model advice | ready for the owner |
 | reader | explanation of the change, written without the build plan | understood, unclear |

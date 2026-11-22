@@ -10,6 +10,10 @@ A slice is one pull request that leaves the base branch working. It is made on i
 
 The size of a slice is the number of files it changes against the base branch, counted from the point where the branch left the base; a rename counts once. The limit is `gate.max_files` in the setup.
 
+## Bug fix
+
+A bug fix starts with a test that reproduces the bug, committed failing before the fix; the build plan names that test.
+
 ## Check commands
 
 The check is the list `gate.check` of the setup, run by `shipit check`. For code it holds:

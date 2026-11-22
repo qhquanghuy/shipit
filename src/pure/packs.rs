@@ -83,6 +83,7 @@ fn coding_pack_covers_each_term() {
     for term in [
         "slice",
         "size",
+        "a bug fix starts with a test that reproduces the bug, committed failing before the fix",
         "recheck",
         "check commands",
         "security",
