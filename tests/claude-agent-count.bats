@@ -47,28 +47,36 @@ entries() {
   find "$DATA/agents/${1:-s1}" -type f \( -name 'r-*' -o -name 'a-*' \) -printf '%f\n' | sort
 }
 
-@test "eight agents started at once: exactly four admitted" {
-  local i input
-  input=$(agent_input "$REPO" general-purpose "Do it.")
-  for i in $(seq 1 8); do
-    (
-      jq -c --arg id "t$i" '.tool_use_id = $id' <<<"$input" |
-        "$SHIPIT_BIN" claude-agent-gate >"$BATS_TEST_TMPDIR/out.$i"
-    ) &
+# rounds of calls started all at once, each round in a session of its own: the lock is what
+# makes the count exact, and a few starts alone could miss a missing lock.
+@test "thirty-two agents started at once, ten times: exactly four admitted each time" {
+  local round i input go="$BATS_TEST_TMPDIR/go"
+  for round in $(seq 1 10); do
+    rm -f "$go"
+    input=$(agent_input "$REPO" general-purpose "Do it." | jq -c --arg session "round$round" '.session_id = $session')
+    for i in $(seq 1 32); do
+      (
+        jq -c --arg id "t$i" '.tool_use_id = $id' <<<"$input" >"$BATS_TEST_TMPDIR/in.$i"
+        until [[ -e $go ]]; do :; done
+        "$SHIPIT_BIN" claude-agent-gate <"$BATS_TEST_TMPDIR/in.$i" >"$BATS_TEST_TMPDIR/out.$i"
+      ) &
+    done
+    sleep 0.5
+    touch "$go"
+    wait
+    local empty=0 denied=0
+    for i in $(seq 1 32); do
+      if [[ ! -s $BATS_TEST_TMPDIR/out.$i ]]; then
+        empty=$((empty + 1))
+      elif jq -e '.hookSpecificOutput.permissionDecision == "deny" and (.hookSpecificOutput.permissionDecisionReason | contains("[agents.parallel] agents"))' \
+        "$BATS_TEST_TMPDIR/out.$i" >/dev/null; then
+        denied=$((denied + 1))
+      fi
+    done
+    [ "$empty" -eq 4 ]
+    [ "$denied" -eq 28 ]
+    [ "$(entries "round$round" | wc -l)" -eq 4 ]
   done
-  wait
-  local empty=0 denied=0
-  for i in $(seq 1 8); do
-    if [[ ! -s $BATS_TEST_TMPDIR/out.$i ]]; then
-      empty=$((empty + 1))
-    elif jq -e '.hookSpecificOutput.permissionDecision == "deny" and (.hookSpecificOutput.permissionDecisionReason | contains("[agents.parallel] agents"))' \
-      "$BATS_TEST_TMPDIR/out.$i" >/dev/null; then
-      denied=$((denied + 1))
-    fi
-  done
-  [ "$empty" -eq 4 ]
-  [ "$denied" -eq 4 ]
-  [ "$(entries | wc -l)" -eq 4 ]
 }
 
 @test "a start, then a stop, frees a place" {
@@ -121,10 +129,10 @@ entries() {
   [ -d "$DATA/agents/young" ]
 }
 
-@test "compact and resume keep the ledger" {
+@test "compact, clear and fork keep the ledger, and a resume drops the agents of the run before" {
   fill 2
   local source
-  for source in compact resume clear fork; do
+  for source in compact clear fork; do
     event SessionStart "{\"session_id\":\"s1\",\"source\":\"$source\"}"
     [ "$(entries | wc -l)" -eq 2 ]
   done
@@ -134,6 +142,10 @@ entries() {
   admitted
   call t5
   refused
+  event SessionStart '{"session_id":"s1","source":"resume"}'
+  [ ! -e "$DATA/agents/s1" ]
+  call t6
+  admitted
 }
 
 @test "each bookkeeping event is read without tool_name or tool_input" {

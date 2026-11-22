@@ -159,8 +159,9 @@ pub(crate) fn reconcile(entries: &[Entry], background_subagents: usize) -> Vec<C
         .collect()
 }
 
-// A ledger that nothing has touched for a week belongs to a session that is gone. One with no
-// readable start time is not judged.
+// A ledger started more than a week ago is taken to belong to a session that is gone: the start
+// time is written once, so a session that runs longer loses its count when another session
+// starts (a known limit, in the docs). One with no readable start time is not judged.
 pub(crate) fn is_stale(started: Option<&str>, now: i64) -> bool {
     started
         .and_then(|text| seconds(text.trim()))

@@ -44,10 +44,15 @@ fn bookkeep(input: &HookInput) -> Result<(), String> {
         })
     };
     if input.event == "SessionStart" {
-        if input.source.as_deref() == Some("startup") {
-            if let Some(ledger) = Ledger::open(session, false)? {
-                ledger.clear();
-            }
+        // A start and a resume are new processes: no agent of an earlier run is alive, so its
+        // entries are leaks. A compact, a clear and a fork go on in the same process.
+        let source = input.source.as_deref();
+        if matches!(source, Some("startup" | "resume"))
+            && let Some(ledger) = Ledger::open(session, false)?
+        {
+            ledger.clear();
+        }
+        if source == Some("startup") {
             remove_stale(session)?;
         }
         return Ok(());
