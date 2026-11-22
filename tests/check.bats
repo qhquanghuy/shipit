@@ -958,3 +958,120 @@ rename_files() {
   [ "$status" -eq 2 ]
   [ "$stderr" = 'shipit: base branch "origin/main" not found (looked for origin/origin/main and origin/main); name the branch, not the remote: "main"' ]
 }
+
+# start_listing <json array> [path=value]...: start_repo, but the base's setup lists these
+# files (deny.toml and flake.nix exist in it).
+start_listing() {
+  local listed=$1 repo
+  shift
+  repo=$(make_repo)
+  cd "$repo"
+  printf 'deny\n' >deny.toml
+  printf 'flake\n' >flake.nix
+  git add deny.toml flake.nix
+  git commit -q -m "configs"
+  write_setup "$(fixture_with "${@:-gate.check=[]}" | sed "/^check = /a setup_files = $listed")"
+  git checkout -q -b feature
+}
+
+# with_listing <json array> [path=value]...: the fixture with that list.
+with_listing() {
+  local listed=$1
+  shift
+  fixture_with "${@:-gate.check=[]}" | sed "/^check = /a setup_files = $listed"
+}
+
+@test "a slice that changes only a listed file is a setup change: a notice naming the file, a marked receipt" {
+  start_listing '["deny.toml", "flake.nix"]'
+  printf 'weaker\n' >deny.toml
+  git commit -q -am "ignore an advisory"
+  run_check
+  [ "$status" -eq 0 ]
+  [ "$stderr" = "shipit: this slice changes the checks (deny.toml); setup change: the owner approves it by merging" ]
+  jq -e '.setup_change == true and .setup_fields == ["deny.toml"]' "$(store)"/receipts/check/*.json
+  run --separate-stderr "$SHIPIT_BIN" verify
+  [ "$status" -eq 0 ]
+  [[ $output == "valid receipt for "*" (setup change)" ]]
+}
+
+@test "a slice that changes the setup file and listed files alone is one setup change" {
+  start_listing '["deny.toml", "flake.nix"]'
+  write_setup "$(with_listing '["deny.toml", "flake.nix"]' 'gate.check=[]' 'gate.max_files=61')"
+  printf 'x\n' >flake.nix
+  git commit -q -am "a tool"
+  run_check
+  [ "$status" -eq 0 ]
+  [ "$stderr" = "shipit: this slice changes the checks (gate.max_files, flake.nix); setup change: the owner approves it by merging" ]
+  jq -e '.setup_fields == ["gate.max_files", "flake.nix"]' "$(store)"/receipts/check/*.json
+}
+
+@test "a listed file changed together with code is refused, naming the file: no command, no receipt" {
+  start_listing '["deny.toml", "flake.nix"]' "gate.check=$(checks "echo ran >> '$LOG'")"
+  printf 'weaker\n' >deny.toml
+  printf 'x\n' >code
+  git add code
+  git commit -q -am "code and a config"
+  run_check
+  [ "$status" -eq 1 ]
+  [ "$stderr" = "$(changed_msg deny.toml)" ]
+  [ ! -e "$LOG" ]
+  no_receipt
+}
+
+@test "a file that is not listed is code, whatever its name" {
+  start_listing '["deny.toml"]'
+  printf 'x\n' >flake.nix
+  printf 'y\n' >code
+  git add code
+  git commit -q -am "code and an unlisted file"
+  run_check
+  [ "$status" -eq 0 ]
+  [ -z "$stderr" ]
+}
+
+@test "dropping a file from the list in the slice does not free it: the base's list applies" {
+  start_listing '["deny.toml", "flake.nix"]'
+  write_setup "$(with_listing '["flake.nix"]')"
+  printf 'weaker\n' >deny.toml
+  git commit -q -am "unlist and weaken"
+  run_check
+  [ "$status" -eq 0 ]
+  [ "$stderr" = "shipit: this slice changes the checks (gate.setup_files, deny.toml); setup change: the owner approves it by merging" ]
+  printf 'x\n' >code
+  git add code
+  git commit -q -m "and code"
+  run_check
+  [ "$status" -eq 1 ]
+  [ "$stderr" = "$(changed_msg 'gate.setup_files, deny.toml')" ]
+}
+
+@test "listing a file in the slice does not make it a setup file yet: only the base's list counts" {
+  start_repo
+  printf 'deny\n' >deny.toml
+  write_setup "$(with_listing '["deny.toml"]')"
+  git add deny.toml
+  git commit -q -m "list and add the file"
+  run_check
+  [ "$status" -eq 1 ]
+  [ "$stderr" = "$(changed_msg gate.setup_files)" ]
+}
+
+@test "adding the list alone is a setup change" {
+  start_repo
+  write_setup "$(with_listing '["deny.toml"]')"
+  run_check
+  [ "$status" -eq 0 ]
+  [ "$stderr" = "shipit: this slice changes the checks (gate.setup_files); setup change: the owner approves it by merging" ]
+  jq -e '.setup_fields == ["gate.setup_files"]' "$(store)"/receipts/check/*.json
+}
+
+@test "a listed folder holds every file below it" {
+  start_listing '["conf/"]'
+  mkdir -p conf/a
+  printf 'x\n' >conf/a/b
+  git add conf
+  git commit -q -m "below the folder"
+  run_check
+  [ "$status" -eq 0 ]
+  [ "$stderr" = "shipit: this slice changes the checks (conf/a/b); setup change: the owner approves it by merging" ]
+}

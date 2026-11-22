@@ -28,6 +28,16 @@ The measures and scans of this pack are these check commands, added after the te
 
 The limits of the clone and complexity measures are in `shipit help measure`.
 
+## Setup files
+
+A slice must not weaken the checks it is judged by. List in `gate.setup_files` every file the check commands read, so that a change to one is a setup change that the owner approves by merging and never comes with code:
+
+- `deny.toml`, for `cargo deny`;
+- `.gitleaks.toml` and `.gitleaksignore`, for the secret scan;
+- the tool environment: `flake.nix` and `flake.lock` for a Nix project, or the lock and tool-version files of another environment manager.
+
+The base branch's list is the one that applies to a slice, so add or change the list in a slice of its own.
+
 ## Recheck
 
 The recheck is the continuous integration run on the pull request. It runs the same commands where the maker has no control and trusts no receipt.

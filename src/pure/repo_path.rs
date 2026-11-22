@@ -24,6 +24,12 @@ impl RepoPath {
         &self.0
     }
 
+    // The path itself or anything below it, by the bytes git lists.
+    pub(crate) fn covers(&self, name: &[u8]) -> bool {
+        name.strip_prefix(self.0.as_bytes())
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with(b"/"))
+    }
+
     // The path itself and every folder above it, shortest first.
     pub(crate) fn self_and_parents(&self) -> impl Iterator<Item = &str> {
         self.0
@@ -63,6 +69,24 @@ mod tests {
             prop_assert_eq!(plain.to_string(), text.clone());
             prop_assert_eq!(&folder, &plain);
             prop_assert_eq!(serde_json::to_string(&plain).ok(), Some(format!("\"{text}\"")));
+        }
+
+        #[test]
+        fn a_path_covers_itself_and_what_is_below_it_and_nothing_else(
+            text in path(),
+            below in path(),
+            tail in "[a-z0-9._-]{1,3}",
+        ) {
+            let parsed = RepoPath::parse(&text).expect("a normal path");
+            prop_assert!(parsed.covers(text.as_bytes()));
+            let under = format!("{text}/{below}");
+            let longer = format!("{text}{tail}");
+            prop_assert!(parsed.covers(under.as_bytes()));
+            prop_assert!(!parsed.covers(longer.as_bytes()));
+            prop_assert!(!parsed.covers(b""));
+            if let Some((parent, _last)) = text.rsplit_once('/') {
+                prop_assert!(!parsed.covers(parent.as_bytes()));
+            }
         }
 
         #[test]

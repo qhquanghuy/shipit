@@ -11,7 +11,7 @@ use crate::edge::run::run_check;
 use crate::edge::store::{check_receipt_path, write_json_atomic};
 use crate::pure::base::{BaseRef, BranchName, SelfBase, base_verdict, origin_notice};
 use crate::pure::baseline::{
-    Flow, SetupVerdict, parse_baseline, setup_changes, setup_only, setup_verdict,
+    Flow, Judgement, Touched, judge_diff, parse_baseline, setup_changes, setup_only,
 };
 use crate::pure::failure::Failure;
 use crate::pure::receipt::{BaseUsed, CheckReceipt, Oid};
@@ -29,7 +29,7 @@ pub(crate) const NEEDS_SETUP: bool = true;
 pub(crate) const USAGE: &str = "usage: shipit check [--base <name>]";
 pub(crate) const SUMMARY: &str = "Refuses a dirty tree, measures the size against the cap, runs the setup's check commands in order, and on a full pass writes a check receipt for this exact version of the work.";
 pub(crate) const EXITS: [&str; 4] = [
-    "receipt written (marked setup_change when the slice only changes the setup file)",
+    "receipt written (marked setup_change when the slice only changes the setup file or the files it lists)",
     "a check failed, a check changed the work, the change is over the cap, or the slice changes the checks together with other files",
     "usage or setup error (bad arguments, a base that is not a branch name, missing or invalid setup file, base branch not found, no shared history with it, a base that is the branch itself, sparse checkout, git failed, the receipt could not be written)",
     "uncommitted changes, or a tracked file hidden from git",
@@ -169,26 +169,24 @@ fn changed_setup(fields: &[String], base: &BranchName) -> Failure {
 }
 
 // A branch that could change the checks along with its code could vouch for itself, so the
-// owner merges those first. A slice that edits the setup file alone only asks the owner: it is
-// marked in the receipt and approved by merging.
+// owner merges those first. A slice that edits the setup file and the files the base lists
+// alone only asks the owner: it is marked in the receipt and approved by merging.
 fn approve_setup_change(
-    git: &Git,
-    changes: &[String],
-    since: &Oid,
+    touched: Touched,
     base: &BranchName,
     err: &mut dyn Write,
 ) -> Result<Vec<String>, Failure> {
-    if !setup_only(&git.changed_names(since)?) {
-        return Err(changed_setup(changes, base));
+    if !touched.alone {
+        return Err(changed_setup(&touched.fields, base));
     }
     writeln!(
         err,
         "shipit: this slice changes the checks ({}); setup change: the owner approves it by \
          merging",
-        comma_list(changes)
+        comma_list(&touched.fields)
     )
     .ok();
-    Ok(changes.to_vec())
+    Ok(touched.fields)
 }
 
 fn judge_setup(
@@ -201,7 +199,7 @@ fn judge_setup(
     let Some(tip) = tip else {
         // A base with no setup file is the adoption: it vouches for nothing, so only the setup
         // file alone may come with it, or a slice could name an old branch to skip every check.
-        if setup_only(&git.changed_names(merge_base)?) {
+        if setup_only(&git.changed_names(merge_base)?, &[]) {
             return Ok(None);
         }
         return Err(changed_setup(
@@ -214,12 +212,12 @@ fn judge_setup(
     let forked = read_flow(git, OsStr::new(merge_base.as_str()), &base_ref.to_string())
         .ok()
         .flatten();
-    match setup_verdict(tip, forked.as_ref(), slice) {
-        SetupVerdict::Same => Ok(None),
-        SetupVerdict::Moved(fields) => Err(changed_setup(&fields, base)),
-        SetupVerdict::Changed(fields) => {
-            approve_setup_change(git, &fields, merge_base, base, err).map(Some)
-        }
+    match judge_diff(tip, forked.as_ref(), slice, || {
+        git.changed_names(merge_base)
+    })? {
+        Judgement::Clear => Ok(None),
+        Judgement::Moved(fields) => Err(changed_setup(&fields, base)),
+        Judgement::Touched(touched) => approve_setup_change(touched, base, err).map(Some),
     }
 }
 

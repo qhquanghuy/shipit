@@ -4,7 +4,7 @@ bats_require_minimum_version 1.5.0
 load helpers
 
 # What `shipit setup` prints for the fixture: the setup as compact JSON.
-PRINTED='{"version":1,"gate":{"base":"main","max_files":60,"check":["nix flake check --print-build-logs"],"environment":{"prefix":[]}},"agents":{"max_fix_rounds":2,"effort_cap":"high","tiers":[{"tier":1,"model":"haiku"},{"tier":2,"model":"sonnet"},{"tier":3,"model":"opus"},{"tier":4,"model":"fable","stand_in":{"model":"opus","effort":"high"}}],"roles":{"scout":{"tier":1,"retries":1,"escalate_to":{"tier":2}},"planner":{"tier":3,"effort":"high"},"maker":{"tier":2,"effort":"high"},"tester":{"tier":3,"effort":"medium"},"reader":{"tier":1}},"parallel":{"slices":3,"agents":4}},"packs":{"skill":"superpowers","domain":"coding","model":"claude"},"owner":{"max_lines":30,"status_update_max_lines":10,"example_max_lines":15}}'
+PRINTED='{"version":1,"gate":{"base":"main","max_files":60,"check":["nix flake check --print-build-logs"],"environment":{"prefix":[]},"setup_files":[]},"agents":{"max_fix_rounds":2,"effort_cap":"high","tiers":[{"tier":1,"model":"haiku"},{"tier":2,"model":"sonnet"},{"tier":3,"model":"opus"},{"tier":4,"model":"fable","stand_in":{"model":"opus","effort":"high"}}],"roles":{"scout":{"tier":1,"retries":1,"escalate_to":{"tier":2}},"planner":{"tier":3,"effort":"high"},"maker":{"tier":2,"effort":"high"},"tester":{"tier":3,"effort":"medium"},"reader":{"tier":1}},"parallel":{"slices":3,"agents":4}},"packs":{"skill":"superpowers","domain":"coding","model":"claude"},"owner":{"max_lines":30,"status_update_max_lines":10,"example_max_lines":15}}'
 
 # stub_run <args>: run `shipit setup <args>` in the current directory.
 stub_run() {
@@ -26,6 +26,17 @@ in_repo() {
   [ "$status" -eq 0 ]
   [ -z "$stderr" ]
   [ "$output" = "$PRINTED" ]
+}
+
+@test "gate.setup_files is printed as written, a folder without its slash, and a wrong kind is refused" {
+  in_repo "$(sed '/^check = /a setup_files = ["deny.toml", "conf/"]' "$FIXTURE")"
+  stub_run
+  [ "$status" -eq 0 ]
+  [[ $output == *'"setup_files":["deny.toml","conf"]'* ]]
+  in_repo "$(sed '/^check = /a setup_files = "deny.toml"' "$FIXTURE")"
+  stub_run
+  [ "$status" -eq 2 ]
+  [[ $stderr == *".gate.setup_files: must be an array of paths"* ]]
 }
 
 @test "no setup file dies 2 with what to do" {

@@ -75,12 +75,12 @@ receipt shows it. CI's `--base` is the real gate.
 The whole setup, field by field (`gate.max_files`, `agents.tiers`, `packs.model`, …), is compared with the base branch's setup as it was where the slice
 forked from it. If the base branch's setup has changed since the fork, the check is refused with "merge or rebase" (a
 stale base is never mistaken for the slice's own change; a slice whose fields already equal the base tip's, as after a squash merge of its parent, is not refused). The slice's own change is refused, with one exception. If the
-slice's diff against the base touches only `.config/shipit.toml`, `check` runs the slice's new checks with its new `gate.max_files` and
+slice's diff against the base touches only `.config/shipit.toml` and the files the base's `gate.setup_files` lists (the configs the check tools read, such as `deny.toml`), `check` runs the slice's new checks with its new `gate.max_files` and
 environment, prints `shipit: this slice changes the checks (<fields>); setup change: the owner approves it by merging` on
 stderr, and writes the receipt with `"setup_change": true` and `"setup_fields"` (the changed fields). `shipit verify` then
 prints `valid receipt for <tree> (setup change)`, with `; --base <ref>` before the closing parenthesis when `--base` named the base. The owner's merge is the approval, and CI rechecks.
 
-Any other file in the diff together with a setup change is refused (a check added, removed or reordered, a new cap, any
+A change to a listed file counts as a setup change, with the file's path among the `<fields>`. Any other file in the diff together with a setup change is refused (a check added, removed or reordered, a new cap, any
 change to `gate.environment`, another `gate.base`): the owner merges setup changes on the base first, or sends them as a slice of
 their own (or merge or rebase the base if it moved on). If the base has no setup file yet (adopting ShipIt), a notice is
 printed and nothing is compared, but the slice's diff must be the setup file alone: with any other file in it the check

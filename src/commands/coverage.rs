@@ -13,6 +13,7 @@ use crate::edge::records::{
 use crate::edge::run::run_words;
 use crate::edge::slice_git::{changed_with_status, map_paths_at, refuse_unclean_work};
 use crate::edge::store::write_json_atomic;
+use crate::pure::baseline::parse_baseline;
 use crate::pure::block::toml_block;
 use crate::pure::branch::{is_slice_branch, parse_slice_branch};
 use crate::pure::coverage_map::{CoverageMap, parse_map};
@@ -20,10 +21,11 @@ use crate::pure::failure::Failure;
 use crate::pure::goal::GoalName;
 use crate::pure::goal_pick::element_named;
 use crate::pure::messages::{NOT_TOML, say};
+use crate::pure::repo_path::RepoPath;
 use crate::pure::review::tool;
 use crate::pure::roadmap::{Element, SliceName};
 use crate::pure::rules::invalid;
-use crate::pure::setup::{HEAD, toml_table};
+use crate::pure::setup::{HEAD, SETUP_PATH, toml_table};
 use crate::pure::tests_ran::{
     CoverageRecord, MapRule, local_problems, map_path, map_rule, parse_map_path, passed_tests,
     verdict,
@@ -39,6 +41,15 @@ pub(crate) const EXITS: [&str; 4] = [
     "usage or setup error, or not run by shipit check",
     "uncommitted changes",
 ];
+
+// The files the base lists, as the slice forked from it; none when that setup cannot be read.
+fn setup_files_at(git: &Git, rev: &OsStr) -> Vec<RepoPath> {
+    git.show_file(rev, SETUP_PATH)
+        .and_then(|bytes| toml_table(&bytes).ok())
+        .and_then(|table| parse_baseline(&table).ok())
+        .map(|flow| flow.setup_files())
+        .unwrap_or_default()
+}
 
 const COVERAGE_HEADING: &str = "## Done-when coverage";
 
@@ -152,7 +163,12 @@ pub(crate) fn run(
 
     let changes = changed_with_status(&git, &env.merge_base, OsStr::new(HEAD))?;
     let own = parse_slice_branch(shown);
-    match map_rule(&changes, own.as_ref().map(|(goal, slice)| (goal, slice))) {
+    let listed = setup_files_at(&git, OsStr::new(env.merge_base.as_str()));
+    match map_rule(
+        &changes,
+        own.as_ref().map(|(goal, slice)| (goal, slice)),
+        &listed,
+    ) {
         MapRule::NotNeeded | MapRule::Added => {}
         MapRule::Missing => {
             let path = own.as_ref().map_or_else(
