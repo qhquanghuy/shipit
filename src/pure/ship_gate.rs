@@ -12,6 +12,7 @@ pub(crate) struct Facts {
     pub(crate) heads: Vec<String>,
     pub(crate) tags: Vec<String>,
     pub(crate) follow_tags: bool,
+    pub(crate) rewires_push: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,7 +36,7 @@ pub(crate) enum Mode {
 impl Mode {
     pub(crate) fn parse(text: &str) -> Self {
         match text {
-            "default" => Self::Default,
+            "default" | "manual" => Self::Default,
             "plan" => Self::Plan,
             "acceptEdits" => Self::AcceptEdits,
             "auto" => Self::Auto,
@@ -57,6 +58,11 @@ const OPTION_BEFORE: &str = "uses a git option before push";
 const FOLLOW_TAGS: &str = "pushes tags with the branch";
 const MENTIONS: &str = "mentions push";
 const ALIAS: &str = "sets a git alias or a shell command in git config";
+const ENV: &str = "sets a GIT_ or GH_ variable";
+const CONFIG: &str = "changes git config";
+const REMOTE: &str = "changes the git remotes";
+const REWIRED: &str = "pushes with a git config that can send it elsewhere (a remote's push or mirror setting, push.default, help.autocorrect)";
+const PLUMBING: &str = "pushes with send-pack or http-push";
 const CONFIRM: &str =
     "confirms a goal completion (shipit complete --confirm), which only the owner may do";
 const MERGE: &str = "merges a pull request";
@@ -69,7 +75,7 @@ pub(crate) const INTERPRETERS: [&str; 11] = [
     "sh", "bash", "zsh", "dash", "ksh", "fish", "python", "python3", "perl", "ruby", "node",
 ];
 const WRAPPERS: [&str; 6] = ["eval", "xargs", "exec", "su", "ssh", "watch"];
-const CHANGERS: [&str; 10] = [
+const CHANGERS: [&str; 11] = [
     "checkout",
     "switch",
     "merge",
@@ -80,8 +86,38 @@ const CHANGERS: [&str; 10] = [
     "branch",
     "tag",
     "update-ref",
+    "symbolic-ref",
 ];
-const FOLDER_WORDS: [&str; 3] = ["cd", "pushd", "popd"];
+const FOLDER_WORD: &str = "cd";
+const CONFIG_READS: [&str; 8] = [
+    "--get",
+    "--get-all",
+    "--get-regexp",
+    "--get-urlmatch",
+    "--list",
+    "-l",
+    "get",
+    "list",
+];
+const CONFIG_SCOPES: [&str; 8] = [
+    "--global",
+    "--local",
+    "--system",
+    "--worktree",
+    "--show-origin",
+    "--show-scope",
+    "-z",
+    "--null",
+];
+const CONFIG_WRITE_FLAGS: [&str; 7] = [
+    "--add",
+    "--unset",
+    "--unset-all",
+    "--replace-all",
+    "--edit",
+    "--rename-section",
+    "--remove-section",
+];
 const API_FIELD_FLAGS: [&str; 5] = ["-f", "-F", "--field", "--raw-field", "--input"];
 
 fn is_git_or_gh(word: &str) -> bool {
@@ -212,16 +248,70 @@ fn explicit_slice_push(args: &[String], facts: &Facts) -> Result<(), Cause> {
     }
 }
 
-fn is_git_env(word: &str) -> bool {
+// A GIT_ or GH_ variable can carry config (GIT_CONFIG_COUNT, GIT_CONFIG_PARAMETERS), another
+// repository (GIT_DIR) or another host: in a text that names git or gh, any assignment asks.
+fn sets_git_env(word: &str) -> bool {
     word.split_once('=')
-        .is_some_and(|(name, _)| name.starts_with("GIT_"))
+        .is_some_and(|(name, _)| name.starts_with("GIT_") || name.starts_with("GH_"))
+}
+
+// The config as `git config --list` prints it: does it send a push somewhere the command does
+// not say? A remote's push or mirror setting, a push.default that is not one branch to its own
+// name, or help.autocorrect that runs a mistyped command (`git psuh` as push).
+pub(crate) fn rewires_push(config: &str) -> bool {
+    config.lines().any(|line| {
+        let (key, value) = line.split_once('=').unwrap_or((line, ""));
+        let (key, value) = (key.to_lowercase(), value.trim().to_lowercase());
+        let off = ["", "0", "never", "false", "no", "off"].contains(&value.as_str());
+        (key.starts_with("remote.") && key.rsplit('.').next() == Some("push"))
+            || (key.starts_with("remote.") && key.rsplit('.').next() == Some("mirror") && !off)
+            || (key == "push.default"
+                && !["simple", "current", "upstream"].contains(&value.as_str()))
+            || (key == "help.autocorrect" && !off)
+    })
+}
+
+// Only the plain reads of the config pass: `--get`, `--list` and their kind, after any scope.
+fn changes_config(rest: &[String]) -> bool {
+    let Some(at) = rest.iter().position(|word| word == "config") else {
+        return false;
+    };
+    let after = rest.get(at + 1..).unwrap_or_default();
+    let mut words = after
+        .iter()
+        .skip_while(|word| CONFIG_SCOPES.contains(&word.as_str()));
+    let reads = words
+        .next()
+        .is_some_and(|first| CONFIG_READS.contains(&first.as_str()));
+    let writes = after
+        .iter()
+        .any(|word| CONFIG_WRITE_FLAGS.contains(&word.as_str()));
+    !reads || writes
+}
+
+// Only a listing of the remotes passes: bare, `-v`, `show` and `get-url`.
+fn changes_remote(rest: &[String]) -> bool {
+    let Some(at) = rest.iter().position(|word| word == "remote") else {
+        return false;
+    };
+    let mut after = rest
+        .get(at + 1..)
+        .unwrap_or_default()
+        .iter()
+        .skip_while(|word| *word == "-v" || *word == "--verbose");
+    after
+        .next()
+        .is_some_and(|first| first != "show" && first != "get-url")
 }
 
 fn names_alias(word: &str) -> bool {
     let lower = word.to_lowercase();
     let body = lower.strip_prefix("--config-env=").unwrap_or(&lower);
     let (key, value) = body.split_once('=').unwrap_or((body, ""));
-    key.starts_with("alias.") || word.starts_with('!') || value.starts_with('!')
+    key.starts_with("alias.")
+        || key == "help.autocorrect"
+        || word.starts_with('!')
+        || value.starts_with('!')
 }
 
 fn sets_alias(rest: &[String]) -> bool {
@@ -243,11 +333,7 @@ fn changes_context(segments: &[Segment]) -> bool {
                     .skip(at + 1)
                     .any(|later| CHANGERS.contains(&later.as_str()))
         });
-        changes_git
-            || segment
-                .words
-                .iter()
-                .any(|word| FOLDER_WORDS.contains(&word.as_str()))
+        changes_git || segment.words.iter().any(|word| word == FOLDER_WORD)
     })
 }
 
@@ -260,9 +346,20 @@ impl Judge<'_> {
     fn git_word(&self, segment: &Segment, data: &[bool], at: usize, reasons: &mut Vec<String>) {
         let rest = segment.words.get(at + 1..).unwrap_or_default();
         let rest_data = data.get(at + 1..).unwrap_or_default();
-        let before = segment.words.get(..at).unwrap_or_default();
         if sets_alias(rest) {
             add(reasons, ALIAS);
+        }
+        if changes_config(rest) {
+            add(reasons, CONFIG);
+        }
+        if changes_remote(rest) {
+            add(reasons, REMOTE);
+        }
+        let plumbing = rest.iter().enumerate().any(|(index, word)| {
+            (word == "send-pack" || word == "http-push") && rest_data.get(index) != Some(&true)
+        });
+        if plumbing {
+            add(reasons, PLUMBING);
         }
         for (index, word) in rest.iter().enumerate() {
             if word != "push" || rest_data.get(index) == Some(&true) {
@@ -290,11 +387,11 @@ impl Judge<'_> {
             let facts = (self.facts)(segment.dir.as_deref());
             match explicit_slice_push(rest.get(1..).unwrap_or_default(), &facts) {
                 Ok(()) => {
-                    if before.iter().any(|word| is_git_env(word)) {
-                        add(reasons, OPTION_BEFORE);
-                    }
                     if facts.follow_tags {
                         add(reasons, FOLLOW_TAGS);
+                    }
+                    if facts.rewires_push {
+                        add(reasons, REWIRED);
                     }
                     if self.changes_context {
                         add(reasons, CHANGES_BRANCH);
@@ -344,7 +441,10 @@ fn gh_word(rest: &[String], reasons: &mut Vec<String>) {
     let words = gh_words(rest);
     match (words.first().copied(), words.get(1).copied()) {
         (Some("pr"), Some("merge")) => add(reasons, MERGE),
-        (Some("release"), Some("create" | "edit" | "upload" | "delete")) => add(reasons, RELEASE),
+        (
+            Some("release"),
+            Some("create" | "new" | "edit" | "upload" | "delete" | "delete-asset"),
+        ) => add(reasons, RELEASE),
         (Some("repo"), Some("sync" | "edit" | "rename" | "delete" | "archive")) => {
             add(reasons, REPOSITORY);
         }
@@ -369,11 +469,58 @@ pub(crate) fn runs_as(word: &str, names: &[&str]) -> bool {
     names.contains(&base)
 }
 
+// A word that holds a git push or a gh write: by its raw words, and by the rules of gh itself.
 fn hides_a_command(word: &str) -> bool {
     let words = raw_words(word);
     let has = |name: &str| words.contains(&name);
-    (has("git") && has("push"))
-        || (has("gh") && (has("merge") || has("release") || has("sync") || has("api")))
+    let git = has("git") && (has("push") || has("send-pack") || has("http-push"));
+    let gh_loose = has("gh")
+        && (has("merge")
+            || has("release")
+            || has("sync")
+            || has("api")
+            || (has("repo")
+                && ["edit", "rename", "delete", "archive"]
+                    .iter()
+                    .any(|name| has(name))));
+    let gh_rules = words
+        .iter()
+        .position(|name| *name == "gh")
+        .is_some_and(|at| {
+            let rest: Vec<String> = words
+                .iter()
+                .skip(at + 1)
+                .map(|name| (*name).to_owned())
+                .collect();
+            let mut found = Vec::new();
+            gh_word(&rest, &mut found);
+            !found.is_empty()
+        });
+    git || gh_loose || gh_rules
+}
+
+// A flag that hands the interpreter its program as a string: `-c`, `-e`, `-lc`, `-euc`.
+fn is_string_flag(word: &str) -> bool {
+    word.strip_prefix('-')
+        .is_some_and(|rest| !rest.starts_with('-') && rest.chars().any(|c| c == 'c' || c == 'e'))
+}
+
+// For each interpreter in a segment that is given a string to run, the string (None when the
+// flag is the last word).
+pub(crate) fn interpreter_strings(words: &[String]) -> Vec<Option<&str>> {
+    let mut found = Vec::new();
+    for (at, word) in words.iter().enumerate() {
+        if !runs_as(word, &INTERPRETERS) {
+            continue;
+        }
+        let later = words.get(at + 1..).unwrap_or_default();
+        for (offset, flag) in later.iter().enumerate() {
+            if is_string_flag(flag) {
+                found.push(later.get(offset + 1).map(String::as_str));
+            }
+        }
+    }
+    found
 }
 
 fn plain_reasons(
@@ -395,6 +542,9 @@ fn plain_reasons(
             if hides_a_command(word) || runs_as(word, &WRAPPERS) {
                 add(reasons, HIDES);
             }
+            if sets_git_env(word) {
+                add(reasons, ENV);
+            }
             match program(word) {
                 "git" => judge.git_word(segment, &data, at, reasons),
                 "gh" => gh_word(segment.words.get(at + 1..).unwrap_or_default(), reasons),
@@ -409,9 +559,38 @@ fn plain_reasons(
                 .iter()
                 .any(|word| runs_as(word, &INTERPRETERS))
     });
-    if !heredocs.is_empty() || piped_into_interpreter {
+    let runs_a_string = segments
+        .iter()
+        .any(|segment| !interpreter_strings(&segment.words).is_empty());
+    if !heredocs.is_empty() || piped_into_interpreter || runs_a_string {
         add(reasons, FEEDS);
     }
+}
+
+// The folders a git command names for itself, as the segment's folder and the text: `-C <dir>`,
+// `--git-dir`, `--work-tree`, and the GIT_DIR and GIT_WORK_TREE variables.
+pub(crate) fn named_folders(command: &str) -> Vec<(Option<String>, String)> {
+    let Parse::Plain { segments, .. } = parse(command) else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    for segment in &segments {
+        let words = &segment.words;
+        for (at, word) in words.iter().enumerate() {
+            let glued = ["GIT_DIR=", "GIT_WORK_TREE=", "--git-dir=", "--work-tree="]
+                .iter()
+                .find_map(|prefix| word.strip_prefix(prefix));
+            let next = ["-C", "--git-dir", "--work-tree"]
+                .contains(&word.as_str())
+                .then(|| words.get(at + 1).map(String::as_str))
+                .flatten();
+            if let Some(folder) = glued.or(next) {
+                let folder = folder.strip_suffix("/.git").unwrap_or(folder);
+                found.push((segment.dir.clone(), folder.to_owned()));
+            }
+        }
+    }
+    found
 }
 
 pub(crate) fn ship_reasons(command: &str, facts: &dyn Fn(Option<&str>) -> Facts) -> Vec<String> {
@@ -463,6 +642,7 @@ mod tests {
                 .to_vec(),
             tags: vec!["v1.0".to_owned()],
             follow_tags: false,
+            rewires_push: false,
         }
     }
 
@@ -486,9 +666,19 @@ mod tests {
     ];
     const SHELLS: [&str; 3] = ["bash", "sh", "python3"];
 
-    // Tokens of the property that a command never passes outside the allowed forms. No quote
-    // and no redirection token: they change which words there are, which the oracle below
-    // cannot follow without being a second parser.
+    const GOOD_C: &str = "\"$(cat <<'EOF'\nfix git push\nEOF\n)\"";
+    // Bash ends this body at `EOF)`, and runs what follows as commands.
+    const BAD_C: &str = "\"$(cat <<'EOF'\nEOF)\" ; git push origin main ; echo \"\nEOF\n)\"";
+    const QUOTED: [&str; 4] = [
+        "'git push origin main'",
+        "\"git push origin main\"",
+        GOOD_C,
+        BAD_C,
+    ];
+
+    // Tokens of the property that a command never passes outside the allowed forms. A lone
+    // quote and a redirection are not tokens: they change which words there are, which the
+    // oracle below cannot follow without being a second parser. A quoted text is one token.
     fn token() -> impl Strategy<Value = &'static str> {
         prop_oneof![
             8 => proptest::sample::select(&PLAIN_WORDS[..]),
@@ -502,6 +692,11 @@ mod tests {
             2 => proptest::sample::select(&["origin", "other"][..]),
             3 => proptest::sample::select(&BRANCHES[..]),
             3 => proptest::sample::select(&["-u", "--set-upstream"][..]),
+            2 => proptest::sample::select(&QUOTED[..]),
+            2 => proptest::sample::select(&[
+                "-m", "-c", "-lc", "#", "GIT_CONFIG_COUNT=1", "GH_TOKEN=x", "A=1",
+                "symbolic-ref", "remote",
+            ][..]),
             3 => proptest::sample::select(&[
                 "HEAD", "@", ":x", "+x", "--force", "--tags", "--all", "--delete", "-C", "d",
                 "--no-pager", "GIT_DIR=x", "checkout", "switch", "config", "cd", "pushd", "popd",
@@ -518,57 +713,109 @@ mod tests {
         proptest::sample::select(&[";", "&&", "||", "|", "&", "\n"][..])
     }
 
-    const DANGER: [&str; 17] = [
-        "$x", "$(echo", "`x`", "(", ")", "{", "}", "!", "~", "\\", "<<'EOF'", "<<EOF", "{a,b}",
-        "eval", "pushd", "xargs", "popd",
+    const DANGER: [&str; 22] = [
+        "$x",
+        "$(echo",
+        "`x`",
+        "(",
+        ")",
+        "{",
+        "}",
+        "!",
+        "~",
+        "\\",
+        "<<'EOF'",
+        "<<EOF",
+        "{a,b}",
+        "eval",
+        "pushd",
+        "xargs",
+        "popd",
+        "#",
+        "GIT_DIR=x",
+        "GIT_CONFIG_COUNT=1",
+        "GH_TOKEN=x",
+        BAD_C,
     ];
     const KEYWORDS: [&str; 5] = ["if", "then", "fi", "for", "done"];
 
-    fn canonical(token: &str) -> &str {
+    fn canonical(token: &'static str) -> &'static str {
         match token {
             "\"g\"it" | "'git'" => "git",
             other => other,
         }
     }
 
+    // A segment as the oracle reads it: its canonical words, and which of them are the value of
+    // `-m` in a segment whose program is git, which is text whatever it says.
+    fn view(segment: &[&'static str]) -> (Vec<&'static str>, Vec<bool>) {
+        let words: Vec<&'static str> = segment.iter().map(|t| canonical(t)).collect();
+        let owner = words.iter().find(|t| !t.contains('=')).copied();
+        let data = (0..words.len())
+            .map(|at| owner == Some("git") && at > 0 && words.get(at - 1) == Some(&"-m"))
+            .collect();
+        (words, data)
+    }
+
+    // Quoted text is data only as such a message; an interpreter given a string runs it.
+    fn reads_ok(segment: &[&'static str]) -> bool {
+        let (words, data) = view(segment);
+        words.iter().enumerate().all(|(at, word)| {
+            let string_flag = |t: &&str| *t == "-c" || *t == "-lc";
+            let hides = QUOTED.contains(word) && data.get(at) != Some(&true);
+            let runs_string = SHELLS.contains(word) && words.iter().skip(at + 1).any(string_flag);
+            !hides && !runs_string
+        })
+    }
+
+    fn merges_a_pull_request(segment: &[&'static str]) -> bool {
+        let (words, _data) = view(segment);
+        words.iter().enumerate().any(|(at, word)| {
+            let later: Vec<&&str> = words
+                .iter()
+                .skip(at + 1)
+                .filter(|t| !t.starts_with('-'))
+                .take(2)
+                .collect();
+            *word == "gh" && later == [&"pr", &"merge"]
+        })
+    }
+
     // The independent reading of a generated command, token by token: it is safe to pass only
     // when no token needs a reading the gate lacks, no pipe feeds a shell, no `gh pr merge`
     // stands in it, and every git push is exactly the explicit slice push with nothing that
     // could move its branch, config or folder.
-    fn oracle(segments: &[Vec<&str>], separators: &[&str]) -> bool {
-        let tokens: Vec<&str> = segments.iter().flatten().map(|t| canonical(t)).collect();
-        let keyword_first = segments
+    fn oracle(segments: &[Vec<&'static str>], separators: &[&str]) -> bool {
+        let views: Vec<(Vec<&str>, Vec<bool>)> = segments.iter().map(|s| view(s)).collect();
+        let tokens: Vec<&str> = views
             .iter()
-            .any(|segment| segment.first().is_some_and(|t| KEYWORDS.contains(t)));
-        if keyword_first || tokens.iter().any(|token| DANGER.contains(token)) {
-            return false;
-        }
+            .flat_map(|(words, data)| {
+                words
+                    .iter()
+                    .zip(data)
+                    .filter(|(_, is_data)| !**is_data)
+                    .map(|(t, _)| *t)
+            })
+            .collect();
+        let keyword_first = views
+            .iter()
+            .any(|(words, _)| words.first().is_some_and(|t| KEYWORDS.contains(t)));
         let piped_to_shell = separators.iter().enumerate().any(|(at, sep)| {
             *sep == "|"
                 && segments
                     .get(at + 1)
                     .is_some_and(|next| next.iter().any(|t| SHELLS.contains(t)))
         });
-        if piped_to_shell {
+        if keyword_first
+            || piped_to_shell
+            || tokens.iter().any(|token| DANGER.contains(token))
+            || !segments.iter().all(|s| reads_ok(s))
+            || segments.iter().any(|s| merges_a_pull_request(s))
+        {
             return false;
         }
-        for segment in segments {
-            let words: Vec<&str> = segment.iter().map(|t| canonical(t)).collect();
-            for (at, _gh) in words.iter().enumerate().filter(|(_, t)| **t == "gh") {
-                let later: Vec<&&str> = words
-                    .iter()
-                    .skip(at + 1)
-                    .filter(|t| !t.starts_with('-'))
-                    .take(2)
-                    .collect();
-                if later == [&"pr", &"merge"] {
-                    return false;
-                }
-            }
-        }
-        let folder_change = tokens.iter().any(|t| FOLDER_WORDS.contains(t));
-        let context_change = segments.iter().any(|segment| {
-            let words: Vec<&str> = segment.iter().map(|t| canonical(t)).collect();
+        let folder_change = tokens.contains(&FOLDER_WORD);
+        let context_change = views.iter().any(|(words, _)| {
             words.iter().enumerate().any(|(at, t)| {
                 *t == "git"
                     && words
@@ -577,34 +824,26 @@ mod tests {
                         .any(|later| CHANGERS.contains(later))
             })
         });
-        for segment in segments {
-            let words: Vec<&str> = segment.iter().map(|t| canonical(t)).collect();
-            for (at, token) in words.iter().enumerate() {
-                if *token != "git" {
-                    continue;
-                }
-                let rest: Vec<&str> = words.iter().skip(at + 1).copied().collect();
-                if !rest.contains(&"push") {
-                    continue;
-                }
-                if words
+        views.iter().all(|(words, data)| {
+            words.iter().enumerate().all(|(at, token)| {
+                let rest: Vec<&str> = words
                     .iter()
-                    .take(at)
-                    .any(|before| before.starts_with("GIT_"))
-                {
-                    return false;
+                    .zip(data)
+                    .skip(at + 1)
+                    .filter(|(_, is_data)| !**is_data)
+                    .map(|(t, _)| *t)
+                    .collect();
+                if *token != "git" || !rest.contains(&"push") {
+                    return true;
                 }
                 let target = match rest.as_slice() {
                     ["push", "-u" | "--set-upstream", "origin", target]
                     | ["push", "origin", target] => *target,
                     _ => return false,
                 };
-                if target != "slice/v1/x" || folder_change || context_change {
-                    return false;
-                }
-            }
-        }
-        true
+                target == "slice/v1/x" && !folder_change && !context_change
+            })
+        })
     }
 
     fn join(segments: &[Vec<&str>], separators: &[&str]) -> String {
@@ -827,6 +1066,7 @@ mod tests {
             changer in proptest::sample::select(&[
                 "checkout main", "switch main", "merge x", "rebase x", "reset --hard", "pull",
                 "config x y", "branch -f slice/v1/x main", "tag t", "update-ref x y",
+                "symbolic-ref HEAD refs/heads/main",
             ][..]),
         ) {
             let push = "git push -u origin slice/v1/x";
@@ -847,6 +1087,12 @@ mod tests {
             prop_assert_eq!(
                 ship_reasons(push, &|_dir| following.clone()),
                 vec![FOLLOW_TAGS.to_owned()]
+            );
+            let mut rewired = facts();
+            rewired.rewires_push = true;
+            prop_assert_eq!(
+                ship_reasons(push, &|_dir| rewired.clone()),
+                vec![REWIRED.to_owned()]
             );
         }
 
@@ -898,6 +1144,142 @@ mod tests {
         }
 
         #[test]
+        fn only_plain_reads_of_the_config_and_the_remotes_pass(
+            key in "[a-z]{1,6}\\.[a-z]{1,6}",
+            value in prop_oneof![Just("list".to_owned()), Just("get".to_owned()), "[a-z/:.-]{1,10}"],
+            scope in prop_oneof![Just(""), Just("--global "), Just("--local --show-origin ")],
+            name in "[a-z]{1,6}[0-9]",
+        ) {
+            for command in [
+                format!("git config {scope}--get {key}"),
+                format!("git config {scope}--get-regexp {key}"),
+                format!("git config {scope}--list"),
+                format!("git config {scope}-l"),
+                format!("git config {scope}get {key}"),
+                "git remote".to_owned(),
+                "git remote -v".to_owned(),
+                format!("git remote show {name}"),
+                format!("git remote get-url {name}"),
+            ] {
+                prop_assert_eq!(reasons(&command), Vec::<String>::new(), "{}", command);
+            }
+            for command in [
+                format!("git config {scope}{key} {value}"),
+                format!("git config {scope}--add {key} {value}"),
+                format!("git config {scope}--unset {key}"),
+                format!("git config {scope}--get {key} --unset {key}"),
+                format!("git config {scope}--edit"),
+                format!("git config {scope}set {key} {value}"),
+                format!("git config {scope}{key}"),
+                format!("git remote add {name} {value}"),
+                format!("git remote set-url {name} {value}"),
+                format!("git remote remove {name}"),
+                format!("git remote rename {name} {value}"),
+            ] {
+                prop_assert!(asks(&command), "{}", command);
+                prop_assert!(denies_in_bypass(&command), "{}", command);
+            }
+        }
+
+        #[test]
+        fn a_git_or_gh_variable_asks_wherever_it_is_set(
+            name in prop_oneof![
+                Just("GIT_DIR"), Just("GIT_WORK_TREE"), Just("GIT_CONFIG_COUNT"),
+                Just("GIT_CONFIG_KEY_0"), Just("GIT_CONFIG_VALUE_0"), Just("GIT_CONFIG_PARAMETERS"),
+                Just("GIT_EXEC_PATH"), Just("GIT_EDITOR"), Just("GH_TOKEN"), Just("GH_HOST"),
+            ],
+            program in prop_oneof![Just("git status"), Just("gh pr view 1")],
+        ) {
+            for command in [
+                format!("{name}=x {program}"),
+                format!("A=1 {name}=x {program}"),
+                format!("export {name}=x; {program}"),
+                format!("env {name}=x {program}"),
+                format!("{program}; {name}=x true"),
+            ] {
+                prop_assert_eq!(reasons(&command), vec![ENV.to_owned()], "{}", command);
+            }
+            for command in [format!("A=1 {program}"), format!("GITHUB={name} {program}"), format!("{program} {name}")] {
+                prop_assert_eq!(reasons(&command), Vec::<String>::new(), "{}", command);
+            }
+        }
+
+        #[test]
+        fn a_string_given_to_an_interpreter_is_a_program_nobody_read(
+            interpreter in proptest::sample::select(&INTERPRETERS[..]),
+            path in prop_oneof![Just(""), Just("/bin/"), Just("./")],
+            flag in prop_oneof![Just("-c"), Just("-e"), Just("-lc"), Just("-euc"), Just("-ec")],
+            text in "[a-z]{1,8}[0-9]",
+        ) {
+            let with_flag = format!("git status; {path}{interpreter} {flag} '{text}'");
+            prop_assert_eq!(reasons(&with_flag), vec![FEEDS.to_owned()], "{}", with_flag);
+            let wrapped = format!("git status; env X=1 {path}{interpreter} {flag} \"{text}\"");
+            prop_assert!(asks(&wrapped), "{}", wrapped);
+            for command in [
+                format!("git status; {path}{interpreter} script.sh"),
+                format!("git status; {path}{interpreter} --version"),
+                format!("git status; echo {flag}"),
+            ] {
+                prop_assert_eq!(reasons(&command), Vec::<String>::new(), "{}", command);
+            }
+        }
+
+        #[test]
+        fn a_folder_the_command_names_for_git_is_named_with_its_segment_folder(
+            dir in "[a-z]{1,6}",
+            folder in "[a-z]{1,6}(/[a-z]{1,6}){0,2}",
+        ) {
+            let from = |command: String| named_folders(&command);
+            prop_assert_eq!(from(format!("git -C {folder} status")), vec![(None, folder.clone())]);
+            prop_assert_eq!(from(format!("git --git-dir={folder}/.git status")), vec![(None, folder.clone())]);
+            prop_assert_eq!(from(format!("git --work-tree {folder} status")), vec![(None, folder.clone())]);
+            prop_assert_eq!(from(format!("GIT_DIR={folder}/.git git status")), vec![(None, folder.clone())]);
+            prop_assert_eq!(from(format!("GIT_WORK_TREE={folder} git status")), vec![(None, folder.clone())]);
+            prop_assert_eq!(
+                from(format!("cd {dir} && git -C {folder} status")),
+                vec![(Some(dir.clone()), folder.clone())]
+            );
+            prop_assert_eq!(from(format!("git status {folder}")), Vec::<(Option<String>, String)>::new());
+            prop_assert_eq!(from(format!("git -C $x status {folder}")), Vec::<(Option<String>, String)>::new());
+        }
+
+        #[test]
+        fn a_push_setting_in_the_config_rewires_a_push(
+            remote in "[a-z]{1,6}",
+            value in "[a-z/:*+]{1,12}",
+            noise in proptest::collection::vec("[a-z]{1,5}\\.[a-z]{1,5}=[a-z0-9]{1,5}", 0..4),
+        ) {
+            prop_assume!(noise.iter().all(|line| !line.starts_with("remote.") && !line.starts_with("push.") && !line.starts_with("help.")));
+            let lines = noise.join("\n");
+            prop_assert!(!rewires_push(&lines));
+            for setting in [
+                format!("remote.{remote}.push={value}"),
+                format!("remote.{remote}.mirror=true"),
+                format!("remote.{remote}.mirror=yes"),
+                "push.default=matching".to_owned(),
+                "push.default=nothing".to_owned(),
+                "help.autocorrect=immediate".to_owned(),
+                "help.autocorrect=prompt".to_owned(),
+                "help.autocorrect=5".to_owned(),
+                "Remote.Origin.Push=x".to_owned(),
+            ] {
+                prop_assert!(rewires_push(&format!("{lines}\n{setting}\n{lines}")), "{}", setting);
+            }
+            for setting in [
+                format!("remote.{remote}.url={value}"),
+                format!("remote.{remote}.mirror=false"),
+                "push.default=simple".to_owned(),
+                "push.default=current".to_owned(),
+                "push.default=upstream".to_owned(),
+                "help.autocorrect=0".to_owned(),
+                "help.autocorrect=never".to_owned(),
+                format!("branch.{remote}.remote=origin"),
+            ] {
+                prop_assert!(!rewires_push(&format!("{lines}\n{setting}\n{lines}")), "{}", setting);
+            }
+        }
+
+        #[test]
         fn ship_answer_by_mode(
             mode in mode(),
             reasons in proptest::collection::vec("[a-z ]{1,10}", 1..3),
@@ -918,7 +1300,7 @@ mod tests {
         }
 
         #[test]
-        fn modes_parse_the_six_documented_strings_and_nothing_else(text in "[a-zA-Z]{0,12}") {
+        fn modes_parse_the_documented_strings_and_nothing_else(text in "[a-zA-Z]{0,12}") {
             let known = [
                 ("default", Mode::Default),
                 ("plan", Mode::Plan),
@@ -926,6 +1308,7 @@ mod tests {
                 ("auto", Mode::Auto),
                 ("dontAsk", Mode::DontAsk),
                 ("bypassPermissions", Mode::Bypass),
+                ("manual", Mode::Default),
             ];
             for (word, expected) in known {
                 prop_assert_eq!(Mode::parse(word), expected);
@@ -973,14 +1356,37 @@ mod tests {
             "git config alias.x '!git push origin main' && git x",
             "git -c alias.x='!sh' x",
             "git config alias.p push",
-            "git push origin main",
-            "git push origin v1.0",
-            "gh pr merge 12 --squash",
-            "gh release create v1",
-            "gh release upload v1 f",
-            "gh repo sync",
-            "gh repo delete o/r --yes",
             "git log --grep push",
+            // A message is text only for the program that takes it.
+            "sh -c '$2' git -m 'git push origin main'",
+            "bash -c 'eval \"$2\"' git -m \"$(cat <<'D'\ngit push origin main\nD\n)\"",
+            // Bash ends the body of the long form at `D)`.
+            "git commit --allow-empty -m \"$(cat <<'D'\nD)\" ; git push origin main ; echo \"\nD\n)\"",
+            "git commit -m \"$(cat <<'D'\nD )\" ; git push origin main ; echo \"\nD\n)\"",
+            // Config through the environment can define an alias or move a directory.
+            "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.p GIT_CONFIG_VALUE_0=push git p origin main",
+            "GIT_CONFIG_PARAMETERS=\"'alias.p=push'\" git p origin main",
+            "export GIT_DIR=/x; git status",
+            "env GH_TOKEN=x gh pr view 1",
+            // Config and remotes that change where a push goes, and the plumbing that pushes.
+            "git config remote.origin.push refs/heads/slice/v1/x:refs/heads/main",
+            "git config help.autocorrect immediate",
+            "git -c help.autocorrect=immediate psuh origin main",
+            "git remote set-url origin /elsewhere",
+            "git remote add x /elsewhere",
+            "git send-pack /elsewhere slice/v1/x:refs/heads/main",
+            "git http-push http://x main",
+            // A comment is not skipped.
+            "echo x # it's\ngi\\\nt push origin main #'",
+            // A string given to an interpreter is a program the reader did not read.
+            "bash -c 'g\\it push origin main'",
+            "sh -c 'gi\"\"t push origin main'",
+            "git status; python3 -c 'print(1)'",
+            "git status; node -e 'x'",
+            // The rules of gh apply inside one word, too.
+            "bash -c 'gh repo delete o/r --yes'",
+            "bash -c 'gh repo edit --default-branch x'",
+            "git symbolic-ref HEAD refs/heads/main && git push -u origin slice/v1/x",
         ];
         for command in commands {
             assert!(asks(command), "{command}");
@@ -1016,6 +1422,15 @@ mod tests {
         assert_eq!(reasons("gh pr merge 12 --squash"), [MERGE]);
         assert_eq!(reasons("gh release create v1"), [RELEASE]);
         assert_eq!(reasons("gh repo sync"), [REPOSITORY]);
+        for command in [
+            "gh release upload v1 f",
+            "gh release new v1",
+            "gh release delete-asset v1 f",
+            "gh release edit v1",
+        ] {
+            assert_eq!(reasons(command), [RELEASE], "{command}");
+        }
+        assert_eq!(reasons("gh repo delete o/r --yes"), [REPOSITORY]);
         assert_eq!(
             reasons("gh api -X PUT repos/o/r/pulls/1/merge"),
             [API_WRITE]

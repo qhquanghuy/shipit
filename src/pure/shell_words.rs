@@ -32,9 +32,11 @@ pub(crate) fn raw_words(text: &str) -> Vec<&str> {
         .collect()
 }
 
-// The raw words again, with every quote and backslash taken out first: `"g"it` is `git`.
+// The raw words again, with every quote and backslash taken out first, and the line joins:
+// `"g"it` and a `gi`, backslash, newline, `t` are `git`.
 pub(crate) fn raw_words_unquoted(text: &str) -> Vec<String> {
     let bare: String = text
+        .replace("\\\n", "")
         .chars()
         .filter(|c| !matches!(c, '\'' | '"' | '\\'))
         .collect();
@@ -45,22 +47,40 @@ pub(crate) fn program(word: &str) -> &str {
     word.rsplit('/').next().unwrap_or(word)
 }
 
-// The value after a message flag is text, not a command, whatever it says.
+fn is_assignment(word: &str) -> bool {
+    word.split_once('=').is_some_and(|(name, _)| {
+        let mut chars = name.chars();
+        chars
+            .next()
+            .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
+            && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+    })
+}
+
+// The program of a segment: its first word that is not a `NAME=value` prefix.
+fn leading_program<'a>(mut words: impl Iterator<Item = &'a str>) -> Option<&'a str> {
+    words.find(|word| !is_assignment(word)).map(program)
+}
+
+// The value after a message flag is text, not a command, whatever it says: but only when the
+// segment's own program is the one that takes the message. `sh -c '$2' git -m x` is a shell.
 pub(crate) fn message_values(words: &[String]) -> Vec<bool> {
-    let has = |name: &str, before: usize| words.iter().take(before).any(|w| program(w) == name);
+    let owner = leading_program(words.iter().map(String::as_str));
+    let git = owner == Some("git");
+    let gh = owner == Some("gh");
     words
         .iter()
         .enumerate()
         .map(|(at, word)| {
             let after_flag = at
                 .checked_sub(1)
-                .and_then(|prior| words.get(prior).map(|flag| (prior, flag.as_str())))
-                .is_some_and(|(prior, flag)| {
-                    (MESSAGE_FLAGS_GIT.contains(&flag) && has("git", prior))
-                        || (MESSAGE_FLAGS_GH.contains(&flag) && has("gh", prior))
+                .and_then(|prior| words.get(prior))
+                .is_some_and(|flag| {
+                    (git && MESSAGE_FLAGS_GIT.contains(&flag.as_str()))
+                        || (gh && MESSAGE_FLAGS_GH.contains(&flag.as_str()))
                 });
-            let glued = (word.starts_with("--message=") && has("git", at))
-                || ((word.starts_with("--body=") || word.starts_with("--title=")) && has("gh", at));
+            let glued = (git && word.starts_with("--message="))
+                || (gh && (word.starts_with("--body=") || word.starts_with("--title=")));
             after_flag || glued
         })
         .collect()
@@ -76,6 +96,7 @@ struct Word {
     unquoted: String,
     quoted: bool,
     starts_with_tilde: bool,
+    starts_with_hash: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -317,6 +338,7 @@ impl Reader {
         let whole = !word.quoted;
         if (whole && matches!(text, "!" | "{" | "}"))
             || word.starts_with_tilde
+            || word.starts_with_hash
             || matches!(text, "pushd" | "popd")
             || has_brace_expansion(&word.unquoted)
             || (self.words.is_empty() && whole && KEYWORDS.contains(&text))
@@ -334,6 +356,7 @@ impl Reader {
             unquoted: String::new(),
             quoted: false,
             starts_with_tilde: false,
+            starts_with_hash: false,
         };
         while let Some(c) = self.peek() {
             match c {
@@ -383,6 +406,9 @@ impl Reader {
                     if word.text.is_empty() && plain == '~' {
                         word.starts_with_tilde = true;
                     }
+                    if word.text.is_empty() && plain == '#' {
+                        word.starts_with_hash = true;
+                    }
                     word.text.push(plain);
                     word.unquoted.push(plain);
                 }
@@ -415,44 +441,53 @@ impl Reader {
         }
     }
 
-    // A message flag of a program that takes one, after that program in the same segment.
+    // A message flag of the program that takes one: the segment's own program, not a word that
+    // happens to be called git.
     fn message_context(&self) -> bool {
         let Some((flag, earlier)) = self.words.split_last() else {
             return false;
         };
-        let has = |name: &str| earlier.iter().any(|word| program(&word.text) == name);
-        (MESSAGE_FLAGS_GIT.contains(&flag.text.as_str()) && has("git"))
-            || (MESSAGE_FLAGS_GH.contains(&flag.text.as_str()) && has("gh"))
+        let owner = leading_program(earlier.iter().map(|word| word.text.as_str()));
+        (owner == Some("git") && MESSAGE_FLAGS_GIT.contains(&flag.text.as_str()))
+            || (owner == Some("gh") && MESSAGE_FLAGS_GH.contains(&flag.text.as_str()))
     }
 
     // `"$(cat <<'D'` newline, the body, `D` on a line of its own, newline, `)"`: the form that
-    // writes a long message. The body is one literal word.
+    // writes a long message. The body is one literal word. Bash ends the body also at a line
+    // that only starts with `D` (`D)`), so any such line before the real end is refused.
     fn form_c(&self) -> Option<(String, usize)> {
-        let rest: String = self.chars.get(self.at..)?.iter().collect();
-        let after = rest.strip_prefix(FORM_C_OPEN)?;
-        let (delimiter, mut remaining) = after.split_once("'\n")?;
+        let chars = self.chars.get(self.at..)?;
+        let open: Vec<char> = FORM_C_OPEN.chars().collect();
+        let after_open = chars.strip_prefix(open.as_slice())?;
+        let quote = after_open.iter().position(|c| *c == '\'')?;
+        let (delimiter, from_quote) = after_open.split_at(quote);
+        let mut remaining = from_quote.get(1..)?.strip_prefix(&['\n'])?;
         if delimiter.is_empty()
             || !delimiter
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '_')
+                .iter()
+                .all(|c| c.is_ascii_alphanumeric() || *c == '_')
         {
             return None;
         }
-        let mut lines: Vec<&str> = Vec::new();
+        let mut lines: Vec<String> = Vec::new();
         loop {
-            let (line, tail) = remaining.split_once('\n')?;
+            let newline = remaining.iter().position(|c| *c == '\n')?;
+            let (line, from_newline) = remaining.split_at(newline);
+            let tail = from_newline.get(1..)?;
             if line == delimiter {
-                let closed = tail.strip_prefix(")\"")?;
+                let closed = tail.strip_prefix(&[')', '"'])?;
                 if !matches!(
-                    closed.chars().next(),
+                    closed.first(),
                     None | Some(' ' | '\t' | '\n' | ';' | '&' | '|')
                 ) {
                     return None;
                 }
-                let used = rest.chars().count() - closed.chars().count();
-                return Some((lines.join("\n"), self.at + used));
+                return Some((lines.join("\n"), self.at + chars.len() - closed.len()));
             }
-            lines.push(line);
+            if line.starts_with(delimiter) {
+                return None;
+            }
+            lines.push(line.iter().collect());
             remaining = tail;
         }
     }
@@ -623,6 +658,76 @@ mod tests {
         }
 
         #[test]
+        fn that_form_is_complex_when_the_program_is_not_the_first_word(
+            prefix in prop_oneof![
+                Just("sh -c '$2' git"), Just("env git"), Just("nice git"), Just("echo git"),
+            ],
+            flag in prop_oneof![Just("-m"), Just("--message")],
+        ) {
+            let text = format!("{prefix} {flag} \"$(cat <<'EOF'\nx\nEOF\n)\"");
+            prop_assert!(is_complex(&text));
+            let owned = format!("A=1 B=2 git {flag} \"$(cat <<'EOF'\nx\nEOF\n)\"");
+            prop_assert!(!is_complex(&owned));
+        }
+
+        #[test]
+        fn a_message_is_data_only_for_the_program_that_takes_it(
+            before in prop_oneof![Just(""), Just("A=1 "), Just("A=1 B=2 "), Just("/usr/bin/")],
+            text in "[a-z ]{1,10}",
+        ) {
+            let to_words = |command: String| match parse(&command) {
+                Parse::Plain { mut segments, .. } => segments.remove(0).words,
+                Parse::Complex => Vec::new(),
+            };
+            let git = to_words(format!("{before}git commit -m '{text}' --message='{text}'"));
+            prop_assert_eq!(message_values(&git).iter().filter(|data| **data).count(), 2);
+            let gh = to_words(format!("{before}gh pr create --title '{text}' --body='{text}'"));
+            prop_assert_eq!(message_values(&gh).iter().filter(|data| **data).count(), 2);
+            for wrapped in [
+                format!("sh -c '$2' git -m '{text}'"),
+                format!("env git commit -m '{text}'"),
+                format!("echo gh --title '{text}'"),
+                format!("git --title '{text}'"),
+                format!("gh -m '{text}'"),
+            ] {
+                let words = to_words(wrapped);
+                prop_assert!(message_values(&words).iter().all(|data| !data));
+            }
+        }
+
+        #[test]
+        fn a_body_line_that_only_starts_with_the_delimiter_ends_the_form_in_bash_so_it_is_refused(
+            tail in prop_oneof![Just(")"), Just(" )"), Just("\t)"), Just("X"), Just("")],
+            lines in proptest::collection::vec("[a-z ]{0,10}", 0..3),
+        ) {
+            let line = format!("EOF{tail}");
+            let body = format!("{}\n{line}\nrest", lines.join("\n"));
+            let text = format!("git commit -m \"$(cat <<'EOF'\n{body}\nEOF\n)\" ; git push origin main");
+            prop_assert!(is_complex(&text));
+        }
+
+        #[test]
+        fn a_word_that_starts_with_a_hash_is_complex_in_any_place(
+            before in "[a-z ]{0,6}",
+            after in "[a-z ']{0,6}",
+        ) {
+            let text = format!("echo {before} #{after}");
+            prop_assert!(is_complex(&text));
+            let quoted = format!("echo \"#{after}\"").replace('\'', "");
+            prop_assert!(!is_complex(&quoted));
+        }
+
+        #[test]
+        fn a_line_join_is_not_a_word_break_for_the_trigger_words(
+            cut in 1_usize..3,
+        ) {
+            let word = "git";
+            let (head, tail) = word.split_at(cut);
+            let text = format!("{head}\\\n{tail} push");
+            prop_assert_eq!(raw_words_unquoted(&text), ["git", "push"]);
+        }
+
+        #[test]
         fn that_form_is_complex_for_a_program_that_takes_no_message(
             program in "[a-z]{1,5}",
         ) {
@@ -665,7 +770,7 @@ mod tests {
                 Just("( ls )"), Just("{ ls; }"), Just("! ls"), Just("ls <(x)"), Just("ls ~/x"),
                 Just("echo {a,b}"), Just("echo {1..3}"), Just("if ls; then ls; fi"),
                 Just("for x in a; do ls; done"), Just("ls \\x"), Just("ls 'x"), Just("ls \"x"),
-                Just("ls <<< x"), Just("ls >| x"), Just("ls >"), Just("case x in esac"),
+                Just("echo ok # note"), Just("# it's"), Just("ls <<< x"), Just("ls >| x"), Just("ls >"), Just("case x in esac"),
             ],
         ) {
             prop_assert!(is_complex(form));
@@ -675,7 +780,7 @@ mod tests {
         fn these_forms_are_plain(
             form in prop_oneof![
                 Just("git log @{u}.."), Just("git stash show stash@{0}"), Just("git diff HEAD~1"),
-                Just("echo a\\\nb"), Just("ls 2>&1 | wc -l"), Just("echo ok # note"),
+                Just("echo a\\\nb"), Just("ls 2>&1 | wc -l"), Just("echo a#b"),
                 Just("A=1 B=2 make x"),
             ],
         ) {

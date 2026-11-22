@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{Value, json};
 
 use crate::pure::agent_ledger::safe_id;
+use crate::pure::branch::is_slice_branch;
 use crate::pure::ship_gate::{Answer, Mode};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -144,14 +145,36 @@ pub(crate) fn resolve(cwd: &Path, dir: Option<&str>) -> PathBuf {
     dir.map_or_else(|| cwd.to_path_buf(), |dir| cwd.join(dir))
 }
 
-// A tool of an MCP server whose name says it merges, releases, tags or pushes.
-pub(crate) fn mcp_ship(tool_name: &str) -> Option<String> {
+const MCP_SHIP_WORDS: [&str; 3] = ["merge", "create_release", "create_tag"];
+const MCP_FILE_WRITES: [&str; 5] = [
+    "create_or_update_file",
+    "delete_file",
+    "push_files",
+    "update_file",
+    "write_file",
+];
+const MCP_READS: [&str; 6] = ["get_", "list_", "read_", "search_", "fetch_", "find_"];
+
+// A tool of an MCP server that ships: one whose name says it merges, releases, tags or pushes,
+// or that writes to a branch (a file write, or any tool that is given a `branch` and is not a
+// read) unless that branch is a slice branch. A write that names no branch asks too.
+pub(crate) fn mcp_ship(tool_name: &str, tool_input: Option<&Value>) -> Option<String> {
     let rest = tool_name.strip_prefix("mcp__")?;
     let tool = rest.rsplit("__").next().unwrap_or(rest);
-    ["merge", "create_release", "create_tag", "push"]
-        .iter()
-        .any(|word| tool.contains(word))
-        .then(|| format!("calls {tool_name}"))
+    let calls = || Some(format!("calls {tool_name}"));
+    if MCP_SHIP_WORDS.iter().any(|word| tool.contains(word)) {
+        return calls();
+    }
+    let branch = tool_input.and_then(|input| input.get("branch"));
+    let reads = MCP_READS.iter().any(|prefix| tool.starts_with(prefix));
+    let writes_a_branch =
+        MCP_FILE_WRITES.iter().any(|word| tool.contains(word)) || (branch.is_some() && !reads);
+    if writes_a_branch {
+        let slice = branch.and_then(Value::as_str).is_some_and(is_slice_branch);
+        return (!slice)
+            .then(|| format!("calls {tool_name} for a branch that is not a slice branch"));
+    }
+    if tool.contains("push") { calls() } else { None }
 }
 
 #[cfg(test)]
@@ -288,13 +311,40 @@ mod tests {
             server in "[a-z]{1,6}",
             tool in "[a-z_]{1,16}",
         ) {
+            prop_assume!(!["file", "update", "write", "delete"].iter().any(|word| tool.contains(word)));
             let name = format!("mcp__{server}__{tool}");
             let ship = ["merge", "create_release", "create_tag", "push"]
                 .iter()
                 .any(|word| tool.contains(word));
-            prop_assert_eq!(mcp_ship(&name), ship.then(|| format!("calls {name}")));
-            prop_assert_eq!(mcp_ship(&format!("Bash{tool}")), None);
-            prop_assert_eq!(mcp_ship(&format!("{server}__merge")), None);
+            prop_assert_eq!(mcp_ship(&name, None), ship.then(|| format!("calls {name}")));
+            prop_assert_eq!(mcp_ship(&format!("Bash{tool}"), None), None);
+            prop_assert_eq!(mcp_ship(&format!("{server}__merge"), None), None);
+        }
+
+        #[test]
+        fn an_mcp_write_to_a_branch_asks_unless_the_branch_is_a_slice_branch(
+            goal in "[a-z]{1,5}",
+            slice in "[a-z]{1,5}",
+            other in "[a-z]{1,6}",
+            tool in prop_oneof![
+                Just("create_or_update_file"), Just("delete_file"), Just("push_files"),
+                Just("update_file"), Just("write_file"), Just("edit_things"), Just("create_branch"),
+            ],
+        ) {
+            let name = format!("mcp__github__{tool}");
+            let on = |branch: Value| mcp_ship(&name, Some(&json!({"branch": branch})));
+            prop_assert_eq!(on(json!(format!("slice/{goal}/{slice}"))), None);
+            prop_assert!(on(json!("main")).is_some());
+            prop_assert!(on(json!(other)).is_some());
+            prop_assert!(on(json!(7)).is_some());
+            let file_tool = !matches!(tool, "edit_things" | "create_branch");
+            let asks_without_a_branch = mcp_ship(&name, Some(&json!({"path": "x"}))).is_some();
+            prop_assert_eq!(asks_without_a_branch, file_tool);
+            // A read that is given a branch is not a write.
+            for read in ["get_file_contents", "list_commits", "search_code"] {
+                let name = format!("mcp__github__{read}");
+                prop_assert_eq!(mcp_ship(&name, Some(&json!({"branch": "main"}))), None);
+            }
         }
     }
 

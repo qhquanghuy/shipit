@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 use std::ffi::{OsStr, OsString};
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
@@ -13,7 +13,9 @@ use crate::pure::claude_hook::{HookInput, answer_json, mcp_ship, parse_input, re
 use crate::pure::failure::Failure;
 use crate::pure::setup::{HEAD, SETUP_PATH};
 use crate::pure::shell_words::{Parse, parse};
-use crate::pure::ship_gate::{Answer, Facts, ship_answer, ship_reasons, triggered};
+use crate::pure::ship_gate::{
+    Answer, Facts, named_folders, rewires_push, ship_answer, ship_reasons, triggered,
+};
 
 pub(crate) const HIDDEN: bool = true;
 pub(crate) const NEEDS_SETUP: bool = false;
@@ -99,7 +101,10 @@ fn facts_at(dir: &Path) -> Facts {
             OsStr::new("push.followTags"),
         ])
         .is_ok_and(|bytes| String::from_utf8_lossy(&bytes).trim() == "true");
+    // The whole config, as git reads it here: a push setting anywhere in it can move a push.
+    let rewires = lines_of(&git, &["config", "--list"]).join("\n");
     Facts {
+        rewires_push: rewires_push(&rewires),
         base: base_names(&git),
         heads: refs(&git, "refs/heads/"),
         tags: refs(&git, "refs/tags/"),
@@ -147,9 +152,15 @@ fn judge_command(input: &HookInput, command: &str) -> Answer {
     if let Parse::Plain { segments, .. } = parse(command) {
         dirs.extend(segments.into_iter().map(|segment| segment.dir));
     }
-    let anywhere = dirs
-        .iter()
-        .any(|dir| in_project(&resolve(&input.cwd, dir.as_deref())));
+    // A folder the command names for git itself (`-C`, `--git-dir`, GIT_DIR) is judged too.
+    let named: Vec<PathBuf> = named_folders(command)
+        .into_iter()
+        .map(|(dir, folder)| resolve(&resolve(&input.cwd, dir.as_deref()), Some(folder.as_str())))
+        .collect();
+    let anywhere = named.iter().any(|folder| in_project(folder))
+        || dirs
+            .iter()
+            .any(|dir| in_project(&resolve(&input.cwd, dir.as_deref())));
     if !anywhere {
         return Answer::Pass;
     }
@@ -162,7 +173,7 @@ fn judge(input: &HookInput) -> Answer {
         return unreadable(input, "the hook input has no tool_name");
     };
     if name.starts_with("mcp__") {
-        return match mcp_ship(name) {
+        return match mcp_ship(name, input.tool_input.as_ref()) {
             Some(reason) if in_project(&input.cwd) => ship_answer(input.mode, &[reason]),
             Some(_) | None => Answer::Pass,
         };
