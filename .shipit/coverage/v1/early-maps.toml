@@ -1,0 +1,21 @@
+DW1 = [
+  "an uncommitted change exits 3 and writes no receipt",
+  "an untracked file exits 3 and writes no receipt",
+  "ok_exactly_when_the_files_fit",
+  "61 changed files with cap 60 exits 1, runs no command, writes no receipt",
+  "commands run in order",
+  "the first failing command stops the run: exit 1, named, no receipt",
+  "a pass writes a receipt that matches the commit and tree",
+]
+DW2 = [
+  "a_receipt_is_valid_for_its_key_and_for_no_other",
+  "after check, verify exits 0 and names the tree",
+  "an uncommitted change exits 1",
+  "an untracked file exits 1",
+  "verify of an old commit is valid while HEAD has no receipt",
+  "an amended message keeps the receipt valid",
+]
+DW6 = [
+  "HOME points at a temp folder",
+  "make_repo makes a repo on main with identity and a committed valid setup file",
+]
