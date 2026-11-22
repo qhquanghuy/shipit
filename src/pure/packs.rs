@@ -100,7 +100,7 @@ fn coding_pack_covers_each_term() {
 fn the_secret_scan_needs_the_merge_base_first() {
     let text = pack("packs/domain/coding.md");
     assert!(text.contains(
-        "`base=\"$(shipit measure merge-base)\" && gitleaks git --redact --no-banner --log-opts=\"$base..HEAD\" .`"
+        "`base=\"$(shipit measure merge-base)\" && gitleaks git --redact --no-banner --log-opts=\"--text $base..HEAD\" .`"
     ));
     assert!(!text.contains("--log-opts=\"$(shipit"));
 }

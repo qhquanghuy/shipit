@@ -42,7 +42,8 @@ pub(crate) const EXITS: [&str; 4] = [
     "uncommitted changes",
 ];
 
-// The files the base lists, as the slice forked from it; none when that setup cannot be read.
+// The files the base tip lists, the list `shipit check` judges by; none when that setup cannot be
+// read.
 fn setup_files_at(git: &Git, rev: &OsStr) -> Vec<RepoPath> {
     git.show_file(rev, SETUP_PATH)
         .and_then(|bytes| toml_table(&bytes).ok())
@@ -163,7 +164,11 @@ pub(crate) fn run(
 
     let changes = changed_with_status(&git, &env.merge_base, OsStr::new(HEAD))?;
     let own = parse_slice_branch(shown);
-    let listed = setup_files_at(&git, OsStr::new(env.merge_base.as_str()));
+    let listed = env
+        .base_tip
+        .as_ref()
+        .map(|tip| setup_files_at(&git, OsStr::new(tip.as_str())))
+        .unwrap_or_default();
     match map_rule(
         &changes,
         own.as_ref().map(|(goal, slice)| (goal, slice)),

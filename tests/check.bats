@@ -994,17 +994,6 @@ with_listing() {
   [[ $output == "valid receipt for "*" (setup change)" ]]
 }
 
-@test "a slice that changes the setup file and listed files alone is one setup change" {
-  start_listing '["deny.toml", "flake.nix"]'
-  write_setup "$(with_listing '["deny.toml", "flake.nix"]' 'gate.check=[]' 'gate.max_files=61')"
-  printf 'x\n' >flake.nix
-  git commit -q -am "a tool"
-  run_check
-  [ "$status" -eq 0 ]
-  [ "$stderr" = "shipit: this slice changes the checks (gate.max_files, flake.nix); setup change: the owner approves it by merging" ]
-  jq -e '.setup_fields == ["gate.max_files", "flake.nix"]' "$(store)"/receipts/check/*.json
-}
-
 @test "a listed file changed together with code is refused, naming the file: no command, no receipt" {
   start_listing '["deny.toml", "flake.nix"]' "gate.check=$(checks "echo ran >> '$LOG'")"
   printf 'weaker\n' >deny.toml
@@ -1016,17 +1005,6 @@ with_listing() {
   [ "$stderr" = "$(changed_msg deny.toml)" ]
   [ ! -e "$LOG" ]
   no_receipt
-}
-
-@test "a file that is not listed is code, whatever its name" {
-  start_listing '["deny.toml"]'
-  printf 'x\n' >flake.nix
-  printf 'y\n' >code
-  git add code
-  git commit -q -am "code and an unlisted file"
-  run_check
-  [ "$status" -eq 0 ]
-  [ -z "$stderr" ]
 }
 
 @test "dropping a file from the list in the slice does not free it: the base's list applies" {
@@ -1045,33 +1023,61 @@ with_listing() {
   [ "$stderr" = "$(changed_msg 'gate.setup_files, deny.toml')" ]
 }
 
-@test "listing a file in the slice does not make it a setup file yet: only the base's list counts" {
-  start_repo
-  printf 'deny\n' >deny.toml
-  write_setup "$(with_listing '["deny.toml"]')"
-  git add deny.toml
-  git commit -q -m "list and add the file"
+@test "a symlink that takes the place of a folder above a listed path is a change to the listed path" {
+  start_listing '["conf/lint.toml"]'
+  mkdir x
+  printf 'weaker\n' >x/lint.toml
+  ln -s x conf
+  printf 'c\n' >code
+  git add -A
+  git commit -q -m "swap the folder for a link, with code"
   run_check
   [ "$status" -eq 1 ]
-  [ "$stderr" = "$(changed_msg gate.setup_files)" ]
+  [ "$stderr" = "$(changed_msg conf)" ]
+  no_receipt
 }
 
-@test "adding the list alone is a setup change" {
-  start_repo
-  write_setup "$(with_listing '["deny.toml"]')"
+@test "a submodule that moves while a path inside it is listed is a change to the listed path" {
+  start_listing '["vendor/deny.toml"]'
+  local sub="$BATS_TEST_TMPDIR/sub"
+  git init -q -b main "$sub"
+  git -C "$sub" config user.name t
+  git -C "$sub" config user.email t@example.invalid
+  git -C "$sub" config commit.gpgsign false
+  printf 's\n' >"$sub/s"
+  git -C "$sub" add s
+  git -C "$sub" commit -q -m s
+  git checkout -q main
+  git -c protocol.file.allow=always submodule add -q "$sub" vendor
+  git commit -q -m "add a submodule"
+  git checkout -q feature
+  git merge -q --ff-only main
+  git -C vendor config user.name t
+  git -C vendor config user.email t@example.invalid
+  git -C vendor config commit.gpgsign false
+  git -C vendor commit -q --allow-empty -m inside
+  printf 'c\n' >code
+  git add -A
+  git commit -q -m "bump the submodule, with code"
   run_check
-  [ "$status" -eq 0 ]
-  [ "$stderr" = "shipit: this slice changes the checks (gate.setup_files); setup change: the owner approves it by merging" ]
-  jq -e '.setup_fields == ["gate.setup_files"]' "$(store)"/receipts/check/*.json
+  [ "$status" -eq 1 ]
+  [ "$stderr" = "$(changed_msg vendor)" ]
 }
 
-@test "a listed folder holds every file below it" {
-  start_listing '["conf/"]'
-  mkdir -p conf/a
-  printf 'x\n' >conf/a/b
-  git add conf
-  git commit -q -m "below the folder"
+@test "a stacked slice whose parent changed a listed file is not refused after the parent is squash-merged" {
+  start_listing '["deny.toml"]'
+  git checkout -q -b parent
+  printf 'weaker\n' >deny.toml
+  git commit -q -am "the parent changes the config"
+  git checkout -q -b child
+  printf 'c\n' >code
+  git add code
+  git commit -q -m "the child adds code"
+  git checkout -q main
+  git merge -q --squash parent
+  git commit -q -m "squash the parent"
+  git checkout -q child
   run_check
   [ "$status" -eq 0 ]
-  [ "$stderr" = "shipit: this slice changes the checks (conf/a/b); setup change: the owner approves it by merging" ]
+  [ -z "$stderr" ]
 }

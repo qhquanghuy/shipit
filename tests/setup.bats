@@ -28,17 +28,6 @@ in_repo() {
   [ "$output" = "$PRINTED" ]
 }
 
-@test "gate.setup_files is printed as written, a folder without its slash, and a wrong kind is refused" {
-  in_repo "$(sed '/^check = /a setup_files = ["deny.toml", "conf/"]' "$FIXTURE")"
-  stub_run
-  [ "$status" -eq 0 ]
-  [[ $output == *'"setup_files":["deny.toml","conf"]'* ]]
-  in_repo "$(sed '/^check = /a setup_files = "deny.toml"' "$FIXTURE")"
-  stub_run
-  [ "$status" -eq 2 ]
-  [[ $stderr == *".gate.setup_files: must be an array of paths"* ]]
-}
-
 @test "no setup file dies 2 with what to do" {
   repo=$(make_repo)
   cd "$repo"

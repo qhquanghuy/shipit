@@ -143,7 +143,7 @@ pub(crate) fn setup_changes(base: &Table, branch: &Table) -> Vec<String> {
 }
 
 fn is_setup_file(name: &[u8], listed: &[RepoPath]) -> bool {
-    name == SETUP_PATH.as_bytes() || listed.iter().any(|path| path.covers(name))
+    name == SETUP_PATH.as_bytes() || listed.iter().any(|path| path.touches(name))
 }
 
 // A diff that touches the setup file or listed files and nothing else.
@@ -153,10 +153,16 @@ pub(crate) fn setup_only(names: &[Vec<u8>], listed: &[RepoPath]) -> bool {
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Touched {
-    // The changed setup fields, then the changed listed files by path.
     pub(crate) fields: Vec<String>,
-    // Nothing but the setup file and listed files is in the diff.
     pub(crate) alone: bool,
+}
+
+// A listed file that the base tip already has as the slice has it is not the slice's change, as
+// with setup fields: the parent of a stacked slice was squash-merged into the base.
+#[derive(Debug)]
+pub(crate) struct Diffs {
+    pub(crate) since_fork: Vec<Vec<u8>>,
+    pub(crate) since_tip: Vec<Vec<u8>>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -167,17 +173,19 @@ pub(crate) enum Judgement {
 }
 
 // None when the diff changes no setup field and no listed file: it leaves the checks alone.
-fn setup_touch(mut fields: Vec<String>, listed: &[RepoPath], names: &[Vec<u8>]) -> Option<Touched> {
+fn setup_touch(mut fields: Vec<String>, listed: &[RepoPath], diffs: &Diffs) -> Option<Touched> {
     fields.extend(
-        names
+        diffs
+            .since_fork
             .iter()
             .filter(|name| name.as_slice() != SETUP_PATH.as_bytes())
-            .filter(|name| listed.iter().any(|path| path.covers(name)))
+            .filter(|name| listed.iter().any(|path| path.touches(name)))
+            .filter(|name| diffs.since_tip.contains(name))
             .map(|name| String::from_utf8_lossy(name).into_owned()),
     );
     (!fields.is_empty()).then(|| Touched {
         fields,
-        alone: setup_only(names, listed),
+        alone: setup_only(&diffs.since_fork, listed),
     })
 }
 
@@ -187,7 +195,7 @@ pub(crate) fn judge_diff(
     tip: &Flow,
     merge_base: Option<&Flow>,
     slice: &Flow,
-    names: impl FnOnce() -> Result<Vec<Vec<u8>>, Failure>,
+    diffs: impl FnOnce() -> Result<Diffs, Failure>,
 ) -> Result<Judgement, Failure> {
     let fields = match setup_verdict(tip, merge_base, slice) {
         SetupVerdict::Moved(fields) => return Ok(Judgement::Moved(fields)),
@@ -198,7 +206,7 @@ pub(crate) fn judge_diff(
     if fields.is_empty() && listed.is_empty() {
         return Ok(Judgement::Clear);
     }
-    Ok(setup_touch(fields, &listed, &names()?).map_or(Judgement::Clear, Judgement::Touched))
+    Ok(setup_touch(fields, &listed, &diffs()?).map_or(Judgement::Clear, Judgement::Touched))
 }
 
 // Only `gate.base` is read, because the base's own setup says which branch the slice is judged
@@ -301,7 +309,7 @@ mod tests {
     const SETUP: &str = ".config/shipit.toml";
     // Names a diff can hold: the setup file, files a base may list (alone or as a folder), and
     // near misses of each.
-    const NAMES: [&str; 12] = [
+    const NAMES: [&str; 17] = [
         SETUP,
         "deny.toml",
         "ci",
@@ -314,13 +322,28 @@ mod tests {
         ".config/shipit.toml.bak",
         "denyatoml",
         "deny.toml/x",
+        "conf",
+        "conf/lint.toml",
+        "conf/other",
+        "co",
+        "conf/lint.toml/x",
     ];
-    const LISTABLE: [&str; 2] = ["deny.toml", "ci"];
+    const LISTABLE: [&str; 3] = ["deny.toml", "ci", "conf/lint.toml"];
 
+    // Equal, below, or a folder above: written without the implementation's byte arithmetic.
     fn covered(name: &str, listed: &[&str]) -> bool {
-        listed
-            .iter()
-            .any(|path| name == *path || name.starts_with(&format!("{path}/")))
+        listed.iter().any(|path| {
+            name == *path
+                || name.starts_with(&format!("{path}/"))
+                || path.starts_with(&format!("{name}/"))
+        })
+    }
+
+    fn diffs(since_fork: &[&str], since_tip: &[&str]) -> Diffs {
+        Diffs {
+            since_fork: bytes(since_fork),
+            since_tip: bytes(since_tip),
+        }
     }
 
     fn flow_with(cap: i64, listed: Option<&Vec<&str>>) -> Flow {
@@ -376,10 +399,12 @@ mod tests {
             slice_list in arb_list(),
             raised in any::<bool>(),
             names in arb_names(),
+            differs_from_tip in arb_names(),
         ) {
             let tip = flow_with(1, base_list.as_ref());
             let slice = flow_with(if raised { 2 } else { 1 }, slice_list.as_ref());
-            let judged = judge_diff(&tip, Some(&tip), &slice, || Ok(bytes(&names)));
+            let judged =
+                judge_diff(&tip, Some(&tip), &slice, || Ok(diffs(&names, &differs_from_tip)));
             let listed = base_list.clone().unwrap_or_default();
             let mut fields = Vec::new();
             if raised {
@@ -392,6 +417,7 @@ mod tests {
                 names
                     .iter()
                     .filter(|name| **name != SETUP && covered(name, &listed))
+                    .filter(|name| differs_from_tip.contains(name))
                     .map(|name| (*name).to_owned()),
             );
             let expected = if fields.is_empty() {
@@ -416,7 +442,7 @@ mod tests {
             let asked = std::cell::Cell::new(false);
             let judged = judge_diff(&tip, Some(&forked), &slice, || {
                 asked.set(true);
-                Ok(Vec::new())
+                Ok(diffs(&[], &[]))
             });
             let listed_anything = base_list.as_ref().is_some_and(|list| !list.is_empty());
             if moved {

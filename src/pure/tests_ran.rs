@@ -166,7 +166,7 @@ pub(crate) fn map_rule(
         path == SETUP_FILE
             || setup_files
                 .iter()
-                .any(|listed| listed.covers(path.as_bytes()))
+                .any(|listed| listed.touches(path.as_bytes()))
     }) {
         return MapRule::NotNeeded;
     }
@@ -322,10 +322,12 @@ mod tests {
             with_setup in any::<bool>(),
             listed_changed in any::<bool>(),
             listed_dropped in any::<bool>(),
+            above_changed in any::<bool>(),
         ) {
             let listed = RepoPath::parse("deny.toml").unwrap();
+            let nested = RepoPath::parse("conf/lint.toml").unwrap();
             // The files the base lists; a path that only looks like one is a code change.
-            let lists = if listed_dropped { Vec::new() } else { vec![listed] };
+            let lists = if listed_dropped { Vec::new() } else { vec![listed, nested] };
             let mut changes: Vec<(char, String)> = others
                 .iter()
                 .zip(&statuses)
@@ -337,10 +339,14 @@ mod tests {
             if listed_changed {
                 changes.push(('M', "deny.toml".to_owned()));
             }
+            if above_changed {
+                changes.push(('A', "conf".to_owned()));
+            }
             if with_map {
                 changes.push(('A', ".shipit/coverage/demo/beta.toml".to_owned()));
             }
-            let code = !others.is_empty() || (listed_changed && listed_dropped);
+            let code = !others.is_empty()
+                || ((listed_changed || above_changed) && listed_dropped);
             let expected = if !code && !with_map {
                 MapRule::NotNeeded
             } else if with_map {
