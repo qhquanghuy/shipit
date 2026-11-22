@@ -31,7 +31,9 @@ check = [
 # clippy.toml, .clippy.toml, rustfmt.toml, .rustfmt.toml: the lint and format settings, which the
 # flake's clippy and fmt checks read.
 # .cargo/config.toml, .cargo/config: cargo reads them for every build, test and lint run (flags, aliases).
-# rust-toolchain.toml, rust-toolchain: the action's build reads them to pick the compiler.
+# rust-toolchain.toml, rust-toolchain: rustup reads them to pick the compiler. No check does today:
+# the checks use the dev shell's cargo, and the action's build sets RUSTUP_TOOLCHAIN=stable, which
+# wins over them. Listed so that a check that ever runs rustup's cargo is covered.
 # build.rs: it writes the `#[forbid]` lines that keep effects out of pure code.
 # flake.nix, flake.lock: the dev shell and every Nix check, so a fake tool or a pinned old one.
 # .shellcheckrc: the shellcheck rules of the flake's lint check. shellcheckrc (no dot) is listed for
@@ -45,9 +47,10 @@ check = [
 # every dependency change a setup change. It also chooses the build script (`[package] build = ...`),
 # so listing build.rs does not close that path while Cargo.toml is unlisted. Cargo.lock is left out
 # for the same reason.
-# action.yml is unlisted: CI runs this repository's own action (`uses: ./`), built from the pull
-# request's source, so for ShipIt itself the recheck trusts code the pull request can change. The
-# owner's review is the guard until the recheck runs the base's shipit.
+# action.yml is unlisted: job `check` runs this repository's own action (`uses: ./`), built from
+# the pull request's source, so it trusts code the pull request can change; job `recheck-by-base`
+# runs main's action, which builds shipit from main's source, so the pull request is also judged
+# by main's checker.
 setup_files = [
   "deny.toml",
   ".deny.toml",
