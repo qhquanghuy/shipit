@@ -4,15 +4,15 @@
     reason = "this is the only module that runs the clone tool"
 )]
 
-use std::fs;
+use std::fs::{self, File};
 use std::io::Write as _;
 use std::os::unix::process::ExitStatusExt as _;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Command, Output, Stdio};
 
 use crate::edge::store::create_temporary;
 use crate::pure::failure::Failure;
-use crate::pure::measure::{Place, csv_fields};
+use crate::pure::measure::{Place, csv_fields, neutralised};
 
 // Below this many tokens a piece is not a clone: small repeated pieces are idiom, not copying.
 pub(crate) const MIN_TOKENS: u32 = 100;
@@ -100,8 +100,23 @@ fn skipped_files(errors: &str, top: &Path, canonical_top: Option<&Path>) -> Opti
     (!named.is_empty()).then_some(named)
 }
 
-// The list goes in a temporary file in the store folder, never in the work, which stays as it
-// was committed.
+// PMD reads copies of the files with the marker words made harmless, so that it reads comment
+// tokens that the line reader of `marked_blocks` does not, and a marker can neither hide code
+// from it nor be read twice; the copies and the list of them are in a temporary folder of the
+// store, never in the work, which stays as it was committed.
+fn copy_files(top: &Path, copies: &Path, files: &[String]) -> Result<(), Failure> {
+    for file in files {
+        let cannot = |why: std::io::Error| Failure::usage(format!("cannot read {file}: {why}"));
+        let text = fs::read(top.join(file)).map_err(cannot)?;
+        let target = copies.join(file);
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent).map_err(cannot)?;
+        }
+        fs::write(&target, neutralised(&text)).map_err(cannot)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn find_clones(
     top: &Path,
     store: &Path,
@@ -112,38 +127,27 @@ pub(crate) fn find_clones(
     }
     let cannot = |why: std::io::Error| Failure::usage(format!("cannot run pmd: {why}"));
     fs::create_dir_all(store).map_err(cannot)?;
-    let (list, mut file) = create_temporary(store).map_err(cannot)?;
-    let mut listing = files.join("\n");
-    listing.push('\n');
-    let written = file
-        .write_all(listing.as_bytes())
-        .and_then(|()| file.flush());
-    drop(file);
-    let ran = written.map(|()| {
-        Command::new("pmd")
-            .args(["cpd", "--language", "rust", "--minimum-tokens"])
-            .arg(MIN_TOKENS.to_string())
-            .args(["--format", "csv_with_linecount_per_file", "--file-list"])
-            .arg(&list)
-            .current_dir(top)
-            .stdin(Stdio::null())
-            .output()
-    });
+    let (list, mut listing) = create_temporary(store).map_err(cannot)?;
+    let copies = list.with_extension("copies");
+    let ran = run_pmd(top, &copies, &list, &mut listing, files);
     fs::remove_file(&list).ok();
-    let output = ran.map_err(cannot)?.map_err(cannot)?;
+    fs::remove_dir_all(&copies).ok();
+    let output = ran?;
     let failed = |what: String| Failure::usage(format!("pmd cpd failed ({what})"));
-    let canonical = top.canonicalize().ok();
+    let canonical = copies.canonicalize().ok();
     match output.status.code() {
         Some(0 | CLONES_FOUND) => {}
         Some(RECOVERABLE_ERRORS) => {
             let errors = String::from_utf8_lossy(&output.stderr);
-            return Err(match skipped_files(&errors, top, canonical.as_deref()) {
-                Some(named) => Failure::usage(format!(
-                    "pmd cannot read {}; its clones cannot be checked (rewrite what it stops at)",
-                    named.join(", ")
-                )),
-                None => failed(format!("exit {RECOVERABLE_ERRORS}")),
-            });
+            return Err(
+                match skipped_files(&errors, &copies, canonical.as_deref()) {
+                    Some(named) => Failure::usage(format!(
+                        "pmd cannot read {}; its clones cannot be checked (rewrite what it stops at)",
+                        named.join(", ")
+                    )),
+                    None => failed(format!("exit {RECOVERABLE_ERRORS}")),
+                },
+            );
         }
         Some(code) => return Err(failed(format!("exit {code}"))),
         None => {
@@ -153,10 +157,34 @@ pub(crate) fn find_clones(
     }
     parse_rows(
         &String::from_utf8_lossy(&output.stdout),
-        top,
+        &copies,
         canonical.as_deref(),
     )
     .map_err(|line| Failure::usage(format!("cannot read pmd's output: line {line}")))
+}
+
+fn run_pmd(
+    top: &Path,
+    copies: &Path,
+    list: &Path,
+    listing: &mut File,
+    files: &[String],
+) -> Result<Output, Failure> {
+    let cannot = |why: std::io::Error| Failure::usage(format!("cannot run pmd: {why}"));
+    copy_files(top, copies, files)?;
+    let mut names = files.join("\n");
+    names.push('\n');
+    listing.write_all(names.as_bytes()).map_err(cannot)?;
+    listing.flush().map_err(cannot)?;
+    Command::new("pmd")
+        .args(["cpd", "--language", "rust", "--minimum-tokens"])
+        .arg(MIN_TOKENS.to_string())
+        .args(["--format", "csv_with_linecount_per_file", "--file-list"])
+        .arg(list)
+        .current_dir(copies)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(cannot)
 }
 
 #[cfg(test)]

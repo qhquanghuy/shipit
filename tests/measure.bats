@@ -295,3 +295,49 @@ unreadable_source() {
   [ "$status" -eq 2 ]
   [[ $stderr == "shipit: cannot measure src/o"*"ne.rs: a .rs file name with a comma, a line break or bytes that are not UTF-8" ]]
 }
+
+# The clone tool never reads the markers, so a marker it would read differently from shipit (in
+# a block comment, in a string) hides nothing.
+@test "measure: markers inside a block comment or a string hide nothing" {
+  clone_repo
+  { printf '/*\n// CPD-OFF: x\n// CPD-ON\n*/\n'; clone_function; } >src/one.rs
+  commit_all "markers in a block comment"
+  measure clones
+  [ "$status" -eq 1 ]
+  [[ $stderr == *"src/one.rs:5-54, src/two.rs:1-50" ]]
+  git reset -q --hard main
+  { printf '// CPD-OFF: x\nconst S: &str = r"\n// CPD-ON\n";\n'; clone_function; } >src/one.rs
+  commit_all "markers around a string"
+  measure clones
+  [ "$status" -eq 1 ]
+  [[ $stderr == *"src/one.rs:5-54, src/two.rs:1-50" ]]
+}
+
+@test "measure: a new copy of a block that an unchanged file marks off is found" {
+  clone_repo
+  git checkout -q main
+  { printf '// CPD-OFF: legacy\n'; clone_function; printf '// CPD-ON\n'; } >src/two.rs
+  commit_all "mark the old copy"
+  git checkout -q slice/demo/alpha
+  git merge -q main
+  clone_function >src/four.rs
+  commit_all "copy it again"
+  measure clones
+  [ "$status" -eq 1 ]
+  [[ $stderr == *"src/four.rs:1-50"* ]]
+  [[ $stderr == *"src/two.rs:2-51"* ]]
+}
+
+@test "measure: a check variable with no merge base is an error" {
+  clone_repo
+  printf '// touched\n' >>src/one.rs
+  commit_all "touch one"
+  local value
+  for value in "" nonsense; do
+    SHIPIT_CHECK=x SHIPIT_MERGE_BASE=$value measure clones
+    [ "$status" -eq 2 ]
+    [ "$stderr" = "shipit: SHIPIT_CHECK is set but SHIPIT_MERGE_BASE is missing or not a commit id" ]
+  done
+  SHIPIT_CHECK=x measure clones
+  [ "$status" -eq 2 ]
+}

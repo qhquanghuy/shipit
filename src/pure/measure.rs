@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 
+use crate::pure::receipt::Oid;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Place {
     pub(crate) file: String,
@@ -61,11 +63,27 @@ pub(crate) fn csv_fields(line: &str) -> Option<Vec<String>> {
     }
 }
 
-// A clone touches the slice when any of its places is in a changed file.
-pub(crate) fn touching<'a>(clones: &'a [Vec<Place>], changed: &[String]) -> Vec<&'a [Place]> {
+// A place that lies wholly inside a marked block is approved; a clone touches the slice when any
+// of its places is in a changed file and not approved. The clone tool never sees the markers, so
+// this is the only place that applies them.
+fn approved(place: &Place, marked: &[Marked]) -> bool {
+    marked.iter().any(|block| {
+        block.file == place.file && block.first <= place.first && place.last <= block.last
+    })
+}
+
+pub(crate) fn touching<'a>(
+    clones: &'a [Vec<Place>],
+    changed: &[String],
+    marked: &[Marked],
+) -> Vec<&'a [Place]> {
     clones
         .iter()
-        .filter(|clone| clone.iter().any(|place| changed.contains(&place.file)))
+        .filter(|clone| {
+            clone
+                .iter()
+                .any(|place| changed.contains(&place.file) && !approved(place, marked))
+        })
         .map(Vec::as_slice)
         .collect()
 }
@@ -219,6 +237,50 @@ pub(crate) fn marked_blocks(file: &str, text: &str) -> Result<Vec<Marked>, Vec<S
     Err(problems.into_iter().map(|(_line, text)| text).collect())
 }
 
+// The text as the clone tool reads it: each marker word becomes a word of the same length that
+// it ignores, so no line moves and no line changes length, and the only reader of the markers
+// is `marked_blocks`.
+pub(crate) fn neutralised(text: &[u8]) -> Vec<u8> {
+    let words = [
+        (OFF.as_bytes(), OFF.replace('-', "_").into_bytes()),
+        (ON.as_bytes(), ON.replace('-', "_").into_bytes()),
+    ];
+    let mut out = Vec::with_capacity(text.len());
+    let mut at = 0;
+    while let Some(rest) = text.get(at..).filter(|rest| !rest.is_empty()) {
+        if let Some((word, tame)) = words.iter().find(|(word, _tame)| rest.starts_with(word)) {
+            out.extend_from_slice(tame);
+            at += word.len();
+        } else {
+            out.extend(rest.first());
+            at += 1;
+        }
+    }
+    out
+}
+
+// Inside `shipit check` the merge base is the one the check was given. The message names what
+// is wrong when the check variable is set and the merge base is not a commit id; with no check
+// variable a stray merge base means nothing.
+pub(crate) fn given_merge_base(
+    check: Option<&str>,
+    merge_base: Option<&str>,
+) -> Result<Option<Oid>, String> {
+    if check.is_none() {
+        return Ok(None);
+    }
+    merge_base.and_then(Oid::parse).map(Some).ok_or_else(|| {
+        "SHIPIT_CHECK is set but SHIPIT_MERGE_BASE is missing or not a commit id".to_owned()
+    })
+}
+
+// A name that ends in `.rs` and has something before it: `.rs` alone is not a Rust file.
+fn is_rust_name(name: &[u8]) -> bool {
+    name.rsplit(|byte| *byte == b'/')
+        .next()
+        .is_some_and(|base| base.ends_with(b".rs") && base.len() > 3)
+}
+
 // Every tracked `.rs` file, from `git ls-files -v -z`; the error holds the names that cannot be
 // measured: PMD reads its file list by lines and commas, and a name that is not UTF-8 cannot be
 // handed on, so none of them is dropped silently.
@@ -228,7 +290,7 @@ pub(crate) fn tracked_rust_files(ls_files_v_z: &[u8]) -> Result<Vec<String>, Vec
     for name in ls_files_v_z
         .split(|byte| *byte == 0)
         .filter_map(|entry| entry.get(2..))
-        .filter(|name| name.ends_with(b".rs"))
+        .filter(|name| is_rust_name(name))
     {
         match String::from_utf8(name.to_vec()) {
             Ok(text) if !text.contains([',', '\n', '\r']) => found.push(text),
@@ -262,7 +324,7 @@ mod tests {
 
     fn is_rs(name: &str) -> bool {
         name.rsplit_once('.')
-            .is_some_and(|(_stem, ext)| ext == "rs")
+            .is_some_and(|(stem, ext)| ext == "rs" && !stem.is_empty())
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -365,13 +427,24 @@ mod tests {
         }
 
         #[test]
-        fn a_clone_touches_iff_a_place_is_changed(
+        fn a_clone_touches_iff_a_place_is_changed_and_not_approved(
             clone in proptest::collection::vec(place(), 1..4),
             changed in proptest::collection::vec(file(), 0..3),
         ) {
-            let expected = clone.iter().any(|place| changed.contains(&place.file));
-            let clones = [clone];
-            prop_assert_eq!(touching(&clones, &changed).len(), usize::from(expected));
+            let in_changed: Vec<&Place> =
+                clone.iter().filter(|place| changed.contains(&place.file)).collect();
+            let approving: Vec<Marked> = in_changed
+                .iter()
+                .map(|place| Marked {
+                    file: place.file.clone(),
+                    first: place.first,
+                    last: place.last,
+                    why: "x".to_owned(),
+                })
+                .collect();
+            let clones = [clone.clone()];
+            prop_assert_eq!(touching(&clones, &changed, &[]).len(), usize::from(!in_changed.is_empty()));
+            prop_assert!(touching(&clones, &changed, &approving).is_empty());
         }
 
         #[test]
@@ -448,6 +521,30 @@ mod tests {
         }
 
         #[test]
+        fn neutralising_keeps_every_line_and_its_length(
+            pieces in proptest::collection::vec(
+                proptest::sample::select(vec![
+                    OFF.to_owned(),
+                    ON.to_owned(),
+                    "a".to_owned(),
+                    "\n".to_owned(),
+                    "CPD-".to_owned(),
+                    "O".to_owned(),
+                    "\u{e9}".to_owned(),
+                ]),
+                0..20,
+            ),
+        ) {
+            let text = pieces.concat();
+            let tame = neutralised(text.as_bytes());
+            let lengths = |bytes: &[u8]| -> Vec<usize> { bytes.split(|b| *b == b'\n').map(<[u8]>::len).collect() };
+            prop_assert_eq!(lengths(&tame), lengths(text.as_bytes()));
+            let tame_text = String::from_utf8(tame).expect("replaces ASCII with ASCII");
+            prop_assert!(!tame_text.contains(OFF) && !tame_text.contains(ON));
+            prop_assert_eq!(neutralised(tame_text.as_bytes()), tame_text.into_bytes());
+        }
+
+        #[test]
         fn highest_counts_changed_files_only(
             functions in proptest::collection::vec(
                 (file(), 0_u64..50).prop_map(|(file, cognitive)| Function { file, cognitive }),
@@ -468,7 +565,7 @@ mod tests {
 
         #[test]
         fn a_tracked_rust_file_is_measured_or_named(
-            tracked in proptest::collection::vec("[a-c,\\n]{1,2}(\\.rs|\\.md)", 0..6),
+            tracked in proptest::collection::vec("[a-c,\\n]{0,2}(\\.rs|\\.md)", 0..6),
             changed in proptest::collection::vec("[a-c]{1,2}(\\.rs|\\.md)", 0..6),
         ) {
             let listing: Vec<u8> = tracked
@@ -532,5 +629,32 @@ mod tests {
                 format!("f.rs:5: {OFF} has no matching {ON}"),
             ])
         );
+    }
+
+    #[test]
+    fn a_marker_word_never_reaches_the_clone_tool() {
+        let text = format!("a {OFF}\n// {ON} b\n").into_bytes();
+        let tame = neutralised(&text);
+        assert_eq!(tame, b"a CPD_OFF\n// CPD_ON b\n".to_vec());
+    }
+
+    #[test]
+    fn a_merge_base_is_needed_exactly_when_the_check_variable_is_set() {
+        let oid = "a".repeat(40);
+        assert_eq!(given_merge_base(None, None), Ok(None));
+        assert_eq!(given_merge_base(None, Some("nonsense")), Ok(None));
+        assert_eq!(
+            given_merge_base(Some("x"), Some(&oid)).map(|found| found.map(|oid| oid.to_string())),
+            Ok(Some(oid))
+        );
+        for bad in [None, Some(""), Some("nonsense")] {
+            assert_eq!(
+                given_merge_base(Some("x"), bad),
+                Err(
+                    "SHIPIT_CHECK is set but SHIPIT_MERGE_BASE is missing or not a commit id"
+                        .to_owned()
+                )
+            );
+        }
     }
 }

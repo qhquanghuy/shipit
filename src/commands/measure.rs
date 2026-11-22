@@ -3,7 +3,7 @@ use std::io::Write;
 
 use crate::commands::check::settle_base;
 use crate::commands::setup::load_setup_table;
-use crate::edge::check_env::check_env;
+use crate::edge::check_env::given_merge_base;
 use crate::edge::clones::find_clones;
 use crate::edge::complexity::functions;
 use crate::edge::git::Git;
@@ -30,9 +30,10 @@ pub(crate) const SUMMARY: &str = concat!(
      variable, or a piece under 100 tokens, is not found. A wanted clone is wrapped in '// CPD",
     "-OFF: <why>' and '// CPD",
     "-ON', each alone on its line (any other line of a changed file that holds either word is an \
-     error): the block is printed in the output and counted as cloned in the ratio. The markers \
-     of a file the slice did not change are not read, so a copy of a block it marks off is not \
-     found. PMD cannot read some valid Rust files (a string that ends in a backslash, for one): \
+     error): the block is printed in the output and counted as cloned in the ratio, \
+     and a clone with a place wholly inside it does not count as touching the slice. PMD reads \
+     copies of the files with the marker words made harmless, so a marker never hides code from \
+     it; a new copy of a block that an unchanged file marks off is found. PMD cannot read some valid Rust files (a string that ends in a backslash, for one): \
      a tracked file it cannot read is an error naming it, and so is a name with a comma, a line \
      break or bytes that are not UTF-8. Cognitive complexity is recorded, never gated."
 );
@@ -106,8 +107,8 @@ fn merge_base(
     base: &crate::pure::base::BranchName,
     err: &mut dyn Write,
 ) -> Result<Oid, Failure> {
-    if let Some(env) = check_env() {
-        return Ok(env.merge_base);
+    if let Some(given) = given_merge_base()? {
+        return Ok(given);
     }
     let (_base, base_ref, _flow) = settle_base(git, base.clone(), false, err)?;
     git.merge_base_with_head(OsStr::new(&base_ref.full()))
@@ -168,7 +169,7 @@ pub(crate) fn run(
         )
         .ok();
     }
-    let touched = touching(&found, &changed);
+    let touched = touching(&found, &changed, &marked);
     if touched.is_empty() {
         writeln!(out, "clones: none touch the slice").ok();
         return Ok(());
