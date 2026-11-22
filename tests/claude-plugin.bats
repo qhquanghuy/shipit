@@ -62,7 +62,8 @@ doc_lines() {
   jq -e '[.hooks[][].hooks[] | .type == "command" and (.args | type == "array") and (.timeout > 0)] | all' "$PLUGIN/hooks/hooks.json"
   jq -e '[.hooks.PreToolUse[].hooks[] | .onFailure == "block" and .timeout == 10] | all' "$PLUGIN/hooks/hooks.json"
   jq -e '[.hooks | to_entries[] | select(.key != "PreToolUse") | .value[].hooks[] | .onFailure == "continue"] | all' "$PLUGIN/hooks/hooks.json"
-  jq -e '.hooks.SessionStart | map(select(.hooks[0].args[0] == "claude-agent-count")) | .[0].matcher == "startup"' "$PLUGIN/hooks/hooks.json"
+  # The ledger is cleared at startup and at resume, so the count hook must be run for both.
+  jq -e '.hooks.SessionStart | map(select(.hooks[0].args[0] == "claude-agent-count")) | .[0].matcher == "startup|resume"' "$PLUGIN/hooks/hooks.json"
 }
 
 @test "every hook command is known to the binary" {
