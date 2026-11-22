@@ -1,6 +1,6 @@
 # ShipIt: goal
 
-Status: version 2, approved by the owner on 2026-11-21 (v1 approved 2026-11-21). Terms are defined in [vocab.md](vocab.md).
+Status: version 3, approved by the owner on 2026-11-22 (v2 and v1 approved 2026-11-21). Terms are defined in [vocab.md](vocab.md).
 
 ## Goal
 
@@ -74,7 +74,7 @@ The human reviewer reads the change, so the code must be simple to read:
 - The pull request leads with the changed types and interfaces.
 
 A **reader** (a low-rank model) explains the change without seeing the build plan. The informed
-reviewer compares that explanation with the goal. It is a signal, not a gate.
+reviewer compares that explanation with the goal, or with what the pull request claims when there is no goal. It is a signal, not a gate.
 
 ## Keep a file only if a tool reads it or a test checks it against the code
 
@@ -166,7 +166,7 @@ fix-round limit (`agents.max_fix_rounds`), the effort cap (`agents.effort_cap`),
   bounds cost. No role, including a reviewer raising its effort to rank above the author, goes
   past the cap.
 
-### 3. Four skills
+### 3. Five skills
 
 | Skill | Started by | Input | Output |
 |---|---|---|---|
@@ -174,6 +174,7 @@ fix-round limit (`agents.max_fix_rounds`), the effort cap (`agents.effort_cap`),
 | `shipit-roadmap` | lead | goal with done-when | A reviewed roadmap: slices under the cap, their order (`after`), which need a test drive. Stops at a decision point for the owner. |
 | `shipit-slice` | lead, once per slice | roadmap, one slice | A slice ready to ship: build plan, its review, the work, receipts, known issues. Stops before ship. |
 | `shipit-test-drive` | tester | goal, done-when, the finished result | Findings and a test-drive result. The tester never sees how the work was made. |
+| `shipit-review` | owner, lead, or `shipit-slice` | a pull request or branch; the goal, done-when and build plan when there are any | A review: the reader's teach-back and where it differs from what the change claims, a reading order with the spots to look at first, findings, the security and performance answers, and the outcome. `shipit-slice` uses it for the informed review and the second opinion. Outside a ShipIt project it still runs and says which checks it skipped (rank, receipt, coverage). |
 
 Each skill is written as a function: its inputs, its one output, the effects it may cause, and
 every outcome with what follows it.
@@ -283,7 +284,7 @@ The goal is met when all of these are true.
 
 **Skills and packs**
 
-11. The four skills exist. Each states its inputs, output, allowed effects and outcomes. Every
+11. The five skills exist. Each states its inputs, output, allowed effects and outcomes. Every
     output in the table of templates has a template, and `shipit validate` refuses a filled output
     whose outcome is not listed or that misses a required part.
 12. A script fails the build when a skill or pack uses a rejected term, a model name outside the
