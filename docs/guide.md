@@ -3,6 +3,18 @@
 You are the owner. You have three jobs: set the goal, answer the decision points, and ship. An agent does the rest.
 Words are in [vocab.md](vocab.md). How to install and adopt is in [README.md](../README.md). How it runs in Claude Code is in [claude-code.md](claude-code.md). The setup file is in [setup.md](setup.md).
 
+## Write a goal
+
+Before `/shipit:shipit-roadmap`, write the goal in your own words: a short name, what it is for, and numbered done-when items. Each item is something a person can check. Five lines are enough:
+
+```
+Goal (short name: login): users can sign in with email and password.
+Done when:
+1. A user with the right password gets in.
+2. A user with a wrong password sees an error and stays out.
+3. Every sign-in is written to the log.
+```
+
 ## The flow and the skills
 
 goal → roadmap → build plan → make → check → reviews (and a test drive for some slices) → fix rounds → ship.
@@ -63,6 +75,11 @@ The lead session is named by `shipit session-name <goal>`; a slice session by `s
 2. lead fan-out: the lead runs the slices one after the other;
 3. one agent per slice: `shipit:slice` runs a whole slice; it cannot ask you, so a question ends it as blocked and the lead asks you;
 4. the `Workflow` tool: a script runs the slices; only if you ask for it.
+
+## Words you may meet
+
+- **Setup files** (`gate.setup_files`): the files that the checks read, such as the lint settings. A change to one of them is a setup change. It never comes together with code, and you approve it by merging it.
+- **Coverage**: proof that every test a slice names in its map ran. It shows that the test exists and ran, not what the test asserts.
 
 ## Mixed teams
 
