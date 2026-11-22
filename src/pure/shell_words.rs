@@ -693,6 +693,42 @@ mod tests {
         }
 
         #[test]
+        fn dollar_question_is_text_and_any_other_dollar_is_unreadable(
+            before in "[a-z=]{0,6}",
+            after in "[a-z=]{0,6}",
+            wrap in prop_oneof![Just(""), Just("\"")],
+            other in "[a-zA-Z0-9_{(@#!*$'-]",
+            lead in prop_oneof![
+                Just(""), Just("X=1 "), Just("/usr/bin/"), Just("X=1 /usr/bin/"),
+                Just("env "), Just("env -i X=1 "), Just("/usr/bin/env "), Just("command "),
+                Just("command -p "), Just("command -- "),
+            ],
+        ) {
+            prop_assert_eq!(
+                plain(&format!("echo {wrap}{before}$?{after}{wrap}")),
+                vec![vec!["echo".to_owned(), format!("{before}$?{after}")]]
+            );
+            prop_assert_eq!(
+                parse(&format!("echo {wrap}{before}${other}{after}{wrap}")),
+                Parse::Complex(Unreadable::Expansion)
+            );
+            let folder = Parse::Complex(Unreadable::Folder);
+            prop_assert_eq!(parse(&format!("cd {wrap}{before}$?{wrap} && ls")), folder);
+            for flag in ["-C ", "--git-dir ", "--work-tree ", "--git-dir=", "--work-tree="] {
+                let command = format!("{lead}git {flag}{wrap}{before}$?{wrap} status");
+                prop_assert_eq!(parse(&command), Parse::Complex(Unreadable::Folder), "{}", command);
+            }
+            prop_assert_eq!(
+                plain(&format!("ls -C {before}$?")),
+                vec![vec!["ls".to_owned(), "-C".to_owned(), format!("{before}$?")]]
+            );
+            prop_assert_eq!(
+                plain(&format!("{lead}git -c x=y -C {before}a status")).len(),
+                1
+            );
+        }
+
+        #[test]
         fn cd_sets_the_folder_of_the_later_segments(
             a in "[a-z]{1,5}",
             b in "[a-z]{1,5}",
