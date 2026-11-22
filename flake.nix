@@ -159,6 +159,7 @@
                       (fs.maybeMissing ./skills)
                       ./docs
                       ./README.md
+                      ./action.yml
                     ];
                   };
                 }
