@@ -3,7 +3,7 @@
 
 use crate::pure::machine_notes::Notes;
 use crate::pure::shell_words::{Parse, parse, program, raw_words_unquoted};
-use crate::pure::ship_gate::{INTERPRETERS, runs_as};
+use crate::pure::ship_gate::{INTERPRETERS, interpreter_strings, runs_as};
 
 // `-S` is also in `-Syu`, but never in `--S…`.
 fn matches_word(pattern: &str, word: &str) -> bool {
@@ -68,13 +68,20 @@ fn matched<'a>(command: &str, notes: &'a Notes) -> Option<&'a Vec<String>> {
                     .iter()
                     .any(|word| runs_as(word, &INTERPRETERS))
             });
-            direct.or_else(|| {
-                if read_as_commands {
-                    heredocs.iter().find_map(|body| matched(body, notes))
-                } else {
-                    None
-                }
-            })
+            // The string given to `sh -c` is read as a command, too.
+            let strings = segments
+                .iter()
+                .flat_map(|segment| interpreter_strings(&segment.words))
+                .flatten();
+            direct
+                .or_else(|| {
+                    if read_as_commands {
+                        heredocs.iter().find_map(|body| matched(body, notes))
+                    } else {
+                        None
+                    }
+                })
+                .or_else(|| strings.into_iter().find_map(|text| matched(text, notes)))
         }
     }
 }
@@ -166,6 +173,21 @@ mod tests {
             prop_assert!(install_refusal(&long, &notes).is_none());
             let query = format!("pacman -Q{rest} {target}");
             prop_assert!(install_refusal(&query, &notes).is_none());
+        }
+
+        #[test]
+        fn a_string_given_to_an_interpreter_is_judged_as_a_command(
+            pattern in pattern(),
+            interpreter in proptest::sample::select(&["sh", "bash", "/bin/sh", "zsh", "python3", "perl"][..]),
+            flag in proptest::sample::select(&["-c", "-lc", "-euc", "-e"][..]),
+            quote in proptest::sample::select(&["'", "\""][..]),
+        ) {
+            let notes = notes_with(std::slice::from_ref(&pattern));
+            let text = pattern.join(" ");
+            let run = format!("{interpreter} {flag} {quote}{text}{quote}");
+            prop_assert!(install_refusal(&run, &notes).is_some(), "{}", run);
+            let nested = format!("{interpreter} {flag} {quote}ls; sudo {text}{quote}");
+            prop_assert!(install_refusal(&nested, &notes).is_some(), "{}", nested);
         }
 
         #[test]
