@@ -1,0 +1,8 @@
+DW13 = [
+  "superpowers_pack_names_every_skill",
+  "superpowers_pack_has_overrides",
+  "every_skill_has_an_override",
+  "every_override_cites_lines_that_exist",
+  "the_places_the_proof_review_found_are_overridden",
+  "the_fix_round_limit_follows_the_goal",
+]
