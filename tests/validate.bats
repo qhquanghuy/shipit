@@ -33,7 +33,8 @@ write_message() {
   {
     printf '## Form\n\n```toml\nkind = "second-opinion"\noutcome = "approve-after-fixes"\ninput = "the change"\n```\n\n'
     printf '## Summary\nA small change.\n\n## Security\n- none found: no input is read\n\n## Performance\n- not relevant: no loops\n\n'
-    printf '## Findings\n- issue (blocking): a name is wrong\n- nitpick: a comma\n- question: why a loop?\n'
+    printf '## Findings\n- issue (blocking): a name is wrong\n- nitpick: a comma\n- question: why a loop?\n\n'
+    printf '## Verified\n- `cargo test`: passed\n\n## Inferred\n- none\n\n## Unverifiable\n- none\n'
   } >review.md
   run --separate-stderr "$SHIPIT_BIN" validate second-opinion review.md
   [ "$status" -eq 0 ]
@@ -82,9 +83,9 @@ write_message() {
   [ "$status" -eq 2 ]
   [ "$stderr" = 'shipit: no file at nowhere.md' ]
   write_message out.md
-  run --separate-stderr "$SHIPIT_BIN" validate review out.md
+  run --separate-stderr "$SHIPIT_BIN" validate nonsense out.md
   [ "$status" -eq 2 ]
-  [ "$stderr" = 'shipit: unknown kind "review"; kinds: build-plan, decision-point, explanation, informed-review, known-issue, model-advice, roadmap, scout-report, second-opinion, test-drive' ]
+  [ "$stderr" = 'shipit: unknown kind "nonsense"; kinds: build-plan, decision-point, explanation, informed-review, known-issue, model-advice, plan-review, review, roadmap, scout-report, second-opinion, test-drive' ]
   run --separate-stderr "$SHIPIT_BIN" validate decision-point
   [ "$status" -eq 2 ]
   [ "$stderr" = 'shipit: usage: shipit validate <kind> <file> [--goal <name> | --goal-file <path>]' ]

@@ -156,6 +156,7 @@
                       (fs.maybeMissing ./bin)
                       (fs.maybeMissing ./scripts)
                       (fs.maybeMissing ./harness)
+                      (fs.maybeMissing ./skills)
                       ./docs
                       ./README.md
                     ];
