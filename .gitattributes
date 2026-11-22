@@ -1,0 +1,5 @@
+# GitHub only: it folds these files in a pull request's diff. Only linguist attributes here:
+# git ignores them, so the secret scan (`--text`) sees the same lines.
+.shipit/coverage/** linguist-generated
+Cargo.lock linguist-generated
+flake.lock linguist-generated

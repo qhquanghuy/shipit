@@ -24,8 +24,8 @@ jobs:
   # still judged by main's checker; `check` above keeps testing the pull request's own code.
   # GitHub fetches the action at main, and the action builds in its own folder, never the checkout.
   # The check commands come from .config/shipit.toml: on a slice/* branch the pull request's own,
-  # which ShipIt refuses if it differs from main's unless the change is setup files only; on
-  # other branches the base's.
+  # which ShipIt refuses if it differs from the base's unless the change is setup files only;
+  # on other branches the base's.
   # A branch, not a SHA: main moves only by the owner's merges, and a SHA would need a setup-only
   # bump after every merge. Pull requests only: on a push to main the code is main's already.
   recheck-by-base:
