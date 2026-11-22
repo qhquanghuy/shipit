@@ -30,7 +30,7 @@ tier = 1
 retries = 1
 escalate_to = { tier = 2 }
 
-# Plans are read by every later step, so they are written one tier above the maker.
+# Roadmaps and build plans are read by every later step, so they are written one tier above the maker.
 [agents.roles.planner]
 tier = 3
 effort = "high"
@@ -43,7 +43,7 @@ effort = "high"
 tier = 3
 effort = "medium"
 
-# The reader explains a change without the plan; a cheap model is enough for that.
+# The reader explains a change without the build plan; a cheap model is enough for that.
 [agents.roles.reader]
 tier = 1
 
