@@ -469,34 +469,30 @@ pub(crate) fn runs_as(word: &str, names: &[&str]) -> bool {
     names.contains(&base)
 }
 
-// A word that holds a git push or a gh write: by its raw words, and by the rules of gh itself.
+// A word that holds a git push or a gh write: git by its raw words, gh by the rules of gh itself
+// applied to the words of the text.
 fn hides_a_command(word: &str) -> bool {
     let words = raw_words(word);
     let has = |name: &str| words.contains(&name);
     let git = has("git") && (has("push") || has("send-pack") || has("http-push"));
-    let gh_loose = has("gh")
-        && (has("merge")
-            || has("release")
-            || has("sync")
-            || has("api")
-            || (has("repo")
-                && ["edit", "rename", "delete", "archive"]
-                    .iter()
-                    .any(|name| has(name))));
-    let gh_rules = words
+    let bare: String = word
+        .chars()
+        .filter(|c| !matches!(c, '\'' | '"' | '\\'))
+        .collect();
+    let tokens: Vec<String> = bare
+        .split(|c: char| c.is_whitespace() || ";|&()".contains(c))
+        .filter(|token| !token.is_empty())
+        .map(str::to_owned)
+        .collect();
+    let gh = tokens
         .iter()
-        .position(|name| *name == "gh")
+        .position(|token| program(token) == "gh")
         .is_some_and(|at| {
-            let rest: Vec<String> = words
-                .iter()
-                .skip(at + 1)
-                .map(|name| (*name).to_owned())
-                .collect();
             let mut found = Vec::new();
-            gh_word(&rest, &mut found);
+            gh_word(tokens.get(at + 1..).unwrap_or_default(), &mut found);
             !found.is_empty()
         });
-    git || gh_loose || gh_rules
+    git || gh
 }
 
 // A flag that hands the interpreter its program as a string: `-c`, `-e`, `-lc`, `-euc`.
@@ -1384,8 +1380,12 @@ mod tests {
             "git status; python3 -c 'print(1)'",
             "git status; node -e 'x'",
             // The rules of gh apply inside one word, too.
-            "bash -c 'gh repo delete o/r --yes'",
-            "bash -c 'gh repo edit --default-branch x'",
+            "nix-shell --run 'gh repo delete o/r --yes'",
+            "nix-shell --run 'gh repo edit --default-branch x'",
+            "nix-shell --run 'cd d; gh pr -R o/r merge 1'",
+            "docker run img 'gh api -XPUT repos/o/r/pulls/1/merge'",
+            "docker run img 'gh release new v1'",
+            "docker run img 'git send-pack u slice/v1/x:refs/heads/main'",
             "git symbolic-ref HEAD refs/heads/main && git push -u origin slice/v1/x",
         ];
         for command in commands {
