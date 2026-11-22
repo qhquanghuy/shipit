@@ -147,15 +147,15 @@ uncovered_commands() {
 
 # forbidden_text <skills dir>: one line for each thing a skill must never say, in a code span or out
 # of one, with any whitespace between the words: a merge, a skipped hook, or a push that is not
-# exactly the slice push (the form, then the end of the span, a stop or the end of the line).
+# exactly the slice push (the form, then the end of the span, a comma, a stop or the end of the line; no option between git and push).
 forbidden_text() {
   local dir=$1 pattern pushes slice_pushes file
   for pattern in 'git[[:space:]]+merge' '--no-verify' 'gh[[:space:]]+pr[[:space:]]+merge'; do
     grep -rnE -- "$pattern" "$dir" | sed "s/^/forbidden: /" || true
   done
   for file in "$dir"/*/SKILL.md; do
-    pushes=$(grep -oE 'git[[:space:]]+push' "$file" | wc -l)
-    slice_pushes=$(grep -oE 'git push -u origin slice/<goal>/<slice>([`,.;:)]|$)' "$file" | wc -l)
+    pushes=$(grep -oE 'git[[:space:]]+([^[:space:]`]+[[:space:]]+)*push([[:space:]]|$|`)' "$file" | wc -l)
+    slice_pushes=$(grep -oE 'git push -u origin slice/<goal>/<slice>([`,.;)]|$)' "$file" | wc -l)
     [[ $pushes -eq $slice_pushes ]] || echo "a push other than the slice push in $file"
   done
 }
@@ -166,7 +166,8 @@ forbidden_text() {
   local text broken n=0
   for text in 'git merge main' 'git   merge main' 'a --no-verify push' 'gh pr merge 1' 'gh  pr  merge 1' \
     'git push origin main' 'git push -u origin main' 'git push -u origin slice/<goal>/<slice> --force' \
-    'git push -u origin slice/<goal>/<slice> main' 'git  push -u origin slice/<goal>/<slice>'; do
+    'git push -u origin slice/<goal>/<slice> main' 'git  push -u origin slice/<goal>/<slice>' \
+    'git push -u origin slice/<goal>/<slice>: now' 'git -C . push origin main' 'git -C . push -u origin slice/<goal>/<slice>'; do
     n=$((n + 1))
     broken=$BATS_TEST_TMPDIR/broken-$n
     mkdir -p "$broken"

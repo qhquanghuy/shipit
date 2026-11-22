@@ -547,14 +547,14 @@ check_short() {
 }
 
 
-# check_start_order: in shipit-slice, from "## Steps" to the end of the file, only a numbered step
-# names `shipit start`, and it comes after the line that records the build plan's review. The
-# roadmap skill never names it, on any line.
+# check_start_order: in shipit-slice, on every line of the file, only a numbered step names
+# `shipit start`, and it comes after the line that records the build plan's review. The roadmap
+# skill never names it, on any line.
 check_start_order() {
   local root=$1 file body receipt line n bad=0
   five_skills "$root" || return 1
   file=$(skill_file "$root" shipit-slice)
-  body=$(awk '/^## Steps$/ { on = 1 } on' "$file")
+  body=$(cat "$file")
   receipt=$(grep -n '`shipit receipt plan-review' <<<"$body" | head -1 | cut -d: -f1 || true)
   [[ -n $receipt ]] || { echo "shipit-slice: no line records the build plan's review"; return 1; }
   while IFS=: read -r n line; do
@@ -593,4 +593,17 @@ check_start_order() {
   run check_start_order "$BATS_TEST_TMPDIR/copy4"
   [ "$status" -eq 1 ]
   [[ $output == *"shipit-roadmap: a line names shipit start"* ]]
+}
+
+@test "skills: shipit start is named nowhere in shipit-slice outside the numbered step after the build plan review" {
+  copy_plugin "$BATS_TEST_TMPDIR/copy"
+  sed -i '/^- \*\*blocked\*\*/s/^- \*\*blocked\*\*: /- **blocked**: run `shipit start <slice>` first. /' "$BATS_TEST_TMPDIR/copy/skills/shipit-slice/SKILL.md"
+  run check_start_order "$BATS_TEST_TMPDIR/copy"
+  [ "$status" -eq 1 ]
+  [[ $output == *"not a numbered step names shipit start"* ]]
+  copy_plugin "$BATS_TEST_TMPDIR/copy2"
+  sed -i '/^Writes the build plan/s/runs `shipit validate`/runs `shipit start`, `shipit validate`/' "$BATS_TEST_TMPDIR/copy2/skills/shipit-slice/SKILL.md"
+  run check_start_order "$BATS_TEST_TMPDIR/copy2"
+  [ "$status" -eq 1 ]
+  [[ $output == *"not a numbered step names shipit start"* ]]
 }
