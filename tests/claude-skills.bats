@@ -78,3 +78,31 @@ fill() {
     grep -qF "skills: shipit:$name" <<<"$output" || { echo "not listed: $name"; return 1; }
   done
 }
+
+# forbidden_text <skills dir>: one line for each thing a skill must never say, in a code span or out
+# of one: a merge, a skipped hook, or a push that is not the slice push.
+forbidden_text() {
+  local dir=$1 word pushes slice_pushes file
+  for word in 'git merge' '--no-verify' 'gh pr merge'; do
+    grep -rnF -- "$word" "$dir" | sed "s/^/forbidden $word: /" || true
+  done
+  for file in "$dir"/*/SKILL.md; do
+    pushes=$(grep -oF 'git push' "$file" | wc -l)
+    slice_pushes=$(grep -oF 'git push -u origin slice/<goal>/<slice>' "$file" | wc -l)
+    [[ $pushes -eq $slice_pushes ]] || echo "a push other than the slice push in $file"
+  done
+}
+
+@test "claude skills: no skill merges, skips a hook, or pushes anything but the slice branch" {
+  run forbidden_text "$SKILLS"
+  [ "$output" = "" ]
+  local word broken
+  for word in 'git merge main' 'a --no-verify push' 'gh pr merge 1' 'git push origin main' 'git push -u origin main'; do
+    broken=$BATS_TEST_TMPDIR/broken-${word// /-}
+    mkdir -p "$broken"
+    cp -r "$SKILLS"/* "$broken"/
+    printf '\nOne more line: %s.\n' "$word" >>"$broken/shipit-review/SKILL.md"
+    run forbidden_text "$broken"
+    [ -n "$output" ] || { echo "not found: $word"; return 1; }
+  done
+}
