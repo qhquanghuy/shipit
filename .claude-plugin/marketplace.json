@@ -1,0 +1,14 @@
+{
+  "name": "shipit",
+  "description": "ShipIt: checks and receipts for agent work.",
+  "owner": {
+    "name": "ShipIt"
+  },
+  "plugins": [
+    {
+      "name": "shipit",
+      "source": "./",
+      "description": "Gates for reviews, shipping, global installs and parallel agents in a ShipIt project, and the roles that review and test the work."
+    }
+  ]
+}

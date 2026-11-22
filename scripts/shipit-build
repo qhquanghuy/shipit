@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Builds the shipit tool into this plugin folder (target/plugin/shipit) with nix. It builds when
+# there is no build yet, or when the folder is a checkout; a plugin folder that was installed
+# does not change. A failure is told, and blocks, only in a ShipIt project.
+root=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)
+out=$root/target/plugin/shipit
+in_project() {
+  local top
+  top=$(git -C "${CLAUDE_PROJECT_DIR:-$PWD}" rev-parse --show-toplevel 2>/dev/null) || return 1
+  [[ -e $top/.config/shipit.toml ]] || git -C "$top" cat-file -e HEAD:.config/shipit.toml 2>/dev/null
+}
+fail() {
+  if in_project; then
+    printf "ShipIt: cannot build the shipit tool. Run: nix build '%s#default' --out-link '%s'\n" "$root" "$out" >&2
+    exit 2
+  fi
+  exit 0
+}
+if [[ -x $out/bin/shipit && ! -e $root/.git ]]; then
+  exit 0
+fi
+command -v nix >/dev/null 2>&1 || fail
+mkdir -p "$root/target/plugin" || fail
+nix build "$root#default" --out-link "$out" --quiet >/dev/null 2>&1 || fail

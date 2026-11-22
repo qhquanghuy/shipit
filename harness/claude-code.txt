@@ -1,0 +1,15 @@
+# The files that only Claude Code needs (docs/goal.md, section 6): one path or glob per line.
+# `*` stands for any text inside one folder. The lint reads this list.
+.claude-plugin/*
+hooks/hooks.json
+agents/*
+bin/shipit
+scripts/shipit-build
+src/commands/claude_*.rs
+src/edge/agent_store.rs
+src/edge/hook_process.rs
+src/pure/claude_hook.rs
+tests/claude-*
+docs/claude-code.md
+CLAUDE.md
+harness/claude-code.txt

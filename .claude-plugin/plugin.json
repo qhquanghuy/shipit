@@ -1,0 +1,11 @@
+{
+  "name": "shipit",
+  "description": "Checks and receipts for agent work: a review needs a check receipt, only the owner ships, no global installs, a cap on parallel agents.",
+  "author": {
+    "name": "ShipIt"
+  },
+  "homepage": "https://github.com/qhquanghuy/shipit",
+  "repository": "https://github.com/qhquanghuy/shipit",
+  "license": "MIT",
+  "keywords": ["shipit", "gates", "receipts", "review", "agents"]
+}
