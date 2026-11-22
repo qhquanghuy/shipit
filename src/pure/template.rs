@@ -925,16 +925,15 @@ mod tests {
     }
 
     // The parts that must say something: a check, and no leave to be `none`.
-    fn parts_without_none() -> Vec<(usize, &'static str)> {
+    fn parts_without_none() -> Vec<(&'static Spec, &'static str)> {
         KINDS
             .iter()
-            .enumerate()
-            .flat_map(|(kind, spec)| {
+            .flat_map(|spec| {
                 spec.checks
                     .iter()
                     .map(|(name, _check)| *name)
                     .filter(|name| !spec.none_allowed.contains(name))
-                    .map(move |name| (kind, name))
+                    .map(move |name| (spec, name))
             })
             .collect()
     }
@@ -1168,10 +1167,9 @@ mod tests {
 
         #[test]
         fn none_only_where_the_spec_allows_it(
-            (kind, name) in proptest::sample::select(parts_without_none()),
+            (spec, name) in proptest::sample::select(parts_without_none()),
             seed in any::<u64>(),
         ) {
-            let spec = &KINDS[kind];
             let name = &name;
             let outcome = spec.outcomes.iter().find(|listed| listed.parts.contains(name)).expect("an outcome");
             let mut parts = bodies(spec, outcome.name, seed);
