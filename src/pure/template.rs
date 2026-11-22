@@ -924,6 +924,21 @@ mod tests {
             .expect("a kind that exists")
     }
 
+    // The parts that must say something: a check, and no leave to be `none`.
+    fn parts_without_none() -> Vec<(usize, &'static str)> {
+        KINDS
+            .iter()
+            .enumerate()
+            .flat_map(|(kind, spec)| {
+                spec.checks
+                    .iter()
+                    .map(|(name, _check)| *name)
+                    .filter(|name| !spec.none_allowed.contains(name))
+                    .map(move |name| (kind, name))
+            })
+            .collect()
+    }
+
     fn problems_of(spec: &Spec, text: &str) -> Vec<String> {
         validate(spec, &ctx(1000), text).expect_err("refused")
     }
@@ -1153,14 +1168,11 @@ mod tests {
 
         #[test]
         fn none_only_where_the_spec_allows_it(
-            kind in 0_usize..32,
-            which in 0_usize..32,
+            (kind, name) in proptest::sample::select(parts_without_none()),
             seed in any::<u64>(),
         ) {
-            let spec = &KINDS[kind % KINDS.len()];
-            prop_assume!(!spec.checks.is_empty());
-            let (name, _check) = &spec.checks[which % spec.checks.len()];
-            prop_assume!(!spec.none_allowed.contains(name));
+            let spec = &KINDS[kind];
+            let name = &name;
             let outcome = spec.outcomes.iter().find(|listed| listed.parts.contains(name)).expect("an outcome");
             let mut parts = bodies(spec, outcome.name, seed);
             for (part, body) in &mut parts {

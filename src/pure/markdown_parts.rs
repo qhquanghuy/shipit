@@ -144,9 +144,9 @@ mod tests {
             before in "[a-z ]{0,6}",
             after in "[a-z ]{0,6}",
             open in 1_usize..4,
-            close in 1_usize..4,
+            shift in 1_usize..3,
         ) {
-            prop_assume!(open != close);
+            let close = 1 + (open - 1 + shift) % 3;
             let line = format!("{before}{}{after}{}", "`".repeat(open), "`".repeat(close));
             prop_assert_eq!(without_code_spans(&line), line);
         }

@@ -792,6 +792,33 @@ mod tests {
             .collect()
     }
 
+    fn places_of_another_kind() -> Vec<((String, String), Value)> {
+        let value = fixture();
+        places()
+            .into_iter()
+            .flat_map(|place| {
+                let current = look(&value, &place.1).map(Value::type_str);
+                kinds()
+                    .into_iter()
+                    .filter(move |wrong| current != Some(wrong.type_str()))
+                    .map(move |wrong| (place.clone(), wrong))
+            })
+            .collect()
+    }
+
+    fn places_in_a_table() -> Vec<(String, String)> {
+        let value = fixture();
+        places()
+            .into_iter()
+            .filter(|(_path, pointer)| {
+                pointer
+                    .rsplit_once('/')
+                    .and_then(|(parent, _key)| look(&value, parent))
+                    .is_some_and(Value::is_table)
+            })
+            .collect()
+    }
+
     fn put(value: &mut Value, pointer: &str, new: Value) {
         if let Some(slot) = look_mut(value, pointer) {
             *slot = new;
@@ -1243,12 +1270,9 @@ mod tests {
 
         #[test]
         fn a_value_of_the_wrong_kind_is_reported_at_its_place(
-            (path, pointer) in proptest::sample::select(places()),
-            wrong in proptest::sample::select(kinds()),
+            ((path, pointer), wrong) in proptest::sample::select(places_of_another_kind()),
         ) {
             let mut value = fixture();
-            let current = look(&value, &pointer).map(Value::type_str);
-            prop_assume!(current != Some(wrong.type_str()));
             put(&mut value, &pointer, wrong);
             let lines = lines_of(&value);
             let prefix = format!("{path}: ");
@@ -1257,13 +1281,12 @@ mod tests {
 
         #[test]
         fn a_missing_required_key_is_the_only_problem_and_a_missing_optional_one_is_none(
-            (path, pointer) in proptest::sample::select(places()),
+            (path, pointer) in proptest::sample::select(places_in_a_table()),
         ) {
             let mut value = fixture();
-            let Some((parent, key)) = pointer.rsplit_once('/') else {
+            let Some((_parent, key)) = pointer.rsplit_once('/') else {
                 return Err(TestCaseError::fail("a pointer below the top"));
             };
-            prop_assume!(look(&value, parent).is_some_and(Value::is_table));
             remove(&mut value, &pointer);
             let optional = key == "stand_in" || (key == "effort" && !path.contains("stand_in"));
             let expected = if optional {

@@ -138,9 +138,9 @@ mod tests {
 
         #[test]
         fn a_line_without_four_fields_is_returned(
-            fields in proptest::collection::vec("[a-z0-9/]{1,8}", 1..8),
+            fields in prop_oneof![1_usize..4, 5_usize..8]
+                .prop_flat_map(|count| proptest::collection::vec("[a-z0-9/]{1,8}", count)),
         ) {
-            prop_assume!(fields.len() != 4);
             let line = fields.join(" ");
             prop_assert_eq!(parse_push(&format!("{line}\n")), Err(line));
         }

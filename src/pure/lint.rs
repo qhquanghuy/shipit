@@ -485,11 +485,12 @@ mod tests {
         #[test]
         fn word_boundaries(
             term in "[a-z]{3,8}",
-            left in "[a-z0-9]{0,3}",
-            right in "[a-z0-9]{0,3}",
+            (left, right) in prop_oneof![
+                ("[a-z0-9]{1,3}", "[a-z0-9]{0,3}"),
+                (Just(String::new()), "[a-z0-9]{1,3}"),
+            ],
         ) {
-            prop_assume!(!left.is_empty() || !right.is_empty());
-            let text = format!("see {left}{term}{right} here\n");
+            let text = format!("x {left}{term}{right} y\n");
             let got = lint(&[("a.md".to_owned(), text)], std::slice::from_ref(&term), &[], &[]);
             prop_assert!(got.iter().all(|f| f.matched != term));
         }

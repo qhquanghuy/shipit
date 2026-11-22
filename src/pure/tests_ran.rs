@@ -265,12 +265,11 @@ mod tests {
         #[test]
         fn passed_lines_are_read_in_libtest_nextest_and_tap_forms(
             name in "[a-z][a-z0-9_:]{0,10}",
-            words in "[a-z ]{1,10}",
+            words in "[a-z][a-z ]{0,9}",
             prefix in proptest::option::of("[a-z-]{1,8}"),
         ) {
             let lead = prefix.map(|word| format!("{word}> ")).unwrap_or_default();
             let tap = words.trim().to_owned();
-            prop_assume!(!tap.is_empty());
             let output = format!(
                 "{lead}test {name} ... ok\n{lead}        PASS [   0.004s] crate {name}\n{lead}ok 3 {tap}\n{lead}ok 4 - {tap}\n"
             );

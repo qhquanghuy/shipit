@@ -518,7 +518,11 @@ mod tests {
         }
 
         #[test]
-        fn a_husky_file_without_a_shebang_is_sh(body in "[a-z ]{0,10}") {
+        fn a_husky_file_without_a_shebang_is_sh(
+            body in "[a-z ]{0,10}".prop_filter("no word the detectors refuse", |b| {
+                !has_word(b, &READERS) && !has_word(b, &["exit", "exec"])
+            }),
+        ) {
             let text = format!("echo {body}\n");
             prop_assert_eq!(append_safety(true, true, true, &text), Ok(()));
             prop_assert_eq!(append_safety(true, false, true, &text), Err(Unsafe::NotShell));

@@ -211,7 +211,9 @@ documented_messages() {
 @test "a message that the doc names and the code does not print is found" {
   sed 's/`a nitpick is never blocking`/`a nitpick is not blocking`/' "$SHIPIT_SRC/docs/formats.md" >doc.md
   [ "$(documented_messages doc.md | grep -c 'a nitpick is not blocking')" -eq 1 ]
-  ! "$SHIPIT_BIN" format messages | grep -qxF 'a nitpick is not blocking'
+  run "$SHIPIT_BIN" format messages
+  [ "$status" -eq 0 ]
+  run ! grep -qxF 'a nitpick is not blocking' <<<"$output"
 }
 
 @test "format branch: says whether a branch is a slice branch and names its goal and slice" {
