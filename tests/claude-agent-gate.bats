@@ -79,8 +79,9 @@ receipt() {
 @test "shipit-branch must name a local slice branch" {
   receipt
   git tag slice/v1/tagged
+  git branch feature-x
   local branch
-  for branch in HEAD main slice/v1/tagged slice/v1/missing origin/main "HEAD~1" "--all"; do
+  for branch in HEAD main feature-x slice/v1/tagged slice/v1/missing origin/main "HEAD~1" "--all"; do
     agent shipit:work-reviewer "shipit-branch: $branch"
     [ "$(decision)" = deny ]
     [[ $(reason) == "ShipIt: \"shipit-branch: $branch\" must name a local slice branch, not a base branch or another revision." ]]
@@ -121,4 +122,15 @@ receipt() {
   end=$(date +%s%N)
   [ -z "$output" ]
   [ $(((end - start) / 1000000)) -lt 1000 ]
+}
+
+@test "a setup file that is not committed asks to commit it" {
+  local fresh="$BATS_TEST_TMPDIR/fresh"
+  mkdir -p "$fresh/.config"
+  git -C "$fresh" init -q -b main
+  valid_setup >"$fresh/.config/shipit.toml"
+  run_hook claude-agent-gate "$(agent_input "$fresh" general-purpose "Look around.")" "$fresh"
+  [ "$(decision)" = deny ]
+  [[ $(reason) == "ShipIt: the agent cannot start: the setup file .config/shipit.toml is not committed"*"commit it first." ]]
+  [ ! -e "$BATS_TEST_TMPDIR/plugin-data" ]
 }

@@ -7,15 +7,16 @@ use crate::commands::verify::verify_at;
 use crate::edge::agent_store::Ledger;
 use crate::edge::clock::now_utc;
 use crate::edge::git::Git;
-use crate::edge::hook_process::read_hook_input;
+use crate::edge::hook_process::{exists, read_hook_input};
 use crate::edge::slice_git::load_policy;
 use crate::pure::agent_ledger::{Change, Entry, admit, seconds};
 use crate::pure::base::BranchName;
+use crate::pure::branch::is_slice_branch;
 use crate::pure::claude_hook::{
     HookInput, Target, agent_call, answer_json, parse_input, review_target, safe_field,
 };
 use crate::pure::failure::{Exit, Failure};
-use crate::pure::setup::HEAD;
+use crate::pure::setup::{HEAD, SETUP_PATH};
 use crate::pure::ship_gate::Answer;
 
 pub(crate) const HIDDEN: bool = true;
@@ -39,7 +40,7 @@ fn deny(text: String) -> Answer {
 // The branch the prompt names must be a local branch that is not a base: a revision such as
 // HEAD, a tag or a remote branch would be judged as some other work.
 fn named_branch(git: &Git, branch: &str, bases: &[String]) -> Option<String> {
-    let name = BranchName::parse(branch)?;
+    let name = BranchName::parse(branch).filter(|name| is_slice_branch(name.as_str()))?;
     if bases.iter().any(|base| base == name.as_str()) {
         return None;
     }
@@ -111,6 +112,12 @@ fn cannot_start(why: impl std::fmt::Display) -> String {
 fn admit_start(git: &Git, input: &HookInput) -> Result<(), String> {
     let session = safe_field(input.session_id.as_deref(), "session_id").map_err(cannot_start)?;
     let call = safe_field(input.tool_use_id.as_deref(), "tool_use_id").map_err(cannot_start)?;
+    // The cap is read as committed: a setup that is only in the working tree says nothing yet.
+    if !git.file_exists(OsStr::new(HEAD), SETUP_PATH) && exists(&git.top().join(SETUP_PATH)) {
+        return Err(cannot_start(
+            "the setup file .config/shipit.toml is not committed, and the setup is read as committed: commit it first",
+        ));
+    }
     let cap = agent_cap(git).map_err(|failure| cannot_start(failure.message))?;
     let now = seconds(&now_utc()).ok_or_else(|| cannot_start("cannot read the clock"))?;
     let ledger = Ledger::open(session, true)
