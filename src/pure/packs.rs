@@ -82,7 +82,7 @@ fn every_skill_has_an_override() {
 
 // The files of Superpowers 7.0.2 that the pack cites, by their path under `skills/`, with their
 // line counts; a new citation adds its file here after counting its lines.
-const CITED_FILES: [(&str, usize); 22] = [
+const CITED_FILES: [(&str, usize); 24] = [
     ("brainstorming/SKILL.md", 316),
     ("brainstorming/visual-companion.md", 299),
     ("diagnosing-superpowers/SKILL.md", 120),
@@ -93,6 +93,7 @@ const CITED_FILES: [(&str, usize); 22] = [
     ("requesting-code-review/SKILL.md", 95),
     ("requesting-code-review/code-reviewer.md", 198),
     ("subagent-driven-development/SKILL.md", 339),
+    ("subagent-driven-development/implementer-prompt.md", 154),
     ("subagent-driven-development/references/final-review.md", 49),
     ("subagent-driven-development/references/fix-loop.md", 77),
     (
@@ -100,6 +101,7 @@ const CITED_FILES: [(&str, usize); 22] = [
         15,
     ),
     ("subagent-driven-development/references/preflight.md", 26),
+    ("subagent-driven-development/task-reviewer-prompt.md", 209),
     ("systematic-debugging/SKILL.md", 283),
     ("test-driven-development/SKILL.md", 330),
     ("using-git-worktrees/SKILL.md", 167),
@@ -179,9 +181,27 @@ fn every_override_cites_lines_that_exist() {
     }
 }
 
-// The places the informed review of the proof step superpowers-overrides-check found with no
-// override or with a wrong citation (2026-11-22), one line of each.
-const FOUND_BY_THE_PROOF_REVIEW: [(&str, usize); 36] = [
+// A range as wide as a file would hide which lines an override is about: the review found items
+// cited with a whole file and every other test passing.
+#[test]
+fn no_citation_is_wider_than_sixty_lines() {
+    let overrides = items(pack("packs/skill/superpowers.md"), "## Overrides");
+    for item in &overrides {
+        for cite in citations(item) {
+            assert!(
+                cite.last.saturating_sub(cite.first) < 60,
+                "{}:{}-{} is wider than 60 lines: {item}",
+                cite.file,
+                cite.first,
+                cite.last
+            );
+        }
+    }
+}
+
+// The places the informed review of the proof step superpowers-overrides-check (2026-11-22) and the
+// second opinion of fix round 1 found with no override or with a wrong citation, one line of each.
+const FOUND_BY_THE_REVIEWS: [(&str, usize); 53] = [
     ("subagent-driven-development/references/final-review.md", 12),
     ("subagent-driven-development/references/final-review.md", 18),
     ("subagent-driven-development/references/final-review.md", 29),
@@ -221,6 +241,26 @@ const FOUND_BY_THE_PROOF_REVIEW: [(&str, usize); 36] = [
     ("using-superpowers/SKILL.md", 20),
     ("writing-plans/SKILL.md", 21),
     ("requesting-code-review/code-reviewer.md", 45),
+    ("writing-plans/SKILL.md", 181),
+    ("writing-plans/SKILL.md", 198),
+    ("subagent-driven-development/references/fix-loop.md", 14),
+    ("subagent-driven-development/task-reviewer-prompt.md", 153),
+    (
+        "subagent-driven-development/references/handling-reports.md",
+        10,
+    ),
+    ("brainstorming/SKILL.md", 263),
+    ("brainstorming/SKILL.md", 302),
+    ("diagnosing-superpowers/SKILL.md", 57),
+    ("requesting-code-review/SKILL.md", 14),
+    ("subagent-driven-development/SKILL.md", 105),
+    ("executing-plans/SKILL.md", 112),
+    ("finishing-a-development-branch/SKILL.md", 48),
+    ("subagent-driven-development/SKILL.md", 96),
+    ("subagent-driven-development/references/final-review.md", 44),
+    ("executing-plans/SKILL.md", 302),
+    ("subagent-driven-development/implementer-prompt.md", 124),
+    ("subagent-driven-development/SKILL.md", 283),
 ];
 
 #[test]
@@ -231,7 +271,7 @@ fn the_places_the_proof_review_found_are_overridden() {
         .map(String::as_str)
         .flat_map(citations)
         .collect();
-    for (file, line) in FOUND_BY_THE_PROOF_REVIEW {
+    for (file, line) in FOUND_BY_THE_REVIEWS {
         assert!(
             cited
                 .iter()
@@ -243,7 +283,8 @@ fn the_places_the_proof_review_found_are_overridden() {
 
 // The lead's ruling on the proof review's question: the override of the fix loop's round cap
 // (fix-loop.md:21) follows the goal's principle for fix rounds (docs/goal.md, Principles per
-// step) word for word.
+// step) word for word. The test holds that one phrase only; the rest of the item is held by
+// the rerun of the proof step superpowers-overrides-check, not by a test.
 #[test]
 fn the_fix_round_limit_follows_the_goal() {
     let text = pack("packs/skill/superpowers.md");
