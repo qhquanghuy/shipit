@@ -22,7 +22,7 @@ The owner's guide is `docs/guide.md`: the three jobs of the owner, the skills, t
 
 ### Permissions the skills need
 
-The skills run commands and write files. In a headless run (`claude -p`) every question becomes a refusal, so give the permissions first. Put this in `.claude/settings.json`, or give the same rules with `--allowedTools`. Replace `./test.sh` with your project's own test command, and add `Read(<folder>/**)` if the plugin is loaded from a folder of your own.
+The skills run commands and write files. In a headless run (`claude -p`) every question becomes a refusal, so give the permissions first. Put this in `.claude/settings.json` at the root of the project (commit it in its own pull request after adoption, not with the setup), or give the same rules with `--allowedTools`. Replace `./test.sh` with your project's own test command. The skills read and search with the Read and Grep tools, so the list has no `cat`, `grep` or `ls` rule. An installed plugin is read from its cache folder, as the last rule shows; a plugin loaded from a folder of your own needs `Read(//<plugin folder>/**)` instead (`//` starts an absolute path).
 
 ```json
 {
@@ -43,21 +43,24 @@ The skills run commands and write files. In a headless run (`claude -p`) every q
       "Bash(gh pr create *)",
       "Bash(gh pr view *)",
       "Bash(gh pr diff *)",
-      "Bash(mktemp -d)",
+      "Bash(mktemp -d /tmp/shipit.XXXXXX)",
       "Bash(mkdir -p *)",
       "Bash(cp *)",
-      "Bash(grep *)",
-      "Bash(cat *)",
-      "Bash(ls *)",
+      "Bash(printf *)",
+      "Bash(sha256sum *)",
       "Bash(./test.sh *)",
-      "Edit(//tmp/**)",
-      "Read(~/.claude/plugins/**)"
+      "Edit(//tmp/shipit.*/**)",
+      "Read(~/.claude/plugins/cache/shipit/**)"
     ]
   }
 }
 ```
 
-The store is in the git folder; a skill copies a file into it with one `mkdir -p` and one `cp`, which these rules allow. A skill makes its own temporary folder with `mktemp -d` under `/tmp`, so `Edit(//tmp/**)` lets it write drafts there.
+A skill makes its own drafts folder with `mktemp -d /tmp/shipit.XXXXXX`, so `Edit(//tmp/shipit.*/**)` lets it write drafts there and nowhere else under `/tmp`.
+
+**The worktree.** The slice's worktree is made at `../wt/<slice>`, outside the folder of the session. Start the session with `--add-dir ../wt`, or the owner approves the prompt for it. This is a known gap until a follow-up slice.
+
+**The store.** The harness treats files under the git folder as sensitive: it asks for each write into the store, and a headless run refuses. The rules above do not change that. In a headless run the skills stop and hand the owner the exact `mkdir -p` and `cp` commands to run. This is a known gap until a follow-up slice.
 
 ## Run it
 
@@ -142,16 +145,17 @@ and no file system monitor (`core.fsmonitor=false`); the counts and lists of cha
 
 ## Adopt ShipIt in a project
 
-Needs git 2.39 or newer. Adoption is one command and two small pull requests.
+Needs git 2.39 or newer. Adoption is one command and two small pull requests, then a third for the permission list.
 
 1. Run `shipit init` in the project. It writes the starting setup and adds the pre-push hook; it never overwrites a file.
    Fill in `gate.check` with your check commands. A new repository needs a first commit on the base branch and a push of it.
    A branch with no commits beyond the base exits 2 in `shipit check`: commit first, or pass `--base <base>`.
-2. Pull request 1 is the setup file alone: commit it on a new branch, run `shipit check`, push and open the pull request.
+2. Pull request 1 is the setup file alone: commit it on a new branch, run `shipit check`, push and open the pull request. Adoption branches are not named `slice/...` (use `adopt/setup` and `adopt/ci`): a `slice/...` branch counts toward the cap of started slices.
 3. After it merges, on a new branch run `shipit init --ci-job`, set SHIPIT_COMMIT in the file it wrote to a ShipIt commit hash,
-   and ship that as a normal slice (pull request 2).
+   and open pull request 2: the CI job alone, as a normal pull request (not the setup file, not a slice).
 4. Make the job a required check in the host's branch rules; otherwise a pull request that deletes the job is rechecked by nothing.
    In a new clone, `shipit init --hook-only` adds the hook again.
+5. Last, commit `.claude/settings.json` (the permission list under Start here) in its own pull request, never with the setup.
 
 **The hook.** `shipit pre-push` asks for a check receipt only on a `slice/*` branch, that is `slice/<goal>/<slice>` (any name
 starting `slice/` counts). Every other branch passes with a notice such as
