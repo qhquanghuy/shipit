@@ -308,24 +308,25 @@ fn is_label(text: &str) -> bool {
 }
 
 // The lines of an owner message outside example blocks, then the lines inside them. A fence whose
-// info string is exactly `example` is an example block; its fence lines count toward neither,
-// because the owner reads the example, not its markers. An unclosed fence never gets here
-// (`lines` refuses it), so an example cannot hide a line.
+// info string is exactly `example` is an example block; its two fence lines count with its lines,
+// so an empty block is not free. An unclosed fence never gets here (`lines` refuses it), so an
+// example cannot hide a line.
 fn counted(all: &[Line<'_>]) -> (usize, usize) {
     let mut in_example = false;
     let (mut normal, mut example) = (0, 0);
     for line in all {
-        match line.kind {
+        let inside = match line.kind {
             Kind::Open { info } => {
                 in_example = info == EXAMPLE;
-                normal += usize::from(!in_example);
+                in_example
             }
-            Kind::Inside if in_example => example += 1,
-            Kind::Prose | Kind::Inside => normal += 1,
-            Kind::Close => {
-                normal += usize::from(!in_example);
-                in_example = false;
-            }
+            Kind::Inside | Kind::Close => in_example,
+            Kind::Prose => false,
+        };
+        if inside {
+            example += 1;
+        } else {
+            normal += 1;
         }
     }
     (normal, example)
@@ -349,7 +350,7 @@ fn owner_problems(
     };
     let final_empty = all.last().is_some_and(|line| line.text.is_empty());
     let (normal, example) = counted(all);
-    let count = normal - usize::from(final_empty);
+    let count = normal.saturating_sub(usize::from(final_empty));
     let mut length = Vec::new();
     if u64::try_from(count).is_ok_and(|count| count > max_lines) {
         length.push(format!(
@@ -1447,7 +1448,7 @@ mod tests {
             for count in &blocks {
                 text = with_block(&text, &fenced(mark, "example", *count), place);
             }
-            let example: usize = blocks.iter().sum();
+            let example: usize = blocks.iter().map(|count| count + 2).sum();
             let mut expected = Vec::new();
             if plain > 0 {
                 expected.push(format!(

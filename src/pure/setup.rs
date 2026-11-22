@@ -1069,6 +1069,7 @@ mod tests {
             0_u64..50,
             1_u64..=i64::MAX.unsigned_abs(),
             1_u64..=i64::MAX.unsigned_abs(),
+            1_u64..=i64::MAX.unsigned_abs(),
         );
         (scalars, strings, limits, arb_effort(), 2_u64..=5)
             .prop_flat_map(|(scalars, strings, limits, cap, n)| {
@@ -1110,7 +1111,7 @@ mod tests {
                     (scout_tier, offset, scout_effort, retries),
                     (planner, maker, tester, reader),
                 )| {
-                    let (max_lines, update_offset, slices, agents) = limits;
+                    let (max_lines, update_offset, slices, agents, example) = limits;
                     let then_tier = scout_tier + 1 + offset % (n - scout_tier);
                     Setup {
                         version: Version,
@@ -1164,7 +1165,7 @@ mod tests {
                         owner: Owner {
                             max_lines: Lines(max_lines),
                             status_update_max_lines: Lines(1 + update_offset % max_lines),
-                            example_max_lines: Lines(slices),
+                            example_max_lines: Lines(example),
                         },
                     }
                 },
