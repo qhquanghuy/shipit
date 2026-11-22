@@ -147,13 +147,11 @@ mod tests {
 
         #[test]
         fn a_fence_closes_only_on_a_line_as_long_as_its_opening(
-            len in 3_usize..8,
-            shorter in 3_usize..8,
+            (len, shorter) in (4_usize..8).prop_flat_map(|len| (Just(len), 3..len)),
             longer in 0_usize..3,
             tilde in any::<bool>(),
             indent in 0_usize..4,
         ) {
-            prop_assume!(shorter < len);
             let (mark, other) = if tilde { ('~', '`') } else { ('`', '~') };
             let pad = " ".repeat(indent);
             let open = format!("{pad}{}toml", mark.to_string().repeat(len));

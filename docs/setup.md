@@ -93,7 +93,7 @@ An effort above the cap is reported as `must not be above agents.effort_cap`.
 | `gate` | Exactly `base`, `max_files`, `check`, `environment`: what `shipit check` reads. |
 | `gate.base` | A branch name, as `git check-ref-format --branch` accepts it: the base branch. Not a revision (`HEAD~1`), not a tag. |
 | `gate.max_files` | An integer, 1 or more: the size cap for one change, in changed files. |
-| `gate.check` | An array of non-empty strings: the check commands. It may be empty (a new project's first day). Each command runs with `SHIPIT_MERGE_BASE` (the commit where the slice left the base) and `SHIPIT_CHECK` (the command's own text, as written here) in its environment. |
+| `gate.check` | An array of non-empty strings: the check commands. It may be empty (a new project's first day). Each command runs with `SHIPIT_MERGE_BASE` (the commit where the slice left the base) and `SHIPIT_CHECK` (the command's own text, as written here) in its environment. A check command that calls `shipit` needs it on PATH: the Claude Code plugin's `bin/` puts it there in Claude sessions, the action does in CI, and in a terminal you install it or use the plugin's `bin/shipit`. |
 | `gate.environment` | Exactly `prefix`: an array of non-empty strings, the command prefix that enters the project's tool environment (for example `["nix", "develop", "--command"]`, `["mise", "exec", "--"]`, `["devbox", "run", "--"]`); an empty array means none. Each check runs as `<prefix…> bash -c "<command>"`. |
 | `agents` | Exactly `max_fix_rounds`, `effort_cap`, `tiers`, `roles`, and optionally `parallel`. |
 | `agents.max_fix_rounds` | An integer, 0 or more. |

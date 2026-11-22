@@ -188,8 +188,7 @@ doc_lines() {
   [ "$names" = "plan-reviewer reader tester work-reviewer " ]
   grep -q '"shipit:work-reviewer"' "$PLUGIN/src/pure/claude_hook.rs"
   grep -q '"shipit:tester"' "$PLUGIN/src/pure/claude_hook.rs"
-  ! grep -q 'shipit:plan-reviewer\|shipit:reader' "$PLUGIN/src/pure/claude_hook.rs" ||
-    ! grep -q 'const .*"shipit:\(plan-reviewer\|reader\)"' "$PLUGIN/src/pure/claude_hook.rs"
+  run ! grep -q 'const .*"shipit:\(plan-reviewer\|reader\)"' "$PLUGIN/src/pure/claude_hook.rs"
 }
 
 @test "an agent file holds a description, no model and no effort" {
@@ -197,12 +196,12 @@ doc_lines() {
   for file in "$PLUGIN"/agents/*.md; do
     [ "$(sed -n 1p "$file")" = "---" ]
     grep -q '^description: .' "$file"
-    ! grep -qE '^(model|effort|name):' "$file"
+    run ! grep -qE '^(model|effort|name):' "$file"
   done
   grep -q '^tools: Read, Grep, Glob, Bash$' "$PLUGIN/agents/plan-reviewer.md"
   grep -q '^tools: Read, Grep, Glob, Bash$' "$PLUGIN/agents/reader.md"
-  ! grep -q '^tools:' "$PLUGIN/agents/work-reviewer.md"
-  ! grep -q '^tools:' "$PLUGIN/agents/tester.md"
+  run ! grep -q '^tools:' "$PLUGIN/agents/work-reviewer.md"
+  run ! grep -q '^tools:' "$PLUGIN/agents/tester.md"
 }
 
 @test "the agent files pass the lint" {
@@ -285,5 +284,5 @@ doc_lines() {
   matched Monitor claude-install-gate
   matched Agent claude-agent-gate
   matched Task claude-agent-gate
-  ! matched Read claude-ship-gate
+  run ! matched Read claude-ship-gate
 }

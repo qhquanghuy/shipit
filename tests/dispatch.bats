@@ -25,8 +25,8 @@ load helpers
   [ "$output" = "$helped" ]
   grep -qE '^  check \[--base <name>\]  +Refuses a dirty tree' <<<"$output"
   grep -qE '^  verify \[commit\]  +Says whether a valid check receipt exists' <<<"$output"
-  ! grep -q 'usage: shipit setup' <<<"$output"
-  ! grep -qE '^  setup' <<<"$output"
+  run ! grep -q 'usage: shipit setup' <<<"$helped"
+  run ! grep -qE '^  setup' <<<"$helped"
 }
 
 @test "help <command> gives the usage, the setup need and the exit codes, for hidden commands too" {
