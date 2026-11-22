@@ -29,7 +29,7 @@ pub(crate) fn read_json(path: &Path) -> Option<Vec<Value>> {
 }
 
 // A stale temporary file from a crashed run is skipped, never reused.
-fn create_temporary(dir: &Path) -> std::io::Result<(PathBuf, File)> {
+pub(crate) fn create_temporary(dir: &Path) -> std::io::Result<(PathBuf, File)> {
     let pid = std::process::id();
     let mut n = 0_u32;
     loop {

@@ -95,7 +95,7 @@ measure() {
   measure clones
   [ "$status" -eq 1 ]
   [ -z "$output" ]
-  [ "$stderr" = "shipit: 1 clones touch the slice:
+  [ "$stderr" = "shipit: 1 clone touches the slice:
   src/one.rs:1-50, src/two.rs:1-50" ]
 }
 
@@ -117,8 +117,7 @@ measure() {
   [ "$output" = "98.04" ]
   measure cognitive-complexity
   [ "$status" -eq 0 ]
-  [[ $output =~ ^[0-9]+$ ]]
-  [ "$output" -gt 0 ]
+  [ "$output" = "17" ]
   git checkout -q main
   measure clone-ratio
   [ "$output" = "0.00" ]
@@ -212,7 +211,9 @@ clones: none touch the slice" ]
   [ "$stderr" = "shipit: usage: shipit measure <clones|clone-ratio|cognitive-complexity|merge-base>" ]
 }
 
-# unreadable_source: a valid file that PMD's Rust reader stops at (it skips the file and exits 5).
+
+# unreadable_source: a valid file that PMD's Rust reader stops at (a string that ends in a
+# backslash, followed by another string: it skips the file and exits 5).
 unreadable_source() {
   printf 'fn a() -> Vec<&'"'"'static str> {\n    vec!["~", "\\\\", ".."]\n}\n' >src/bad.rs
   printf 'src/bad.rs\n' >"$BATS_TEST_TMPDIR/bad-list"
@@ -220,16 +221,7 @@ unreadable_source() {
   [ "$status" -eq 5 ]
 }
 
-@test "measure: a changed file that pmd cannot read exits 2 and names it" {
-  clone_repo
-  unreadable_source
-  commit_all "add a file pmd cannot read"
-  measure clones
-  [ "$status" -eq 2 ]
-  [ "$stderr" = "shipit: pmd cannot read src/bad.rs; its clones cannot be checked (rewrite what it stops at)" ]
-}
-
-@test "measure: an unchanged file that pmd cannot read is a notice" {
+@test "measure: a tracked file that pmd cannot read exits 2 and names it, changed or not" {
   clone_repo
   git checkout -q main
   unreadable_source
@@ -239,7 +231,67 @@ unreadable_source() {
   printf '// touched\n' >>src/three.rs
   commit_all "touch three"
   measure clones
+  [ "$status" -eq 2 ]
+  [ "$stderr" = "shipit: pmd cannot read src/bad.rs; its clones cannot be checked (rewrite what it stops at)" ]
+  printf '// touched\n' >>src/bad.rs
+  commit_all "touch the unreadable file"
+  measure clone-ratio
+  [ "$status" -eq 2 ]
+  [ "$stderr" = "shipit: pmd cannot read src/bad.rs; its clones cannot be checked (rewrite what it stops at)" ]
+}
+
+@test "measure: a marker word anywhere but alone on its line exits 1" {
+  clone_repo
+  local text
+  for text in 'pub fn z() -> i64 { 1 } // CPD-OFF' '// note: CPD-OFF here' $'/*\nCPD-OFF\n*/' '//CPD-OFF: why' '// CPD-ON again'; do
+    git reset -q --hard
+    git checkout -q main -- src/one.rs
+    printf '%s\n' "$text" >>src/one.rs
+    commit_all "marker form"
+    measure clones
+    [ "$status" -eq 1 ]
+    [[ $stderr == "shipit: CPD-OFF markers are broken:
+  src/one.rs:5"[0-9]*": CPD-OFF and CPD-ON must stand alone on their line: // CPD-OFF: <why> or // CPD-ON" ]]
+    measure clone-ratio
+    [ "$status" -eq 1 ]
+  done
+}
+
+@test "measure: a copy that was reformatted prints its own lines and counts them" {
+  clone_repo
+  sed -i 's/^    let mut total = 0;$/    let mut total = 0;\n/' src/two.rs
+  printf '// touched\n' >>src/one.rs
+  commit_all "reformat one copy"
+  measure clones
+  [ "$status" -eq 1 ]
+  [ "$stderr" = "shipit: 1 clone touches the slice:
+  src/one.rs:1-50, src/two.rs:1-51" ]
+}
+
+@test "measure: inside shipit check the merge base is the one the check was given" {
+  clone_repo
+  printf '// touched\n' >>src/one.rs
+  commit_all "touch one"
+  printf '// touched\n' >>src/three.rs
+  commit_all "touch three"
+  measure clones
+  [ "$status" -eq 1 ]
+  SHIPIT_MERGE_BASE=$(git rev-parse HEAD~1) SHIPIT_CHECK=x measure clones
   [ "$status" -eq 0 ]
   [ "$output" = "clones: none touch the slice" ]
-  [ "$stderr" = "shipit: pmd cannot read src/bad.rs; clones with it are not found" ]
+}
+
+@test "measure: a file name that cannot be handed to pmd exits 2 and names it" {
+  clone_repo
+  cp src/one.rs "src/a,b.rs"
+  commit_all "a comma"
+  measure clones
+  [ "$status" -eq 2 ]
+  [ "$stderr" = "shipit: cannot measure src/a,b.rs: a .rs file name with a comma, a line break or bytes that are not UTF-8" ]
+  git rm -q "src/a,b.rs"
+  cp src/one.rs "$(printf 'src/o\377ne.rs')"
+  commit_all "not utf-8"
+  measure clones
+  [ "$status" -eq 2 ]
+  [[ $stderr == "shipit: cannot measure src/o"*"ne.rs: a .rs file name with a comma, a line break or bytes that are not UTF-8" ]]
 }

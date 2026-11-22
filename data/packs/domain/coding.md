@@ -24,7 +24,7 @@ The measures and scans of this pack are these check commands, added after the te
 - `shipit metric clone-ratio "$(shipit measure clone-ratio)"`, which records the share of the changed lines that are cloned;
 - `shipit metric cognitive-complexity "$(shipit measure cognitive-complexity)"`, which records the highest cognitive complexity of a function in the changed files, and never fails on it;
 - `cargo deny check`, for a Rust project: advisories, licences, bans and sources of the dependencies, per `deny.toml`; the advisories need the network, so this command runs outside the Nix build;
-- `gitleaks git --redact --no-banner --log-opts="$(shipit measure merge-base)..HEAD" .`, which scans the commits of the slice for secrets and prints no secret.
+- `base="$(shipit measure merge-base)" && gitleaks git --redact --no-banner --log-opts="$base..HEAD" .`, which scans the commits of the slice for secrets and prints no secret.
 
 The limits of the clone and complexity measures are in `shipit help measure`.
 

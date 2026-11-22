@@ -93,3 +93,14 @@ fn coding_pack_covers_each_term() {
         assert!(text.contains(term), "no mention of {term}");
     }
 }
+
+// A check command runs without `-e`: a failed `$(...)` inside the scan's range would leave the
+// range empty and the scan clean, so the merge base is taken first and the scan needs it.
+#[test]
+fn the_secret_scan_needs_the_merge_base_first() {
+    let text = pack("packs/domain/coding.md");
+    assert!(text.contains(
+        "`base=\"$(shipit measure merge-base)\" && gitleaks git --redact --no-banner --log-opts=\"$base..HEAD\" .`"
+    ));
+    assert!(!text.contains("--log-opts=\"$(shipit"));
+}

@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Place {
@@ -132,25 +131,46 @@ pub(crate) fn highest(functions: &[Function], changed: &[String]) -> u64 {
         .unwrap_or(0)
 }
 
-// The comment words of a line that is only a comment: `//`, `///`, `//!` and `/*` open one.
-// PMD honours all of them, so every one is read as a marker.
-fn comment_word(line: &str) -> Option<&str> {
-    let trimmed = line.trim_start();
-    let body = trimmed
-        .strip_prefix("//")
-        .or_else(|| trimmed.strip_prefix("/*"))?;
-    Some(body.trim_start_matches(['/', '*', '!']).trim_start())
+// The marker words are spelled in two pieces so that this file, which the check reads too, does
+// not hold them.
+pub(crate) const OFF: &str = concat!("CPD", "-OFF");
+pub(crate) const ON: &str = concat!("CPD", "-ON");
+
+#[derive(Debug, PartialEq, Eq)]
+enum Line {
+    Code,
+    Off(String),
+    On,
+    NeedsReason,
+    Stray,
 }
 
-fn reason(after_off: &str) -> Option<String> {
-    let why = after_off.strip_prefix(':')?;
-    let why = why.trim();
-    let why = why.strip_suffix("*/").unwrap_or(why).trim();
-    (!why.is_empty()).then(|| why.to_owned())
+// PMD switches off on any comment that holds the off word, and on at any that holds the on
+// word, so the only accepted forms are the two alone on their line; any other line that holds
+// either word is stray, never read as a marker.
+fn classify(line: &str) -> Line {
+    let text = line.trim();
+    if !text.contains(OFF) && !text.contains(ON) {
+        return Line::Code;
+    }
+    if text == format!("// {ON}") {
+        return Line::On;
+    }
+    let Some(rest) = text.strip_prefix(&format!("// {OFF}")) else {
+        return Line::Stray;
+    };
+    match rest.trim() {
+        "" | ":" => Line::NeedsReason,
+        _ => match rest.strip_prefix(':').map(str::trim) {
+            Some(why) if !why.contains("CPD-") => Line::Off(why.to_owned()),
+            Some(_) | None => Line::Stray,
+        },
+    }
 }
 
-// Every block that `// CPD-OFF: <why>` … `// CPD-ON` hides from the clone tool, or every
-// problem: a block without a reason, or without its `CPD-ON` (which hides the rest of the file).
+// Every block that the off marker with its reason and the on marker hide from the clone tool,
+// or every problem: a stray word, a block without a reason, or without its on marker (which
+// hides the rest of the file).
 pub(crate) fn marked_blocks(file: &str, text: &str) -> Result<Vec<Marked>, Vec<String>> {
     let mut blocks = Vec::new();
     let mut problems: Vec<(u64, String)> = Vec::new();
@@ -158,36 +178,39 @@ pub(crate) fn marked_blocks(file: &str, text: &str) -> Result<Vec<Marked>, Vec<S
     let mut number = 0_u64;
     for line in text.lines() {
         number += 1;
-        let Some(word) = comment_word(line) else {
-            continue;
-        };
-        if let Some(after) = word.strip_prefix("CPD-OFF") {
-            let why = reason(after);
-            if why.is_none() {
+        match classify(line) {
+            Line::Code => {}
+            Line::Off(why) => {
+                open.get_or_insert((number, why));
+            }
+            Line::NeedsReason => {
                 problems.push((
                     number,
-                    format!("{file}:{number}: CPD-OFF needs a reason: // CPD-OFF: <why>"),
+                    format!("{file}:{number}: {OFF} needs a reason: // {OFF}: <why>"),
                 ));
+                open.get_or_insert((number, String::new()));
             }
-            if open.is_none() {
-                open = Some((number, why.unwrap_or_default()));
+            Line::Stray => problems.push((
+                number,
+                format!(
+                    "{file}:{number}: {OFF} and {ON} must stand alone on their line: \
+                     // {OFF}: <why> or // {ON}"
+                ),
+            )),
+            Line::On => {
+                if let Some((first, why)) = open.take() {
+                    blocks.push(Marked {
+                        file: file.to_owned(),
+                        first,
+                        last: number,
+                        why,
+                    });
+                }
             }
-        } else if word.starts_with("CPD-ON")
-            && let Some((first, why)) = open.take()
-        {
-            blocks.push(Marked {
-                file: file.to_owned(),
-                first,
-                last: number,
-                why,
-            });
         }
     }
     if let Some((first, _why)) = open {
-        problems.push((
-            first,
-            format!("{file}:{first}: CPD-OFF has no matching CPD-ON"),
-        ));
+        problems.push((first, format!("{file}:{first}: {OFF} has no matching {ON}")));
     }
     if problems.is_empty() {
         return Ok(blocks);
@@ -196,14 +219,27 @@ pub(crate) fn marked_blocks(file: &str, text: &str) -> Result<Vec<Marked>, Vec<S
     Err(problems.into_iter().map(|(_line, text)| text).collect())
 }
 
-// Every tracked `.rs` file, from `git ls-files -v -z`.
-pub(crate) fn tracked_rust_files(ls_files_v_z: &[u8]) -> Vec<String> {
-    ls_files_v_z
+// Every tracked `.rs` file, from `git ls-files -v -z`; the error holds the names that cannot be
+// measured: PMD reads its file list by lines and commas, and a name that is not UTF-8 cannot be
+// handed on, so none of them is dropped silently.
+pub(crate) fn tracked_rust_files(ls_files_v_z: &[u8]) -> Result<Vec<String>, Vec<String>> {
+    let mut found = Vec::new();
+    let mut unusable = Vec::new();
+    for name in ls_files_v_z
         .split(|byte| *byte == 0)
         .filter_map(|entry| entry.get(2..))
-        .filter_map(|name| String::from_utf8(name.to_vec()).ok())
-        .filter(|name| Path::new(name).extension().is_some_and(|ext| ext == "rs"))
-        .collect()
+        .filter(|name| name.ends_with(b".rs"))
+    {
+        match String::from_utf8(name.to_vec()) {
+            Ok(text) if !text.contains([',', '\n', '\r']) => found.push(text),
+            Ok(_) | Err(_) => unusable.push(String::from_utf8_lossy(name).into_owned()),
+        }
+    }
+    if unusable.is_empty() {
+        Ok(found)
+    } else {
+        Err(unusable)
+    }
 }
 
 // A deleted file is changed but not tracked, so it is not measured.
@@ -227,6 +263,43 @@ mod tests {
     fn is_rs(name: &str) -> bool {
         name.rsplit_once('.')
             .is_some_and(|(_stem, ext)| ext == "rs")
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Kind {
+        Code,
+        GoodOff,
+        GoodOn,
+        Bad,
+    }
+
+    // The forms PMD honours that are not the two accepted ones: after code, inside a longer
+    // comment, in a block comment over several lines, with no space, as a doc comment, with no
+    // reason.
+    fn alphabet() -> Vec<(String, Kind)> {
+        let line = |text: String, kind| (text, kind);
+        vec![
+            line("let x = 1;".to_owned(), Kind::Code),
+            line("// plain".to_owned(), Kind::Code),
+            line("/*".to_owned(), Kind::Code),
+            line("*/".to_owned(), Kind::Code),
+            line(format!("// {OFF}: because"), Kind::GoodOff),
+            line(format!("    // {OFF}: because"), Kind::GoodOff),
+            line(format!("// {ON}"), Kind::GoodOn),
+            line(format!("  // {ON}  "), Kind::GoodOn),
+            line(format!("let z = 1; // {OFF}"), Kind::Bad),
+            line(format!("let z = 1; // {OFF}: because"), Kind::Bad),
+            line(format!("// note: {OFF} here"), Kind::Bad),
+            line(format!("   {OFF}"), Kind::Bad),
+            line(format!("/* {OFF}: because */"), Kind::Bad),
+            line(format!("//{OFF}: because"), Kind::Bad),
+            line(format!("/// {OFF}: because"), Kind::Bad),
+            line(format!("// {OFF}"), Kind::Bad),
+            line(format!("// {OFF}:"), Kind::Bad),
+            line(format!("// {OFF}: because {ON}"), Kind::Bad),
+            line(format!("let z = 1; // {ON}"), Kind::Bad),
+            line(format!("// not {ON}"), Kind::Bad),
+        ]
     }
 
     fn quoted(field: &str) -> String {
@@ -325,44 +398,53 @@ mod tests {
         }
 
         #[test]
-        fn every_off_needs_a_reason_and_an_on(
-            lines in proptest::collection::vec(
-                proptest::sample::select(vec![
-                    "let x = 1;",
-                    "// CPD-OFF: because",
-                    "//CPD-OFF",
-                    "/* CPD-OFF: because */",
-                    "/// CPD-OFF:",
-                    "// CPD-ON",
-                    "// plain",
-                ]),
-                0..12,
-            ),
+        fn every_marker_word_is_a_whole_line_with_a_reason_and_an_on(
+            lines in proptest::collection::vec(proptest::sample::select(alphabet()), 0..12),
         ) {
+            let bad = lines.iter().filter(|(_text, kind)| *kind == Kind::Bad).count();
             let mut open = false;
             let mut blocks = 0;
-            let mut every_reason = true;
-            for line in &lines {
-                if line.contains("CPD-OFF") {
-                    every_reason &= line.contains(": because");
-                    open = true;
-                } else if line.contains("CPD-ON") && open {
-                    open = false;
-                    blocks += 1;
+            for (_text, kind) in &lines {
+                match kind {
+                    Kind::GoodOff => open = true,
+                    Kind::GoodOn if open => {
+                        open = false;
+                        blocks += 1;
+                    }
+                    Kind::GoodOn | Kind::Code | Kind::Bad => {}
                 }
             }
-            let result = marked_blocks("f.rs", &lines.join("\n"));
-            match result {
+            let text: Vec<&str> = lines.iter().map(|(text, _kind)| text.as_str()).collect();
+            match marked_blocks("f.rs", &text.join("\n")) {
                 Ok(found) => {
-                    prop_assert!(every_reason && !open);
+                    prop_assert!(bad == 0 && !open);
                     prop_assert_eq!(found.len(), blocks);
                     prop_assert!(found.iter().all(|block| block.why == "because"));
                 }
                 Err(problems) => {
-                    prop_assert!(!every_reason || open);
-                    prop_assert!(!problems.is_empty());
+                    prop_assert!(bad > 0 || open);
+                    prop_assert!(problems.len() >= bad);
                 }
             }
+        }
+
+        #[test]
+        fn a_marked_block_counts_as_cloned_lines(
+            marked in marks(),
+            lines_of in lines_of(),
+        ) {
+            let as_places: Vec<Vec<Place>> = marked
+                .iter()
+                .map(|block| vec![Place {
+                    file: block.file.clone(),
+                    first: block.first,
+                    last: block.last,
+                }])
+                .collect();
+            prop_assert_eq!(
+                clone_ratio(&[], &marked, &lines_of).to_bits(),
+                clone_ratio(&as_places, &[], &lines_of).to_bits()
+            );
         }
 
         #[test]
@@ -385,32 +467,48 @@ mod tests {
         }
 
         #[test]
-        fn rust_files_are_the_tracked_ones_that_changed(
-            tracked in proptest::collection::vec("[a-c]{1,2}(\\.rs|\\.md)", 0..6),
+        fn a_tracked_rust_file_is_measured_or_named(
+            tracked in proptest::collection::vec("[a-c,\\n]{1,2}(\\.rs|\\.md)", 0..6),
             changed in proptest::collection::vec("[a-c]{1,2}(\\.rs|\\.md)", 0..6),
         ) {
             let listing: Vec<u8> = tracked
                 .iter()
                 .flat_map(|name| format!("H {name}\0").into_bytes())
                 .collect();
+            let rust = tracked.iter().filter(|name| is_rs(name)).count();
+            let unusable = tracked.iter().filter(|name| is_rs(name) && name.contains([',', '\n'])).count();
             let names: Vec<Vec<u8>> = changed.iter().map(|name| name.clone().into_bytes()).collect();
-            let all = tracked_rust_files(&listing);
-            prop_assert!(all.iter().all(|name| is_rs(name) && tracked.contains(name)));
-            let found = changed_rust_files(&all, &names);
-            let inside = found
-                .iter()
-                .all(|name| is_rs(name) && tracked.contains(name) && changed.contains(name));
-            prop_assert!(inside);
-            let any = changed.iter().any(|name| is_rs(name) && tracked.contains(name));
-            prop_assert_eq!(found.is_empty(), !any);
+            match tracked_rust_files(&listing) {
+                Ok(all) => {
+                    prop_assert_eq!(unusable, 0);
+                    prop_assert_eq!(all.len(), rust);
+                    prop_assert!(all.iter().all(|name| is_rs(name) && tracked.contains(name)));
+                    let found = changed_rust_files(&all, &names);
+                    let inside = found
+                        .iter()
+                        .all(|name| is_rs(name) && tracked.contains(name) && changed.contains(name));
+                    prop_assert!(inside);
+                    let any = changed.iter().any(|name| is_rs(name) && tracked.contains(name));
+                    prop_assert_eq!(found.is_empty(), !any);
+                }
+                Err(named) => prop_assert_eq!(named.len(), unusable),
+            }
         }
     }
 
     #[test]
-    fn a_marker_reads_with_its_reason_and_lines() {
-        let text = "fn a() {}\n// CPD-OFF: shared fixture\nfn b() {}\n// CPD-ON\n";
+    fn a_name_that_is_not_utf8_is_named_not_dropped() {
         assert_eq!(
-            marked_blocks("src/a.rs", text),
+            tracked_rust_files(b"H src/ok.rs\0H src/o\xffne.rs\0"),
+            Err(vec!["src/o\u{fffd}ne.rs".to_owned()])
+        );
+    }
+
+    #[test]
+    fn a_marker_reads_with_its_reason_and_lines() {
+        let text = format!("fn a() {{}}\n// {OFF}: shared fixture\nfn b() {{}}\n// {ON}\n");
+        assert_eq!(
+            marked_blocks("src/a.rs", &text),
             Ok(vec![Marked {
                 file: "src/a.rs".to_owned(),
                 first: 2,
@@ -421,13 +519,17 @@ mod tests {
     }
 
     #[test]
-    fn the_problems_name_the_line_of_the_off() {
-        let text = "// CPD-OFF\nfn a() {}\n// CPD-ON\n// CPD-OFF: why\n";
+    fn the_problems_name_the_line_and_the_accepted_form() {
+        let text = format!("// {OFF}\nfn a() {{}}\n// {ON}\nlet z = 1; // {ON}\n// {OFF}: why\n");
         assert_eq!(
-            marked_blocks("f.rs", text),
+            marked_blocks("f.rs", &text),
             Err(vec![
-                "f.rs:1: CPD-OFF needs a reason: // CPD-OFF: <why>".to_owned(),
-                "f.rs:4: CPD-OFF has no matching CPD-ON".to_owned(),
+                format!("f.rs:1: {OFF} needs a reason: // {OFF}: <why>"),
+                format!(
+                    "f.rs:4: {OFF} and {ON} must stand alone on their line: \
+                     // {OFF}: <why> or // {ON}"
+                ),
+                format!("f.rs:5: {OFF} has no matching {ON}"),
             ])
         );
     }

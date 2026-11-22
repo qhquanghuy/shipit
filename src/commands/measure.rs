@@ -3,6 +3,7 @@ use std::io::Write;
 
 use crate::commands::check::settle_base;
 use crate::commands::setup::load_setup_table;
+use crate::edge::check_env::check_env;
 use crate::edge::clones::find_clones;
 use crate::edge::complexity::functions;
 use crate::edge::git::Git;
@@ -10,19 +11,39 @@ use crate::edge::records::store_dir;
 use crate::edge::slice_git::refuse_unclean_work;
 use crate::pure::failure::Failure;
 use crate::pure::measure::{
-    Marked, changed_rust_files, clone_ratio, highest, marked_blocks, touching, tracked_rust_files,
+    Marked, OFF, changed_rust_files, clone_ratio, highest, marked_blocks, touching,
+    tracked_rust_files,
 };
+use crate::pure::receipt::Oid;
 use crate::pure::setup::HEAD;
 
 pub(crate) const HIDDEN: bool = false;
 pub(crate) const NEEDS_SETUP: bool = true;
 pub(crate) const USAGE: &str =
     "usage: shipit measure <clones|clone-ratio|cognitive-complexity|merge-base>";
-pub(crate) const SUMMARY: &str = "Measures the files this slice changed since the merge base with the base branch: clones lists the copies that touch them, clone-ratio and cognitive-complexity print one number each, merge-base prints the commit. Only .rs files are measured. PMD cannot read some valid Rust files: such a file that this slice changed is an error naming it, one it did not change is a notice. Clones are near-exact copies only: a copy with one renamed variable, or a piece under 100 tokens, is not found. A wanted clone is wrapped in '// CPD-OFF: <why>' and '// CPD-ON': it is printed in the output and counted as cloned in the ratio. Cognitive complexity is recorded, never gated.";
+// The marker words are spelled in pieces: this file is measured too, and it may not hold them.
+pub(crate) const SUMMARY: &str = concat!(
+    "Measures the files this slice changed since the merge base with the base branch (inside \
+     shipit check, the merge base the check was given): clones lists the copies that touch them, \
+     clone-ratio and cognitive-complexity print one number each, merge-base prints the commit. \
+     Only .rs files are measured. Clones are near-exact copies only: a copy with one renamed \
+     variable, or a piece under 100 tokens, is not found. A wanted clone is wrapped in '// CPD",
+    "-OFF: <why>' and '// CPD",
+    "-ON', each alone on its line (any other line of a changed file that holds either word is an \
+     error): the block is printed in the output and counted as cloned in the ratio. The markers \
+     of a file the slice did not change are not read, so a copy of a block it marks off is not \
+     found. PMD cannot read some valid Rust files (a string that ends in a backslash, for one): \
+     a tracked file it cannot read is an error naming it, and so is a name with a comma, a line \
+     break or bytes that are not UTF-8. Cognitive complexity is recorded, never gated."
+);
 pub(crate) const EXITS: [&str; 4] = [
     "measured (clones: none touch the slice)",
-    "clones touch the slice, or a CPD-OFF marker has no reason or no CPD-ON",
-    "usage or setup error (bad arguments, missing or invalid setup file, no shared history with the base, git failed, pmd or lizard could not run or its output could not be read, a changed file that pmd cannot read)",
+    concat!(
+        "clones touch the slice, or a CPD",
+        "-OFF marker is broken (no reason, no CPD",
+        "-ON, or not alone on its line)"
+    ),
+    "usage or setup error (bad arguments, missing or invalid setup file, no shared history with the base, git failed, pmd or lizard could not run, its output could not be read, or pmd cannot read a tracked file)",
     "uncommitted changes, or a tracked file hidden from git",
 ];
 
@@ -73,35 +94,24 @@ fn marked_in(texts: &[(String, String)]) -> Result<Vec<Marked>, Failure> {
         .map(|problem| format!("  {problem}"))
         .collect();
     Err(Failure::no(format!(
-        "CPD-OFF markers are broken:\n{}",
+        "{OFF} markers are broken:\n{}",
         listed.join("\n")
     )))
 }
 
-// A changed file that PMD cannot read has clones nobody can find: that is a failure of the tool.
-// An unchanged one only loses a possible partner for the changed files: a notice.
-fn refuse_unreadable(
-    unreadable: &[String],
-    changed: &[String],
+// Inside `shipit check` the merge base is the one the check was given, which `--base` may have
+// set; by hand it is found the way `check` finds it from the setup.
+fn merge_base(
+    git: &Git,
+    base: &crate::pure::base::BranchName,
     err: &mut dyn Write,
-) -> Result<(), Failure> {
-    let (mine, others): (Vec<&String>, Vec<&String>) =
-        unreadable.iter().partition(|file| changed.contains(file));
-    for file in others {
-        writeln!(
-            err,
-            "shipit: pmd cannot read {file}; clones with it are not found"
-        )
-        .ok();
+) -> Result<Oid, Failure> {
+    if let Some(env) = check_env() {
+        return Ok(env.merge_base);
     }
-    if mine.is_empty() {
-        return Ok(());
-    }
-    let named: Vec<&str> = mine.iter().map(|file| file.as_str()).collect();
-    Err(Failure::usage(format!(
-        "pmd cannot read {}; its clones cannot be checked (rewrite what it stops at)",
-        named.join(", ")
-    )))
+    let (_base, base_ref, _flow) = settle_base(git, base.clone(), false, err)?;
+    git.merge_base_with_head(OsStr::new(&base_ref.full()))
+        .ok_or_else(|| Failure::usage(format!("no shared history with {base_ref}")))
 }
 
 pub(crate) fn run(
@@ -113,30 +123,30 @@ pub(crate) fn run(
     let (setup, _table) = load_setup_table(&git, OsStr::new(HEAD))?;
     let what = parse(args)?;
     refuse_unclean_work(&git)?;
-    let (_base, base_ref, _flow) = settle_base(&git, setup.gate.base.clone(), false, err)?;
-    let merge_base = git
-        .merge_base_with_head(OsStr::new(&base_ref.full()))
-        .ok_or_else(|| Failure::usage(format!("no shared history with {base_ref}")))?;
+    let merge_base = merge_base(&git, &setup.gate.base, err)?;
     if what == What::MergeBase {
         writeln!(out, "{merge_base}").ok();
         return Ok(());
     }
-    let tracked = tracked_rust_files(&git.ls_files_v_z()?);
+    let tracked = tracked_rust_files(&git.ls_files_v_z()?).map_err(|names| {
+        Failure::usage(format!(
+            "cannot measure {}: a .rs file name with a comma, a line break or bytes that are not UTF-8",
+            names.join(", ")
+        ))
+    })?;
     let changed = changed_rust_files(&tracked, &git.changed_names(&merge_base)?);
-    let texts = texts_at_head(&git, &changed)?;
     if what == What::CognitiveComplexity {
         let found = functions(git.top(), &changed)?;
         writeln!(out, "{}", highest(&found, &changed)).ok();
         return Ok(());
     }
+    let texts = texts_at_head(&git, &changed)?;
     let marked = marked_in(&texts)?;
     let found = find_clones(
         git.top(),
         &store_dir(&git.common_dir()?),
         if changed.is_empty() { &[] } else { &tracked },
     )?;
-    refuse_unreadable(&found.unreadable, &changed, err)?;
-    let found = found.clones;
     if what == What::CloneRatio {
         let lines: Vec<(String, u64)> = texts
             .iter()
@@ -173,9 +183,9 @@ pub(crate) fn run(
             format!("  {}", places.join(", "))
         })
         .collect();
-    Err(Failure::no(format!(
-        "{} clones touch the slice:\n{}",
-        touched.len(),
-        listed.join("\n")
-    )))
+    let head = match touched.len() {
+        1 => "1 clone touches the slice:".to_owned(),
+        count => format!("{count} clones touch the slice:"),
+    };
+    Err(Failure::no(format!("{head}\n{}", listed.join("\n"))))
 }
