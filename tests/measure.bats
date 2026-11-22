@@ -211,3 +211,35 @@ clones: none touch the slice" ]
   [ "$status" -eq 2 ]
   [ "$stderr" = "shipit: usage: shipit measure <clones|clone-ratio|cognitive-complexity|merge-base>" ]
 }
+
+# unreadable_source: a valid file that PMD's Rust reader stops at (it skips the file and exits 5).
+unreadable_source() {
+  printf 'fn a() -> Vec<&'"'"'static str> {\n    vec!["~", "\\\\", ".."]\n}\n' >src/bad.rs
+  printf 'src/bad.rs\n' >"$BATS_TEST_TMPDIR/bad-list"
+  run pmd cpd --language rust --minimum-tokens 100 --format csv --file-list "$BATS_TEST_TMPDIR/bad-list"
+  [ "$status" -eq 5 ]
+}
+
+@test "measure: a changed file that pmd cannot read exits 2 and names it" {
+  clone_repo
+  unreadable_source
+  commit_all "add a file pmd cannot read"
+  measure clones
+  [ "$status" -eq 2 ]
+  [ "$stderr" = "shipit: pmd cannot read src/bad.rs; its clones cannot be checked (rewrite what it stops at)" ]
+}
+
+@test "measure: an unchanged file that pmd cannot read is a notice" {
+  clone_repo
+  git checkout -q main
+  unreadable_source
+  commit_all "add a file pmd cannot read"
+  git checkout -q slice/demo/alpha
+  git merge -q main
+  printf '// touched\n' >>src/three.rs
+  commit_all "touch three"
+  measure clones
+  [ "$status" -eq 0 ]
+  [ "$output" = "clones: none touch the slice" ]
+  [ "$stderr" = "shipit: pmd cannot read src/bad.rs; clones with it are not found" ]
+}

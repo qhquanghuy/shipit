@@ -18,11 +18,11 @@ pub(crate) const HIDDEN: bool = false;
 pub(crate) const NEEDS_SETUP: bool = true;
 pub(crate) const USAGE: &str =
     "usage: shipit measure <clones|clone-ratio|cognitive-complexity|merge-base>";
-pub(crate) const SUMMARY: &str = "Measures the files this slice changed since the merge base with the base branch: clones lists the copies that touch them, clone-ratio and cognitive-complexity print one number each, merge-base prints the commit. Only .rs files are measured. Clones are near-exact copies only: a copy with one renamed variable, or a piece under 100 tokens, is not found. A wanted clone is wrapped in '// CPD-OFF: <why>' and '// CPD-ON': it is printed in the output and counted as cloned in the ratio. Cognitive complexity is recorded, never gated.";
+pub(crate) const SUMMARY: &str = "Measures the files this slice changed since the merge base with the base branch: clones lists the copies that touch them, clone-ratio and cognitive-complexity print one number each, merge-base prints the commit. Only .rs files are measured. PMD cannot read some valid Rust files: such a file that this slice changed is an error naming it, one it did not change is a notice. Clones are near-exact copies only: a copy with one renamed variable, or a piece under 100 tokens, is not found. A wanted clone is wrapped in '// CPD-OFF: <why>' and '// CPD-ON': it is printed in the output and counted as cloned in the ratio. Cognitive complexity is recorded, never gated.";
 pub(crate) const EXITS: [&str; 4] = [
     "measured (clones: none touch the slice)",
     "clones touch the slice, or a CPD-OFF marker has no reason or no CPD-ON",
-    "usage or setup error (bad arguments, missing or invalid setup file, no shared history with the base, git failed, pmd or lizard could not run or its output could not be read)",
+    "usage or setup error (bad arguments, missing or invalid setup file, no shared history with the base, git failed, pmd or lizard could not run or its output could not be read, a changed file that pmd cannot read)",
     "uncommitted changes, or a tracked file hidden from git",
 ];
 
@@ -78,6 +78,32 @@ fn marked_in(texts: &[(String, String)]) -> Result<Vec<Marked>, Failure> {
     )))
 }
 
+// A changed file that PMD cannot read has clones nobody can find: that is a failure of the tool.
+// An unchanged one only loses a possible partner for the changed files: a notice.
+fn refuse_unreadable(
+    unreadable: &[String],
+    changed: &[String],
+    err: &mut dyn Write,
+) -> Result<(), Failure> {
+    let (mine, others): (Vec<&String>, Vec<&String>) =
+        unreadable.iter().partition(|file| changed.contains(file));
+    for file in others {
+        writeln!(
+            err,
+            "shipit: pmd cannot read {file}; clones with it are not found"
+        )
+        .ok();
+    }
+    if mine.is_empty() {
+        return Ok(());
+    }
+    let named: Vec<&str> = mine.iter().map(|file| file.as_str()).collect();
+    Err(Failure::usage(format!(
+        "pmd cannot read {}; its clones cannot be checked (rewrite what it stops at)",
+        named.join(", ")
+    )))
+}
+
 pub(crate) fn run(
     args: &[OsString],
     out: &mut dyn Write,
@@ -104,11 +130,13 @@ pub(crate) fn run(
         return Ok(());
     }
     let marked = marked_in(&texts)?;
-    let found = if changed.is_empty() {
-        Vec::new()
-    } else {
-        find_clones(git.top(), &store_dir(&git.common_dir()?), &tracked)?
-    };
+    let found = find_clones(
+        git.top(),
+        &store_dir(&git.common_dir()?),
+        if changed.is_empty() { &[] } else { &tracked },
+    )?;
+    refuse_unreadable(&found.unreadable, &changed, err)?;
+    let found = found.clones;
     if what == What::CloneRatio {
         let lines: Vec<(String, u64)> = texts
             .iter()

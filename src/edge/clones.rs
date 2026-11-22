@@ -79,15 +79,36 @@ fn parse_rows(
     Ok(clones)
 }
 
+// PMD's Rust reader stops at some valid files; it skips them and exits 5, still reporting the
+// clones of the others. Those files are named here so the caller can tell which matter.
+const RECOVERABLE_ERRORS: i32 = 5;
+
+pub(crate) struct Found {
+    pub(crate) clones: Vec<Vec<Place>>,
+    pub(crate) unreadable: Vec<String>,
+}
+
+// None when a line of the errors is not the one for a skipped file with a name.
+fn skipped_files(errors: &str, top: &Path, canonical_top: Option<&Path>) -> Option<Vec<String>> {
+    errors
+        .lines()
+        .filter(|line| line.starts_with("[ERROR]"))
+        .map(|line| {
+            let (_before, rest) = line.split_once("Skipping file: Lexical error in file '")?;
+            let (file, _after) = rest.split_once("' at line")?;
+            relative(top, canonical_top, file)
+        })
+        .collect()
+}
+
 // The list goes in a temporary file in the store folder, never in the work, which stays as it
 // was committed.
-pub(crate) fn find_clones(
-    top: &Path,
-    store: &Path,
-    files: &[String],
-) -> Result<Vec<Vec<Place>>, Failure> {
+pub(crate) fn find_clones(top: &Path, store: &Path, files: &[String]) -> Result<Found, Failure> {
     if files.is_empty() {
-        return Ok(Vec::new());
+        return Ok(Found {
+            clones: Vec::new(),
+            unreadable: Vec::new(),
+        });
     }
     let cannot = |why: std::io::Error| Failure::usage(format!("cannot run pmd: {why}"));
     fs::create_dir_all(store).map_err(cannot)?;
@@ -102,27 +123,33 @@ pub(crate) fn find_clones(
         .arg(&list)
         .current_dir(top)
         .stdin(Stdio::null())
-        .stderr(Stdio::null())
         .output();
     fs::remove_file(&list).ok();
     let output = ran.map_err(cannot)?;
-    match output.status.code() {
-        Some(0 | CLONES_FOUND) => {}
-        Some(code) => return Err(Failure::usage(format!("pmd cpd failed (exit {code})"))),
+    let failed = |what: String| Failure::usage(format!("pmd cpd failed ({what})"));
+    let canonical = top.canonicalize().ok();
+    let unreadable = match output.status.code() {
+        Some(0 | CLONES_FOUND) => Vec::new(),
+        Some(RECOVERABLE_ERRORS) => skipped_files(
+            &String::from_utf8_lossy(&output.stderr),
+            top,
+            canonical.as_deref(),
+        )
+        .filter(|skipped| !skipped.is_empty())
+        .ok_or_else(|| failed(format!("exit {RECOVERABLE_ERRORS}")))?,
+        Some(code) => return Err(failed(format!("exit {code}"))),
         None => {
             let signal = output.status.signal().unwrap_or_default();
-            return Err(Failure::usage(format!(
-                "pmd cpd failed (killed by signal {signal})"
-            )));
+            return Err(failed(format!("killed by signal {signal}")));
         }
-    }
-    let canonical = top.canonicalize().ok();
-    parse_rows(
+    };
+    let clones = parse_rows(
         &String::from_utf8_lossy(&output.stdout),
         top,
         canonical.as_deref(),
     )
-    .map_err(|line| Failure::usage(format!("cannot read pmd's output: line {line}")))
+    .map_err(|line| Failure::usage(format!("cannot read pmd's output: line {line}")))?;
+    Ok(Found { clones, unreadable })
 }
 
 #[cfg(test)]
@@ -141,6 +168,24 @@ mod tests {
         assert_eq!(
             parse_rows(text, Path::new("/work/repo"), None),
             Ok(vec![vec![place("src/a.rs"), place("src/b.rs")]])
+        );
+    }
+
+    #[test]
+    fn skipped_files_are_named_from_the_captured_errors() {
+        let errors = "[ERROR] Skipping file: Lexical error in file 'src/pure/base.rs' at line 226, column 71: token recognition error at: '\\'\n\
+                      [ERROR] Skipping file: Lexical error in file '/work/repo/b.rs' at line 1, column 2: x\n";
+        assert_eq!(
+            skipped_files(errors, Path::new("/work/repo"), None),
+            Some(vec!["src/pure/base.rs".to_owned(), "b.rs".to_owned()])
+        );
+        assert_eq!(
+            skipped_files("[ERROR] something else\n", Path::new("/work/repo"), None),
+            None
+        );
+        assert_eq!(
+            skipped_files("", Path::new("/work/repo"), None),
+            Some(Vec::new())
         );
     }
 
