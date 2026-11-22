@@ -95,6 +95,7 @@ pub(crate) fn run(
     let ctx = Context {
         file: &label,
         max_lines: u64::from(&setup.owner.max_lines),
+        example_max_lines: u64::from(&setup.owner.example_max_lines),
         goal: goal.as_deref(),
     };
     match validate(spec, &ctx, &text) {

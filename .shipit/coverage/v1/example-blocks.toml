@@ -1,0 +1,8 @@
+DW11 = [
+  "each_cap_judges_only_its_own_lines",
+  "a_fence_with_any_other_info_string_counts_as_plain_lines",
+  "an_example_fence_that_never_closes_is_the_unclosed_fence_error",
+  "the_example_cap_is_accepted_iff_whole_at_least_1_and_is_not_bound_by_max_lines",
+  "the_fixture_parses_and_serializes_back_to_itself_with_the_default_caps",
+  "validate: example lines pass under the default cap and fail over owner.example_max_lines",
+]

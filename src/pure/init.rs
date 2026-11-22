@@ -65,7 +65,8 @@ pub(crate) fn starting_setup(base: &BranchName, pack: &str) -> String {
          \n\
          [owner]\n\
          max_lines = 30\n\
-         status_update_max_lines = 10\n"
+         status_update_max_lines = 10\n\
+         example_max_lines = 15\n"
     )
 }
 
@@ -183,7 +184,9 @@ mod tests {
 
         #[test]
         fn starting_setup_parses_for_any_base(base in base_name()) {
-            let setup = parsed(&starting_setup(&base, pack()));
+            let text = starting_setup(&base, pack());
+            prop_assert!(text.contains("\nexample_max_lines = 15\n"));
+            let setup = parsed(&text);
             prop_assert_eq!(setup.pointer("/gate/base"), Some(&json!(base.as_str())));
             prop_assert_eq!(setup.pointer("/gate/max_files"), Some(&json!(60)));
             prop_assert_eq!(setup.pointer("/agents/parallel/slices"), Some(&json!(3)));
