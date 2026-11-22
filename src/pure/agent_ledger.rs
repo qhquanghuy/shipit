@@ -415,6 +415,8 @@ mod tests {
                 (FIRST - 1_000_000_000_000)..FIRST,
                 (LAST + 1)..(LAST + 1_000_000_000_000),
                 (LAST + 1)..=i64::MAX,
+                Just(LAST + 1),
+                Just(FIRST - 1),
             ],
         ) {
             prop_assert_eq!(utc_text(at), "");
