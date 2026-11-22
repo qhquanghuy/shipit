@@ -113,9 +113,13 @@ fn in_project(dir: &Path) -> bool {
 
 // The folder a hook judges: the input's own, or for an input that cannot be read the
 // session's project folder, then the folder the process runs in.
+pub(crate) fn input_folder(input: &HookInput) -> Option<Git> {
+    Git::at(&input.cwd).ok().filter(shipit_project)
+}
+
 pub(crate) fn gate_folder(input: &Result<HookInput, String>) -> Option<Git> {
     let git = match input {
-        Ok(input) => Git::at(&input.cwd).ok()?,
+        Ok(input) => return input_folder(input),
         Err(_why) => match project_dir() {
             Some(dir) => Git::at(&dir).ok()?,
             None => Git::find().ok()?,

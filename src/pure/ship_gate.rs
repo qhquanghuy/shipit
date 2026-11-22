@@ -65,7 +65,7 @@ const REPOSITORY: &str = "changes the repository";
 const API_WRITE: &str = "calls the GitHub API with a write method";
 const GRAPHQL: &str = "runs a GitHub GraphQL query";
 
-const INTERPRETERS: [&str; 11] = [
+pub(crate) const INTERPRETERS: [&str; 11] = [
     "sh", "bash", "zsh", "dash", "ksh", "fish", "python", "python3", "perl", "ruby", "node",
 ];
 const WRAPPERS: [&str; 6] = ["eval", "xargs", "exec", "su", "ssh", "watch"];
