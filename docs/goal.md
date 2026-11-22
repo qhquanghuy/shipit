@@ -1,6 +1,6 @@
 # ShipIt: goal
 
-Status: version 3, approved by the owner on 2026-11-22 (v2 and v1 approved 2026-11-21). Terms are defined in [vocab.md](vocab.md).
+Status: version 4, approved by the owner on 2026-11-22 (v3 approved 2026-11-22; v2 and v1 approved 2026-11-21). Terms are defined in [vocab.md](vocab.md).
 
 ## Goal
 
@@ -102,6 +102,9 @@ happens next, who does it, and what the owner must do, or "nothing until …". `
 the next step for each slice, and every skill's outcomes say what follows.
 
 The decision-point template enforces this form: label, What, Context, Recommendation, Next.
+
+A concrete example helps the owner, so a fenced block whose info string is `example` is counted
+separately: its lines count against `[owner] example_max_lines`, not `max_lines`.
 
 ## What gets built (version 1)
 

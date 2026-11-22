@@ -20,6 +20,8 @@ pub(crate) const AGENTS_KEYS: [&str; 4] = ["max_fix_rounds", "effort_cap", "tier
 pub(crate) const AGENTS_OPTIONAL: [&str; 1] = ["parallel"];
 pub(crate) const PACKS_KEYS: [&str; 3] = ["skill", "domain", "model"];
 pub(crate) const OWNER_KEYS: [&str; 2] = ["max_lines", "status_update_max_lines"];
+pub(crate) const OWNER_OPTIONAL: [&str; 1] = ["example_max_lines"];
+const DEFAULT_EXAMPLE_LINES: u64 = 15;
 const PARALLEL_OPTIONAL: [&str; 2] = ["slices", "agents"];
 const DEFAULT_SLICES: u64 = 3;
 const DEFAULT_AGENTS: u64 = 4;
@@ -200,9 +202,11 @@ pub(crate) struct Packs {
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
+#[expect(clippy::struct_field_names, reason = "the keys are the setup file's")]
 pub(crate) struct Owner {
     pub(crate) max_lines: Lines,
     pub(crate) status_update_max_lines: Lines,
+    pub(crate) example_max_lines: Lines,
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
@@ -496,10 +500,14 @@ fn parse_owner(value: &Value) -> Parsed<Owner> {
     let path = ".owner";
     let object = object_at(value, path)?;
     let mut problems = Problems::default();
-    problems.add(shape(path, object, &OWNER_KEYS, &[]));
+    problems.add(shape(path, object, &OWNER_KEYS, &OWNER_OPTIONAL));
     let message = "must be an integer of at least 1";
     let max_lines = problems.take(at(object, "max_lines", path, lines, message));
     let status = problems.take(at(object, "status_update_max_lines", path, lines, message));
+    // Optional so that a setup written before example blocks existed stays valid.
+    let example = problems.take(optional(object, "example_max_lines", |value| {
+        at_least_one(value, &format!("{path}.example_max_lines"), Lines)
+    }));
     if let (Some(max), Some(update)) = (&max_lines, &status)
         && update.0 > max.0
     {
@@ -512,6 +520,7 @@ fn parse_owner(value: &Value) -> Parsed<Owner> {
         Some(Owner {
             max_lines: max_lines?,
             status_update_max_lines: status?,
+            example_max_lines: example?.unwrap_or(Lines(DEFAULT_EXAMPLE_LINES)),
         })
     })
 }
@@ -818,6 +827,7 @@ mod tests {
         );
         put(&mut expected, "/agents/parallel/slices", int(3));
         put(&mut expected, "/agents/parallel/agents", int(4));
+        put(&mut expected, "/owner/example_max_lines", int(15));
         assert_eq!(
             serde_json::to_value(&setup).unwrap(),
             serde_json::to_value(expected).unwrap()
@@ -1059,6 +1069,7 @@ mod tests {
             0_u64..50,
             1_u64..=i64::MAX.unsigned_abs(),
             1_u64..=i64::MAX.unsigned_abs(),
+            1_u64..=i64::MAX.unsigned_abs(),
         );
         (scalars, strings, limits, arb_effort(), 2_u64..=5)
             .prop_flat_map(|(scalars, strings, limits, cap, n)| {
@@ -1100,7 +1111,7 @@ mod tests {
                     (scout_tier, offset, scout_effort, retries),
                     (planner, maker, tester, reader),
                 )| {
-                    let (max_lines, update_offset, slices, agents) = limits;
+                    let (max_lines, update_offset, slices, agents, example) = limits;
                     let then_tier = scout_tier + 1 + offset % (n - scout_tier);
                     Setup {
                         version: Version,
@@ -1154,6 +1165,7 @@ mod tests {
                         owner: Owner {
                             max_lines: Lines(max_lines),
                             status_update_max_lines: Lines(1 + update_offset % max_lines),
+                            example_max_lines: Lines(example),
                         },
                     }
                 },
@@ -1517,6 +1529,20 @@ mod tests {
         }
 
         #[test]
+        fn the_example_cap_is_accepted_iff_whole_at_least_1_and_is_not_bound_by_max_lines(
+            cap in prop_oneof![integer().prop_map(int), proptest::sample::select(kinds())],
+        ) {
+            let mut value = fixture();
+            put(&mut value, "/owner/example_max_lines", cap.clone());
+            let expected = if whole(&cap).is_some_and(|n| n >= 1) {
+                Vec::new()
+            } else {
+                vec![".owner.example_max_lines: must be an integer of at least 1".to_owned()]
+            };
+            prop_assert_eq!(lines_of(&value), expected);
+        }
+
+        #[test]
         fn no_parallel_table_means_3_and_4(
             table in proptest::option::of((
                 proptest::option::of(1_i64..1000),
@@ -1561,6 +1587,10 @@ mod tests {
             prop_assert_eq!(
                 number("/owner/status_update_max_lines"),
                 Some(u64::from(&setup.owner.status_update_max_lines))
+            );
+            prop_assert_eq!(
+                number("/owner/example_max_lines"),
+                Some(u64::from(&setup.owner.example_max_lines))
             );
             prop_assert_eq!(number("/agents/parallel/slices"), Some(u64::from(&setup.agents.parallel.slices)));
             prop_assert_eq!(number("/agents/parallel/agents"), Some(u64::from(&setup.agents.parallel.agents)));

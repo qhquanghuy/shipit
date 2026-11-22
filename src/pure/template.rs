@@ -19,6 +19,7 @@ const HEADER_KEYS: [&str; 3] = ["kind", "outcome", "input"];
 const NEXT: &str = "Next";
 const FINDING_LABELS: [&str; 4] = ["issue", "suggestion", "question", "nitpick"];
 const PLACEHOLDER_LABEL: &str = "[project · slice · phase]";
+const EXAMPLE: &str = "example";
 const SLICES: &str = "## Slices";
 const COVERAGE: &str = "## Done-when coverage";
 const SPIKE: &str = "settled by spike ";
@@ -87,6 +88,7 @@ impl Spec {
 pub(crate) struct Context<'a> {
     pub(crate) file: &'a str,
     pub(crate) max_lines: u64,
+    pub(crate) example_max_lines: u64,
     // The text of the goal file a roadmap is held against.
     pub(crate) goal: Option<&'a str>,
 }
@@ -305,9 +307,38 @@ fn is_label(text: &str) -> bool {
         })
 }
 
-// The label and the length of an owner message, each as a problem or nothing. Every line of the
-// output counts, wherever it sits: above, inside or below the Form section.
-fn owner_problems(all: &[Line<'_>], max_lines: u64) -> (Option<String>, Option<String>) {
+// The lines of an owner message outside example blocks, then the lines inside them. A fence whose
+// info string is exactly `example` is an example block; its two fence lines count with its lines,
+// so an empty block is not free. An unclosed fence never gets here (`lines` refuses it), so an
+// example cannot hide a line.
+fn counted(all: &[Line<'_>]) -> (usize, usize) {
+    let mut in_example = false;
+    let (mut normal, mut example) = (0, 0);
+    for line in all {
+        let inside = match line.kind {
+            Kind::Open { info } => {
+                in_example = info == EXAMPLE;
+                in_example
+            }
+            Kind::Inside | Kind::Close => in_example,
+            Kind::Prose => false,
+        };
+        if inside {
+            example += 1;
+        } else {
+            normal += 1;
+        }
+    }
+    (normal, example)
+}
+
+// The label problem, and the length problems, of an owner message. Every line outside example
+// blocks counts, wherever it sits: above, inside or below the Form section.
+fn owner_problems(
+    all: &[Line<'_>],
+    max_lines: u64,
+    example_max_lines: u64,
+) -> (Option<String>, Vec<String>) {
     let label = body(all).iter().find(|line| !line.text.trim().is_empty());
     let label_problem = if label.is_some_and(|line| line.text.trim() == PLACEHOLDER_LABEL) {
         Some(format!(
@@ -318,11 +349,20 @@ fn owner_problems(all: &[Line<'_>], max_lines: u64) -> (Option<String>, Option<S
             .then(|| format!("label: the line after the Form section must be {PLACEHOLDER_LABEL}"))
     };
     let final_empty = all.last().is_some_and(|line| line.text.is_empty());
-    let count = all.len() - usize::from(final_empty);
-    let long = u64::try_from(count).is_ok_and(|count| count > max_lines);
-    let length_problem =
-        long.then(|| format!("too long: {count} lines (owner.max_lines is {max_lines})"));
-    (label_problem, length_problem)
+    let (normal, example) = counted(all);
+    let count = normal.saturating_sub(usize::from(final_empty));
+    let mut length = Vec::new();
+    if u64::try_from(count).is_ok_and(|count| count > max_lines) {
+        length.push(format!(
+            "too long: {count} lines (owner.max_lines is {max_lines})"
+        ));
+    }
+    if u64::try_from(example).is_ok_and(|example| example > example_max_lines) {
+        length.push(format!(
+            "too many example lines: {example} (owner.example_max_lines is {example_max_lines})"
+        ));
+    }
+    (label_problem, length)
 }
 
 fn part_problems(
@@ -632,9 +672,9 @@ pub(crate) fn validate(spec: &Spec, ctx: &Context<'_>, text: &str) -> Result<Ver
         })?;
     let all = lines(text).map_err(|why| vec![why])?;
     let (label, length) = if spec.owner_message {
-        owner_problems(&all, ctx.max_lines)
+        owner_problems(&all, ctx.max_lines, ctx.example_max_lines)
     } else {
-        (None, None)
+        (None, Vec::new())
     };
     let (names, embedded) = match spec.embedded {
         Embedded::Nothing => (None, Vec::new()),
@@ -716,6 +756,7 @@ mod tests {
 
     use super::*;
     use crate::pure::kinds::KINDS;
+    use crate::pure::messages::FENCE_UNCLOSED;
 
     type Bodies = Vec<(&'static str, Vec<String>)>;
 
@@ -865,6 +906,7 @@ mod tests {
         Context {
             file: "out.md",
             max_lines,
+            example_max_lines: 15,
             goal: Some(GOAL),
         }
     }
@@ -1367,6 +1409,96 @@ mod tests {
         }
     }
 
+    fn fenced(mark: &str, info: &str, count: usize) -> String {
+        format!(
+            "{mark}{info}\n{}{mark}\n",
+            "an example line\n".repeat(count)
+        )
+    }
+
+    // Puts a block above the label, or after the last part.
+    fn with_block(good: &str, block: &str, place: bool) -> String {
+        if place {
+            good.replacen("## Form\n\n", &format!("## Form\n\n{block}"), 1)
+        } else {
+            format!("{good}{block}")
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            failure_persistence: None,
+            ..ProptestConfig::default()
+        })]
+
+        // Each cap judges only its own lines: the fence lines count toward neither, the example
+        // lines of every block add up, and the two messages come in the same order.
+        #[test]
+        fn each_cap_judges_only_its_own_lines(
+            blocks in proptest::collection::vec(0_usize..12, 1..4),
+            plain in 0_usize..4,
+            example_cap in 0_u64..30,
+            mark in proptest::sample::select(vec!["```", "~~~", "`````"]),
+            place in any::<bool>(),
+        ) {
+            let spec = spec_of("decision-point");
+            let good = filled(spec, "waiting-for-the-owner", 0);
+            let max = u64::try_from(good.lines().count()).expect("small");
+            let mut text = with_block(&good, &"more words\n".repeat(plain), place);
+            for count in &blocks {
+                text = with_block(&text, &fenced(mark, "example", *count), place);
+            }
+            let example: usize = blocks.iter().map(|count| count + 2).sum();
+            let mut expected = Vec::new();
+            if plain > 0 {
+                expected.push(format!(
+                    "too long: {} lines (owner.max_lines is {max})",
+                    good.lines().count() + plain
+                ));
+            }
+            if u64::try_from(example).expect("small") > example_cap {
+                expected.push(format!(
+                    "too many example lines: {example} (owner.example_max_lines is {example_cap})"
+                ));
+            }
+            let ctx = Context { example_max_lines: example_cap, ..ctx(max) };
+            let verdict = validate(spec, &ctx, &text);
+            prop_assert_eq!(verdict.err().unwrap_or_default(), expected);
+        }
+
+        // Only the info string `example`, exactly, makes an example block.
+        #[test]
+        fn a_fence_with_any_other_info_string_counts_as_plain_lines(
+            info in proptest::sample::select(vec!["", "text", "json", "examples", "Example", "example x"]),
+            count in 0_usize..12,
+            place in any::<bool>(),
+        ) {
+            let spec = spec_of("decision-point");
+            let good = filled(spec, "waiting-for-the-owner", 0);
+            let max = u64::try_from(good.lines().count()).expect("small");
+            let text = with_block(&good, &fenced("```", info, count), place);
+            let total = text.lines().count();
+            prop_assert_eq!(
+                validate(spec, &ctx(max), &text),
+                Err(vec![format!("too long: {total} lines (owner.max_lines is {max})")])
+            );
+        }
+    }
+
+    #[test]
+    fn an_example_fence_that_never_closes_is_the_unclosed_fence_error() {
+        let spec = spec_of("decision-point");
+        let good = filled(spec, "waiting-for-the-owner", 0);
+        let line = good.lines().count() + 1;
+        let text = format!("{good}```example\nan example line\n");
+        assert_eq!(
+            validate(spec, &ctx(1000), &text),
+            Err(vec![format!(
+                "out.md: {}",
+                say(FENCE_UNCLOSED, &[("line", &line)])
+            )])
+        );
+    }
     #[test]
     fn a_part_before_the_form_does_not_escape_the_line_cap() {
         let spec = spec_of("decision-point");

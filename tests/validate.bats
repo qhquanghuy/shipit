@@ -63,6 +63,18 @@ write_message() {
   [ "${stderr##*$'\n'}" = '  too long: 15 lines (owner.max_lines is 5)' ]
 }
 
+@test "validate: example lines pass under the default cap and fail over owner.example_max_lines" {
+  repo=$(make_repo)
+  cd "$repo"
+  write_message example.md '```example' 'one' 'two' 'three' '```'
+  run --separate-stderr "$SHIPIT_BIN" validate decision-point example.md
+  [ "$status" -eq 0 ]
+  write_setup "$(fixture_with owner.max_lines=15 owner.status_update_max_lines=5 | sed 's/^\[owner\]$/&\nexample_max_lines = 2/')"
+  run --separate-stderr "$SHIPIT_BIN" validate decision-point example.md
+  [ "$status" -eq 1 ]
+  [ "${stderr##*$'\n'}" = '  too many example lines: 5 (owner.example_max_lines is 2)' ]
+}
+
 @test "validate: a missing file, an unknown kind and a missing argument exit 2" {
   repo=$(make_repo)
   cd "$repo"

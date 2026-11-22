@@ -4,7 +4,8 @@ use toml::{Table, Value};
 
 use crate::pure::rules::{Parsed, Problem};
 use crate::pure::setup::{
-    AGENTS_KEYS, AGENTS_OPTIONAL, GATE_KEYS, OWNER_KEYS, PACKS_KEYS, SETUP_PATH, TOP_KEYS,
+    AGENTS_KEYS, AGENTS_OPTIONAL, GATE_KEYS, OWNER_KEYS, OWNER_OPTIONAL, PACKS_KEYS, SETUP_PATH,
+    TOP_KEYS,
 };
 
 // A setup file as the comparison sees it: the base it names, and every key kept raw, so the
@@ -80,7 +81,7 @@ fn schema_of(table: &str) -> Vec<&'static str> {
             .copied()
             .collect(),
         "packs" => PACKS_KEYS.to_vec(),
-        "owner" => OWNER_KEYS.to_vec(),
+        "owner" => OWNER_KEYS.iter().chain(&OWNER_OPTIONAL).copied().collect(),
         _ => Vec::new(),
     }
 }
@@ -163,7 +164,7 @@ mod tests {
 
     // Every field path of the schema, then one unknown key inside `gate` (placed after its
     // schema keys) and one at the top; `zzz` is a top-level table with no keys.
-    const PATHS: [&str; 17] = [
+    const PATHS: [&str; 18] = [
         "version",
         "gate.base",
         "gate.max_files",
@@ -180,6 +181,7 @@ mod tests {
         "packs.model",
         "owner.max_lines",
         "owner.status_update_max_lines",
+        "owner.example_max_lines",
         "extra",
     ];
 
