@@ -17,7 +17,7 @@ Never: change a project file.
 - **waiting-for-the-owner**: the decision point is written and valid. Next: the owner picks; the skill it names runs.
 - **not a ShipIt project**: HEAD has no `.config/shipit.toml`. Next: the lead asks for adoption as a decision point, as the README says, then offers model advice.
 - **model advice ready**: the model advice is written and valid. Next: the owner picks; the lead writes the values into the setup as a setup-only pull request.
-- **tool missing**: `shipit` is not on the PATH. Next: the lead follows the install lines of the [install notes](../../docs/claude-code.md).
+- **tool missing**: `shipit` is not on the PATH. Next: the lead follows the install lines of `../../docs/claude-code.md`.
 - **a slice was merged**: the owner says a slice is merged, or its branch is in the base. Next: the lead runs `shipit log <slice> shipped --merge <commit>`.
 - **goal done**: `shipit status` shows every slice and proof step of the goal shipped. Next: the owner runs `shipit complete <goal>` (it lists what it keeps and deletes; `--confirm` is the owner's yes).
 ## Steps
