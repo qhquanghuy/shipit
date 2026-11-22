@@ -170,6 +170,37 @@ from a session that is (and the other way round) until the owner approves it, an
 five minutes. So the lead confirms with `shipit status`, which is the source of truth; a message is
 only a nudge. Names with a middle dot must be quoted in a typed `@` mention.
 
+## Skills
+
+The plugin has five skills. The owner types them as `/shipit:shipit`, `/shipit:shipit-roadmap`, `/shipit:shipit-slice`, `/shipit:shipit-test-drive` and `/shipit:shipit-review` (the bare name works unless another command has it). Agents load them by themselves through the `Skill` tool. No skill sets `disable-model-invocation`, because an agent starts each of them at some point. The owner's view is `docs/guide.md`.
+
+**Roles.** Every agent a skill starts is a named role of the plugin, so the screen shows `shipit:maker` and not a general agent. The `tools` line of each role file is checked by `tests/claude-plugin.bats`:
+
+| Role | `tools` |
+|---|---|
+| `shipit:maker`, `shipit:tester` | `Read, Grep, Glob, Bash, Write, Edit, Skill` |
+| `shipit:scout`, `shipit:reader`, `shipit:plan-reviewer`, `shipit:work-reviewer` | `Read, Grep, Glob, Bash` |
+| `shipit:model-scout` | `Read, Grep, Glob, Bash, WebSearch, WebFetch` |
+| `shipit:slice` | all tools |
+
+Only `shipit:slice` may start agents: leaving `Agent` out of `tools` is what stops the others. Every start passes the `model` and `effort` of its rank; role files hold neither.
+
+**Known gaps.**
+- A review of a change that is not a slice, in a ShipIt project, starts two plain agents given the text of the `shipit:work-reviewer` role file, and they show as general agents. The review gate denies `shipit:work-reviewer` there, because the change has no slice branch for the `shipit-branch:` line to name.
+- Outside a ShipIt session (no plugin loaded) the lead's own agents show as general ones.
+
+**Sessions and messages.** Name a session with `claude -n "$(shipit session-name <goal> <slice>)"` as under Sessions; a slice session ends with one message to the lead, which confirms with `shipit status`.
+
+**How slices run.** The last decision point of `shipit-roadmap` offers four ways: one session per slice; lead fan-out (the lead runs the slices in each slice's worktree); the `Workflow` tool, which only the owner's explicit opt-in chooses; and one agent per slice (`shipit:slice`, started by the lead in the slice's worktree).
+
+**One agent per slice.** The slice agent is one layer below the lead; its makers, reader, reviewers and tester are one layer deeper. Measured with the plugin loaded:
+- The agent cap counts nested agents. One slice agent needs room for itself and its widest moment, two reviewers: 3 agents. With `agents.parallel.agents = 4` one slice agent runs at a time; for n at once the lead proposes `agents.parallel.agents = 3 × n` as a setup-only pull request.
+- The review gate fires for an agent started by an agent, so the slice agent starts the gated roles with the `shipit-branch:` line as the lead does.
+- By default Claude Code allows three layers of agents. Only `shipit:slice` has the `Agent` tool; setting `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH` to 2 closes the third layer for every other agent too.
+- A slice agent cannot ask the owner. A decision point ends it as blocked, its final message carries the decision point, and the lead asks the owner and starts a new slice agent.
+
+**Pushes, pull requests and the store.** A skill pushes only `git push -u origin slice/<goal>/<slice>`, alone in its Bash call. It opens the pull request with `gh pr create --title <title> --body-file <file>`. `gh pr create`, `gh pr edit` and `gh pr comment` pass the gate in every mode, so no gate stops a gh write: the skills' rule, to post to a pull request only when the owner says yes, is prose. Store files are copied in with one plain `mkdir -p … && cp …` through Bash, because the harness protects the git folder: a file-tool write there asks in default mode, goes to the classifier in auto mode, and is refused in dontAsk mode, and an allow rule does not change that.
+
 ## Limits
 
 Known, and not caught:

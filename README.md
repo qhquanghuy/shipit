@@ -12,6 +12,14 @@ goal → roadmap → build plan → make → check → informed review + second 
 
 Status: early. `shipit help` lists the commands, and `shipit help <command>` gives a command's usage and exit codes.
 
+## Start here
+
+1. Install the ShipIt plugin and the skill pack's plugin (`packs.skill`, Superpowers today): the commands are in `docs/claude-code.md`.
+2. Adopt ShipIt in your project with `shipit init` (see "Adopt ShipIt in a project" below).
+3. Run the `shipit` skill. It shows where the project stands and names the skill to run next.
+
+The owner's guide is `docs/guide.md`: the three jobs of the owner, the skills, the roles and the decision points.
+
 ## Run it
 
 With Nix, without cloning:
@@ -111,10 +119,11 @@ starting `slice/` counts). Every other branch passes with a notice such as
 `shipit: <branch> is not a slice/* branch; not checked`, and a commit with no setup file passes with a notice too.
 A tag or a delete passes silently: it prints nothing.
 
-**Mixed teams.** The hook line `if command -v shipit >/dev/null 2>&1; then exec shipit pre-push "$@"; fi` does nothing
+**Mixed teams.** ShipIt's rules apply only to `slice/*` branches: the pre-push hook asks for a receipt there, and CI holds the size cap, the setup comparison and the coverage map there. Every other branch runs only the base's checks. The hook line `if command -v shipit >/dev/null 2>&1; then exec shipit pre-push "$@"; fi` does nothing
 where ShipIt is not installed, so a teammate without it pushes as before. `shipit init` adds it to a plain `.git/hooks/pre-push`,
 to a husky or `core.hooksPath` hook inside the project, or to lefthook (`lefthook-local.yml` or `.lefthook-local.yml`, then
 `lefthook install`), and only when that is safe. Otherwise it prints the line with the reason, and for pre-commit it always prints.
+The v1 limit, plainly: coverage proves that a mapped test exists and ran, not what it asserts. A teammate's pull request on a branch that is not `slice/*` is not checked against the coverage maps, so renaming, removing or weakening a mapped test there is caught only later, by the next slice whose map names it (a CI notice for this comes after v1).
 
 **CI.** `shipit recheck --base <base> --branch <branch>` is what the action runs, and it trusts no receipt. On a `slice/*` branch it
 runs the full `shipit check`: the size cap, the comparison of the setup with the base's, and the checks. On any other branch it runs only
