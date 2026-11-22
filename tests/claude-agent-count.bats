@@ -229,3 +229,34 @@ entries() {
   [[ $(reason) == *"needs a check receipt"* ]]
   [ ! -e "$DATA" ]
 }
+
+# The store folder makes a repository a project whatever a later commit or checkout shows.
+@test "a start or a resume in a project makes the store folder, and in no other folder nothing" {
+  local common source other="$BATS_TEST_TMPDIR/other"
+  common=$(git rev-parse --git-common-dir)
+  [ ! -e "$common/shipit" ]
+  for source in compact clear fork; do
+    event SessionStart "{\"session_id\":\"s1\",\"source\":\"$source\"}"
+    [ ! -e "$common/shipit" ]
+  done
+  event SessionStart '{"session_id":"s1","source":"startup"}'
+  [ -d "$common/shipit" ]
+  rmdir "$common/shipit"
+  event SessionStart '{"session_id":"s1","source":"resume"}'
+  [ -d "$common/shipit" ]
+  git init -q "$other"
+  run_hook claude-agent-count "$(hook_input "$(jq -cn --arg cwd "$other" \
+    '{hook_event_name: "SessionStart", cwd: $cwd, session_id: "s2", source: "startup"}')")"
+  [ ! -e "$other/.git/shipit" ]
+  # A repository whose setup file is only on another branch is not made a project.
+  git -C "$other" -c user.name=t -c user.email=t@example.invalid commit -q --allow-empty -m first
+  git -C "$other" checkout -q -b side
+  mkdir "$other/.config"
+  cp "$REPO/.config/shipit.toml" "$other/.config/shipit.toml"
+  git -C "$other" add .config
+  git -C "$other" -c user.name=t -c user.email=t@example.invalid commit -q -m setup
+  git -C "$other" checkout -q -
+  run_hook claude-agent-count "$(hook_input "$(jq -cn --arg cwd "$other" \
+    '{hook_event_name: "SessionStart", cwd: $cwd, session_id: "s2", source: "startup"}')")"
+  [ ! -e "$other/.git/shipit" ]
+}

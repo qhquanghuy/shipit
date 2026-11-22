@@ -1,6 +1,7 @@
 use std::ffi::OsString;
 use std::io::Write;
 
+use crate::commands::claude_ship_gate::settle_project;
 use crate::edge::agent_store::{Ledger, remove_stale};
 use crate::edge::clock::now_utc;
 use crate::edge::hook_process::read_hook_input;
@@ -65,6 +66,17 @@ fn bookkeep(input: &HookInput) -> Result<(), String> {
     held.apply(&changes)
 }
 
+// A start and a resume in a project pin it: see `settle_project`.
+fn settle(input: &HookInput) -> Result<(), String> {
+    if input.event == "SessionStart"
+        && matches!(input.source.as_deref(), Some("startup" | "resume"))
+    {
+        settle_project(&input.cwd)
+    } else {
+        Ok(())
+    }
+}
+
 pub(crate) fn run(
     args: &[OsString],
     _out: &mut dyn Write,
@@ -75,7 +87,10 @@ pub(crate) fn run(
     }
     let done = read_hook_input(INPUT_LIMIT)
         .and_then(|bytes| parse_input(&bytes))
-        .and_then(|input| bookkeep(&input));
+        .and_then(|input| {
+            let settled = settle(&input);
+            bookkeep(&input).and(settled)
+        });
     if let Err(why) = done {
         writeln!(err, "shipit: agent count: {why}").ok();
     }

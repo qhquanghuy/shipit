@@ -110,7 +110,13 @@ pub(crate) fn review_target(input: &HookInput) -> Target {
         let Some(rest) = line.trim().strip_prefix(BRANCH_LINE) else {
             continue;
         };
-        let Some(word) = rest.split_whitespace().next() else {
+        // A branch name cannot end in a full stop, so a sentence's own is not part of it.
+        let word = rest
+            .split_whitespace()
+            .next()
+            .map(|word| word.trim_end_matches('.'))
+            .filter(|word| !word.is_empty());
+        let Some(word) = word else {
             return Target::Bad("the shipit-branch line names no branch".to_owned());
         };
         if !named.contains(&word) {
@@ -141,8 +147,16 @@ pub(crate) fn agent_call(input: &HookInput) -> bool {
     matches!(input.tool_name.as_deref(), Some("Agent" | "Task"))
 }
 
-pub(crate) fn resolve(cwd: &Path, dir: Option<&str>) -> PathBuf {
-    dir.map_or_else(|| cwd.to_path_buf(), |dir| cwd.join(dir))
+// A folder the reader gives as `~/x` is the home folder's; with no home it stays under the working
+// folder, where it names nothing and so no project.
+pub(crate) fn resolve(cwd: &Path, home: Option<&Path>, dir: Option<&str>) -> PathBuf {
+    let Some(dir) = dir else {
+        return cwd.to_path_buf();
+    };
+    match (dir.strip_prefix("~/"), home) {
+        (Some(under), Some(home)) => home.join(under),
+        (Some(_) | None, Some(_) | None) => cwd.join(dir),
+    }
 }
 
 const MCP_SHIP_WORDS: [&str; 3] = ["merge", "create_release", "create_tag"];
@@ -208,11 +222,19 @@ mod tests {
         fn a_folder_is_read_from_the_cwd_and_joined_with_a_relative_dir(
             cwd in "/[a-z]{1,6}(/[a-z]{1,6}){0,2}",
             dir in "[a-z]{1,6}(/[a-z]{1,6}){0,2}",
+            home in "/[a-z]{1,6}",
         ) {
             let base = Path::new(&cwd);
-            prop_assert_eq!(resolve(base, None), base.to_path_buf());
-            prop_assert_eq!(resolve(base, Some(&dir)), base.join(&dir));
-            prop_assert_eq!(resolve(base, Some("/abs")), PathBuf::from("/abs"));
+            let at_home = Path::new(&home);
+            for home in [None, Some(at_home)] {
+                prop_assert_eq!(resolve(base, home, None), base.to_path_buf());
+                prop_assert_eq!(resolve(base, home, Some(&dir)), base.join(&dir));
+                prop_assert_eq!(resolve(base, home, Some("/abs")), PathBuf::from("/abs"));
+            }
+            // `~/x` is the home folder's, and without a home it names nothing under the cwd.
+            let tilde = format!("~/{dir}");
+            prop_assert_eq!(resolve(base, Some(at_home), Some(&tilde)), at_home.join(&dir));
+            prop_assert_eq!(resolve(base, None, Some(&tilde)), base.join(&tilde));
         }
 
         #[test]
@@ -274,6 +296,16 @@ mod tests {
                     Target::Bad("the prompt names two branches".to_owned())
                 );
             }
+            // A branch name cannot end in a full stop, so a sentence's own is not the name's.
+            prop_assert_eq!(call(format!("shipit-branch: {first}.")), gated(Some(&first)));
+            prop_assert_eq!(
+                call(format!("shipit-branch: {first}\nshipit-branch: {first}.")),
+                gated(Some(&first))
+            );
+            prop_assert_eq!(
+                call("shipit-branch: ..".to_owned()),
+                Target::Bad("the shipit-branch line names no branch".to_owned())
+            );
             prop_assert_eq!(
                 call("shipit-branch:  ".to_owned()),
                 Target::Bad("the shipit-branch line names no branch".to_owned())

@@ -7,7 +7,8 @@ use std::mem;
 pub(crate) struct Segment {
     pub(crate) dir: Option<String>,
     pub(crate) words: Vec<String>,
-    pub(crate) reads_pipe: bool,
+    // The input is a pipe or a file (`<`): a program read from it was written somewhere else.
+    pub(crate) reads_stdin: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -34,13 +35,18 @@ pub(crate) fn raw_words(text: &str) -> Vec<&str> {
 
 // The raw words again, with every quote and backslash taken out first, and the line joins:
 // `"g"it` and a `gi`, backslash, newline, `t` are `git`.
-pub(crate) fn raw_words_unquoted(text: &str) -> Vec<String> {
-    let bare: String = text
-        .replace("\\\n", "")
+pub(crate) fn unquoted(text: &str) -> String {
+    text.replace("\\\n", "")
         .chars()
         .filter(|c| !matches!(c, '\'' | '"' | '\\'))
-        .collect();
-    raw_words(&bare).into_iter().map(str::to_owned).collect()
+        .collect()
+}
+
+pub(crate) fn raw_words_unquoted(text: &str) -> Vec<String> {
+    raw_words(&unquoted(text))
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
 }
 
 pub(crate) fn program(word: &str) -> &str {
@@ -126,7 +132,8 @@ struct Reader {
     pending: Vec<Pending>,
     dir: Option<String>,
     before: Sep,
-    reads_pipe: bool,
+    reads_stdin: bool,
+    from_file: bool,
 }
 
 fn has_brace_expansion(unquoted: &str) -> bool {
@@ -140,7 +147,7 @@ fn has_brace_expansion(unquoted: &str) -> bool {
 
 fn join_dir(base: Option<&str>, dir: &str) -> String {
     match base {
-        Some(base) if !dir.starts_with('/') => format!("{base}/{dir}"),
+        Some(base) if !dir.starts_with('/') && !dir.starts_with("~/") => format!("{base}/{dir}"),
         Some(_) | None => dir.to_owned(),
     }
 }
@@ -156,7 +163,8 @@ impl Reader {
             pending: Vec::new(),
             dir: None,
             before: Sep::Start,
-            reads_pipe: false,
+            reads_stdin: false,
+            from_file: false,
         }
     }
 
@@ -240,6 +248,9 @@ impl Reader {
     fn redirect(&mut self) -> Read<()> {
         let operator = self.peek();
         self.at += 1;
+        if operator == Some('<') && !matches!(self.peek(), Some('<' | '&' | '(' | '>')) {
+            self.from_file = true;
+        }
         match (operator, self.peek()) {
             (Some('>'), Some('>' | '&')) | (Some('<'), Some('&')) => self.at += 1,
             (Some('>'), Some('|')) | (Some('<'), Some('(' | '>')) => return Err(Complex),
@@ -337,7 +348,7 @@ impl Reader {
         let text = word.text.as_str();
         let whole = !word.quoted;
         if (whole && matches!(text, "!" | "{" | "}"))
-            || word.starts_with_tilde
+            || (word.starts_with_tilde && !self.is_home_folder(&word))
             || word.starts_with_hash
             || matches!(text, "pushd" | "popd")
             || has_brace_expansion(&word.unquoted)
@@ -348,6 +359,13 @@ impl Reader {
         }
         self.words.push(word);
         Ok(())
+    }
+
+    // `cd ~/x`: the one place a tilde is read, as the folder `$HOME/x`; any other tilde (`~`,
+    // `~user`, `ls ~/x`) is expanded by the shell in a way ShipIt does not follow.
+    fn is_home_folder(&self, word: &Word) -> bool {
+        word.text.starts_with("~/")
+            && matches!(self.words.as_slice(), [first] if first.text == "cd" && !first.quoted)
     }
 
     fn read_word(&mut self) -> Read<Word> {
@@ -495,7 +513,9 @@ impl Reader {
     fn end_segment(&mut self, after: Sep) -> Read<()> {
         let words = mem::take(&mut self.words);
         let before = mem::replace(&mut self.before, after);
-        let reads_pipe = mem::replace(&mut self.reads_pipe, after == Sep::Pipe);
+        let piped = mem::replace(&mut self.reads_stdin, after == Sep::Pipe);
+        let from_file = mem::take(&mut self.from_file);
+        let reads_stdin = piped || from_file;
         if words.is_empty() {
             return Ok(());
         }
@@ -513,12 +533,20 @@ impl Reader {
             if dir.is_empty() || dir.starts_with('-') || glob || !plain_before || !plain_after {
                 return Err(Complex);
             }
-            next_dir = Some(join_dir(self.dir.as_deref(), dir));
+            // A tilde inside quotes is a folder called `~`, not the home folder.
+            let literal_tilde =
+                dir.starts_with("~/") && !words.get(1).is_some_and(|word| word.starts_with_tilde);
+            let dir = if literal_tilde {
+                format!("./{dir}")
+            } else {
+                dir.clone()
+            };
+            next_dir = Some(join_dir(self.dir.as_deref(), &dir));
         }
         self.segments.push(Segment {
             dir: self.dir.clone(),
             words: texts,
-            reads_pipe,
+            reads_stdin,
         });
         if next_dir.is_some() {
             self.dir = next_dir;
@@ -628,6 +656,37 @@ mod tests {
         }
 
         #[test]
+        fn cd_to_a_folder_under_home_is_read_and_any_other_tilde_is_complex(
+            a in "[a-z]{1,5}",
+            b in "[a-z]{1,5}",
+            other in "[a-z]{1,5}",
+        ) {
+            let dirs = |command: String| match parse(&command) {
+                Parse::Plain { segments, .. } => segments.into_iter().map(|s| s.dir).collect(),
+                Parse::Complex => vec![Some("complex".to_owned())],
+            };
+            prop_assert_eq!(dirs(format!("cd ~/{a}\nls")), vec![None, Some(format!("~/{a}"))]);
+            // A later folder is under the home folder, or replaces it, or is replaced by it.
+            prop_assert_eq!(
+                dirs(format!("cd ~/{a} && cd {b}\nls")),
+                vec![None, Some(format!("~/{a}")), Some(format!("~/{a}/{b}"))]
+            );
+            prop_assert_eq!(
+                dirs(format!("cd {a} && cd ~/{b}\nls")),
+                vec![None, Some(a.clone()), Some(format!("~/{b}"))]
+            );
+            // Quoted, it is a folder called `~`.
+            prop_assert_eq!(dirs(format!("cd \"~/{a}\"\nls")), vec![None, Some(format!("./~/{a}"))]);
+            for bad in [
+                "cd ~".to_owned(), format!("cd ~{other}/{a}"), format!("cd -P ~/{a}"),
+                format!("ls ~/{a}"), format!("A=1 cd ~/{a}"), format!("cd ~/{a} ~/{b}"),
+                format!("cd ~/{a}* && ls"), format!("cd ~/{a} || ls"), format!("cd ~/{{{a},{b}}}"),
+            ] {
+                prop_assert!(is_complex(&bad), "{}", bad);
+            }
+        }
+
+        #[test]
         fn a_cd_that_may_not_run_or_has_no_plain_folder_is_complex(
             dir in "[a-z]{1,5}",
             tail in prop_oneof![Just(" || ls"), Just(" | ls"), Just(" & ls")],
@@ -635,7 +694,7 @@ mod tests {
             { let text = format!("cd {dir}{tail}"); prop_assert!(is_complex(&text)); }
             { let text = format!("ls | cd {dir}"); prop_assert!(is_complex(&text)); }
             { let text = format!("ls || cd {dir}"); prop_assert!(is_complex(&text)); }
-            for bad in ["cd", "cd -", "cd ~/x", "cd -P x", "cd a b", "cd *", "pushd x", "popd"] {
+            for bad in ["cd", "cd -", "cd -P x", "cd a b", "cd *", "pushd x", "popd"] {
                 prop_assert!(is_complex(bad), "{}", bad);
             }
         }
@@ -753,6 +812,22 @@ mod tests {
             { let text = format!("cat <<EOF\n{mark}\nEOF\n"); prop_assert!(is_complex(&text)); }
             prop_assert!(!is_complex("cat <<EOF\nplain\nEOF\n"));
             { let text = format!("cat <<'EOF'\n{mark}\nEOF\n"); prop_assert!(!is_complex(&text)); }
+        }
+
+        #[test]
+        fn a_segment_reads_stdin_from_a_pipe_or_a_file_and_from_nothing_else(
+            a in "[a-z]{1,5}[0-9]",
+            file in "[a-z/]{1,6}",
+        ) {
+            let reads = |command: String| match parse(&command) {
+                Parse::Plain { segments, .. } => segments.into_iter().map(|s| s.reads_stdin).collect(),
+                Parse::Complex => vec![],
+            };
+            prop_assert_eq!(reads(format!("{a} < {file}")), vec![true]);
+            prop_assert_eq!(reads(format!("{a} <{file} > out")), vec![true]);
+            prop_assert_eq!(reads(format!("{a} x | wc < {file}\nls")), vec![false, true, false]);
+            prop_assert_eq!(reads(format!("{a} | ls")), vec![false, true]);
+            prop_assert_eq!(reads(format!("{a} > {file} 2>&1 <&0")), vec![false]);
         }
 
         #[test]

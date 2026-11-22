@@ -4,6 +4,7 @@
 use crate::pure::branch::parse_slice_branch;
 use crate::pure::shell_words::{
     Parse, Segment, leading_program, message_values, parse, program, raw_words, raw_words_unquoted,
+    unquoted,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -57,7 +58,7 @@ const TAG: &str = "pushes a tag";
 const CHANGES_BRANCH: &str = "changes the branch or the config in the same command as a push";
 const OPTION_BEFORE: &str = "uses a git option before push";
 const FOLLOW_TAGS: &str = "pushes tags with the branch";
-const ENV: &str = "sets a GIT_ or GH_ variable";
+const ENV: &str = "sets a GIT_, GH_, BASH_ENV or ENV variable";
 const CONFIG: &str = "changes git config";
 const REMOTE: &str = "changes the git remotes";
 const TAGS: &str = "creates or deletes a tag";
@@ -68,7 +69,18 @@ const GLOBAL_OPTION: &str =
 const UNKNOWN_GIT: &str = "runs a git subcommand ShipIt does not list (an alias, a typo, submodule, bisect, filter-branch, send-pack and the rest)";
 const RUNS_PROGRAM: &str = "gives git a program to run (--exec, --upload-pack and the like)";
 const MERGES_BASE: &str = "merges into the base branch";
-const DOT_GIT: &str = "names a path under .git/";
+const DOT_GIT: &str =
+    "names .git, or a path under it, other than the goals folder .git/shipit/goals/";
+const GOALS_ONLY: &str = "does more than read, copy or make folders under .git/shipit/goals/ (only mkdir, cp without -r -R -a -L -s -l -H, cat, ls, head, tail, wc and shipit may run in such a command, with no redirect into a file)";
+const BRANCH_REWRITE: &str =
+    "deletes, renames, copies or force-moves a branch (a base branch holds the setup file)";
+const FETCH_REFSPEC: &str =
+    "fetches into a name (a refspec with a colon moves a remote-tracking branch)";
+const REFLOG: &str = "changes the reflog (expire, delete)";
+const SYMBOLIC_REF: &str = "changes a symbolic ref (HEAD and the like)";
+const APPLIES: &str = "applies a patch (a patch can add a link into .git; only apply --check, --stat, --numstat and --summary pass)";
+const RUNS_COMMAND: &str =
+    "gives a text program a command to run (rg --pre, ag --pager, man -P and the like)";
 const CONFIRM: &str =
     "confirms a goal completion (shipit complete --confirm), which only the owner may do";
 const MERGE: &str = "merges a pull request";
@@ -92,7 +104,7 @@ const DATA_PROGRAMS: [&str; 16] = [
 // The git subcommands that pass silently: they only read, or they edit the work and the
 // branches in ways the check and the review see. `push`, `merge`, `rebase`, `tag`, `notes`,
 // `config` and `remote` pass only in the forms judged below. Everything else asks.
-const GIT_READS: [&str; 17] = [
+const GIT_READS: [&str; 24] = [
     "status",
     "log",
     "diff",
@@ -110,8 +122,15 @@ const GIT_READS: [&str; 17] = [
     "name-rev",
     "for-each-ref",
     "fetch",
+    "ls-tree",
+    "show-ref",
+    "cherry",
+    "range-diff",
+    "check-ignore",
+    "help",
+    "version",
 ];
-const GIT_EDITS: [&str; 13] = [
+const GIT_EDITS: [&str; 15] = [
     "add",
     "rm",
     "mv",
@@ -125,6 +144,8 @@ const GIT_EDITS: [&str; 13] = [
     "cherry-pick",
     "revert",
     "worktree",
+    "clean",
+    "init",
 ];
 // A subcommand that moves the branch or the config: a push in the same command is never the
 // plain one.
@@ -302,10 +323,12 @@ fn explicit_slice_push(args: &[String], facts: &Facts) -> Result<(), Cause> {
 }
 
 // A GIT_ or GH_ variable can carry config (GIT_CONFIG_COUNT, GIT_CONFIG_PARAMETERS), another
-// repository (GIT_DIR) or another host: in a text that names git or gh, any assignment asks.
+// repository (GIT_DIR) or another host, and BASH_ENV and ENV name a file a shell runs at its
+// start: in a text that names git or gh, any such assignment asks.
 fn sets_git_env(word: &str) -> bool {
-    word.split_once('=')
-        .is_some_and(|(name, _)| name.starts_with("GIT_") || name.starts_with("GH_"))
+    word.split_once('=').is_some_and(|(name, _)| {
+        name.starts_with("GIT_") || name.starts_with("GH_") || matches!(name, "BASH_ENV" | "ENV")
+    })
 }
 
 // The config as `git config --list` prints it: does it send a push somewhere the command does
@@ -338,6 +361,21 @@ fn changes_config(args: &[String]) -> bool {
     !reads || writes
 }
 
+// A branch that is deleted, renamed, copied or moved by force can empty what makes a folder a project.
+fn rewrites_branches(args: &[String]) -> bool {
+    args.iter().any(|word| {
+        matches!(word.as_str(), "--delete" | "--move" | "--copy" | "--force")
+            || cluster_has(word, &['d', 'D', 'm', 'M', 'c', 'C', 'f'])
+    })
+}
+
+// `git fetch origin +old:refs/remotes/origin/main` moves a remote-tracking branch; a URL has a
+// colon too and is no refspec.
+fn fetches_into_a_name(args: &[String]) -> bool {
+    args.iter()
+        .any(|word| !word.starts_with('-') && word.contains(':') && !word.contains("://"))
+}
+
 // Only a listing of the remotes passes: bare, `-v`, `show` and `get-url`.
 fn changes_remote(args: &[String]) -> bool {
     let mut after = args
@@ -358,6 +396,35 @@ fn reads_notes(args: &[String]) -> bool {
     args.iter()
         .find(|word| !word.starts_with('-'))
         .is_none_or(|first| first == "list" || first == "show")
+}
+
+// A patch can create a symbolic link to .git/hooks, so only the forms that apply nothing pass.
+fn only_checks_a_patch(args: &[String]) -> bool {
+    args.iter().any(|word| {
+        matches!(
+            word.as_str(),
+            "--check" | "--stat" | "--numstat" | "--summary"
+        )
+    }) && !args.iter().any(|word| word == "--apply")
+}
+
+// `git reflog expire` and `git reflog delete` change it; the rest shows it.
+fn writes_reflog(args: &[String]) -> bool {
+    args.iter().any(|word| word == "expire" || word == "delete")
+}
+
+// `git symbolic-ref [--short] [-q] <name>` reads; a second argument, `-d` or `-m` writes.
+fn reads_symbolic_ref(args: &[String]) -> bool {
+    let reads_only = args
+        .iter()
+        .filter(|word| word.starts_with('-'))
+        .all(|word| {
+            matches!(
+                word.as_str(),
+                "-q" | "--quiet" | "--short" | "--recurse" | "--no-recurse"
+            )
+        });
+    reads_only && args.iter().filter(|word| !word.starts_with('-')).count() <= 1
 }
 
 // The global options of a git command, then its subcommand. Only `-C <dir>`, `--no-pager`,
@@ -416,6 +483,8 @@ fn runs_a_program(sub: &str, word: &str) -> bool {
     .any(|name| word.starts_with(name))
         || (matches!(sub, "fetch" | "ls-remote") && word == "-u")
         || (sub == "grep" && word.starts_with("-O"))
+        || (sub == "init"
+            && (word.starts_with("--template") || word.starts_with("--separate-git-dir")))
         || (sub == "rebase" && (word == "--interactive" || cluster_has(word, &['x', 'i'])))
         || (sub == "merge" && (word == "-s" || word.starts_with("--strategy")))
 }
@@ -434,7 +503,11 @@ fn changes_context(segments: &[Segment]) -> bool {
                             if segment
                                 .words
                                 .get(at + 1 + index)
-                                .is_some_and(|sub| CHANGERS.contains(&sub.as_str()))
+                                .is_some_and(|sub| {
+                                    let args = segment.words.get(at + 2 + index..).unwrap_or_default();
+                                    CHANGERS.contains(&sub.as_str())
+                                        && !(sub == "symbolic-ref" && reads_symbolic_ref(args))
+                                })
                     )
             });
             changes_git || segment.words.iter().any(|word| word == FOLDER_WORD)
@@ -489,6 +562,11 @@ impl Judge<'_> {
             "remote" if changes_remote(args) => add(reasons, REMOTE),
             "tag" if !lists_tags(args) => add(reasons, TAGS),
             "notes" if !reads_notes(args) => add(reasons, NOTES),
+            "reflog" if writes_reflog(args) => add(reasons, REFLOG),
+            "branch" if rewrites_branches(args) => add(reasons, BRANCH_REWRITE),
+            "fetch" if fetches_into_a_name(args) => add(reasons, FETCH_REFSPEC),
+            "symbolic-ref" if !reads_symbolic_ref(args) => add(reasons, SYMBOLIC_REF),
+            "apply" if !only_checks_a_patch(args) => add(reasons, APPLIES),
             "merge" => {
                 let facts = (self.facts)(dir);
                 if facts
@@ -499,7 +577,8 @@ impl Judge<'_> {
                     add(reasons, MERGES_BASE);
                 }
             }
-            "config" | "remote" | "tag" | "notes" | "rebase" => {}
+            "config" | "remote" | "tag" | "notes" | "rebase" | "reflog" | "symbolic-ref"
+            | "apply" | "branch" | "fetch" => {}
             known if GIT_READS.contains(&known) || GIT_EDITS.contains(&known) => {}
             _ => add(reasons, UNKNOWN_GIT),
         }
@@ -654,8 +733,8 @@ pub(crate) fn interpreter_strings(words: &[String]) -> Vec<Option<&str>> {
     found
 }
 
-// A shell that is given a string to run, or any other interpreter at all: a program the reader
-// did not read.
+// A shell that is given a string or a file to run, or any other interpreter at all: a program
+// the reader did not read. A file may have been written a moment ago by the same command.
 fn runs_a_program_text(words: &[String]) -> bool {
     words.iter().enumerate().any(|(at, word)| {
         runs_as(word, &SCRIPTERS)
@@ -663,7 +742,39 @@ fn runs_a_program_text(words: &[String]) -> bool {
                 && words
                     .iter()
                     .skip(at + 1)
-                    .any(|later| is_shell_string_flag(later)))
+                    .any(|later| is_shell_string_flag(later) || !later.starts_with('-')))
+    })
+}
+
+// `source` and `.` run what they read: a pipe or a device such as /dev/stdin is a program the
+// reader did not see.
+fn sources_a_stream(segment: &Segment) -> bool {
+    matches!(
+        leading_program(segment.words.iter().map(String::as_str)),
+        Some("source" | ".")
+    ) && (segment.reads_stdin
+        || segment
+            .words
+            .iter()
+            .any(|word| word.starts_with("/dev/") || word.starts_with("/proc/")))
+}
+
+// The options of a program that only reads text, that hand it a command to run.
+fn runs_a_command(segment: &Segment) -> bool {
+    let flag = |word: &str, long: &str| {
+        word == long
+            || word
+                .strip_prefix(long)
+                .is_some_and(|rest| rest.starts_with('='))
+    };
+    let owner = leading_program(segment.words.iter().map(String::as_str));
+    segment.words.iter().any(|word| match owner {
+        Some("rg") => flag(word, "--pre") || flag(word, "--hostname-bin"),
+        Some("ag") => flag(word, "--pager"),
+        Some("man") => {
+            flag(word, "--pager") || flag(word, "--html") || cluster_has(word, &['P', 'H'])
+        }
+        Some(_) | None => false,
     })
 }
 
@@ -680,6 +791,9 @@ fn plain_reasons(
     for segment in segments {
         let data = message_values(&segment.words);
         let text_only = is_text_only(segment);
+        if text_only && runs_a_command(segment) {
+            add(reasons, RUNS_COMMAND);
+        }
         for (at, word) in segment.words.iter().enumerate() {
             if data.get(at) == Some(&true) {
                 continue;
@@ -711,7 +825,8 @@ fn plain_reasons(
         .filter(|segment| !is_text_only(segment))
         .any(|segment| {
             runs_a_program_text(&segment.words)
-                || (segment.reads_pipe
+                || sources_a_stream(segment)
+                || (segment.reads_stdin
                     && segment
                         .words
                         .iter()
@@ -748,6 +863,131 @@ pub(crate) fn named_folders(command: &str) -> Vec<(Option<String>, String)> {
     found
 }
 
+const GOALS_FOLDER: &str = "/shipit/goals/";
+// A link made in goals/ can point at the hooks or the receipts, and an archive can hold one, so
+// the programs that may run in a text naming the goals are a list, not a ban.
+const GOALS_PROGRAMS: [&str; 8] = ["mkdir", "cp", "cat", "ls", "head", "tail", "wc", "shipit"];
+// The letters of the `cp` options that only copy a file: `-p -f -n -i -v`, and `-t` and `-T` that name
+// the target. Any other option can copy a link as a link (`-P`, `-d`, `--preserve=links`) or build
+// paths from the source (`--parents`).
+const COPY_LETTERS: &str = "pfnivtT";
+
+fn is_name_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.')
+}
+
+// A `.git` followed by a slash is a path under .git/, and passes only as `.git/shipit/goals/` (the
+// goals of the store, which the skills write) with no `..` part after it and no `receipts/`
+// anywhere. A text cannot show where a link inside goals/ points: only ShipIt and the skills
+// write there.
+fn dot_git_beyond_goals(text: &str) -> bool {
+    text.match_indices(".git").any(|(at, found)| {
+        let after = text.get(at + found.len()..).unwrap_or_default();
+        match after.strip_prefix(GOALS_FOLDER) {
+            Some(tail) => {
+                text.contains("receipts/")
+                    || tail
+                        .split(|c: char| !is_name_char(c))
+                        .any(|part| part == "..")
+            }
+            None => after.starts_with('/'),
+        }
+    })
+}
+
+// A `>` that is not a descriptor copy (`2>&1`) or a discard (`/dev/null`) writes a file.
+fn redirects_to_a_file(command: &str) -> bool {
+    command.match_indices('>').any(|(at, _)| {
+        let after = command
+            .get(at + 1..)
+            .unwrap_or_default()
+            .trim_start_matches(['>', ' ', '\t']);
+        let descriptor = after.strip_prefix('&').is_some_and(|rest| {
+            rest.chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_digit() || c == '-')
+        });
+        !(descriptor || after.starts_with("/dev/null"))
+    })
+}
+
+// Every option before `--` is on the list; a word that is no option is a path.
+fn copies_plainly(words: &[String]) -> bool {
+    words
+        .iter()
+        .take_while(|word| *word != "--")
+        .filter(|word| word.starts_with('-'))
+        .all(|word| match word.strip_prefix("--") {
+            Some(long) => long == "target-directory" || long.starts_with("target-directory="),
+            None => word
+                .strip_prefix('-')
+                .is_some_and(|letters| letters.chars().all(|c| COPY_LETTERS.contains(c))),
+        })
+}
+
+fn only_copies_and_reads(command: &str, parsed: &Parse) -> bool {
+    let Parse::Plain { segments, .. } = parsed else {
+        return false;
+    };
+    !redirects_to_a_file(command)
+        && segments.iter().all(|segment| {
+            let name = leading_program(segment.words.iter().map(String::as_str));
+            name.is_some_and(|name| GOALS_PROGRAMS.contains(&name))
+                && (name != Some("cp") || copies_plainly(&segment.words))
+        })
+}
+
+fn names_goals(text: &str) -> bool {
+    text.match_indices(".git").any(|(at, found)| {
+        text.get(at + found.len()..)
+            .is_some_and(|after| after.starts_with(GOALS_FOLDER))
+    })
+}
+
+// `.git` as the whole last part of a path in a word (`cd .git`, `--git-dir=x/.git`): not `.github`,
+// `x.git`, and not `.git/…`, which the other rule judges.
+fn is_bare_dot_git(word: &str) -> bool {
+    word.match_indices(".git").any(|(at, found)| {
+        let before = word.get(..at).and_then(|head| head.chars().next_back());
+        let after = word
+            .get(at + found.len()..)
+            .and_then(|tail| tail.chars().next());
+        !before.is_some_and(is_name_char) && !after.is_some_and(|c| is_name_char(c) || c == '/')
+    })
+}
+
+fn names_dot_git(command: &str, parsed: &Parse) -> bool {
+    // Writes under .git/ (the config, the hooks) are redirects that the words do not show.
+    let bare = match parsed {
+        Parse::Plain { segments, .. } => segments
+            .iter()
+            .filter(|segment| !is_text_only(segment))
+            .any(|segment| {
+                let data = message_values(&segment.words);
+                segment
+                    .words
+                    .iter()
+                    .zip(data)
+                    .any(|(word, is_data)| !is_data && is_bare_dot_git(word))
+            }),
+        Parse::Complex => false,
+    };
+    bare || dot_git_beyond_goals(command) || dot_git_beyond_goals(&unquoted(command))
+}
+
+// Every folder the command passes through is judged, the working folder too: a ship command may
+// sit in a word that another program runs (`cd /x && bash -c 'cd /project && git push'`), and a
+// `.git` path is the same repository from any folder.
+pub(crate) fn judged_dirs(command: &str) -> Vec<Option<String>> {
+    let mut dirs = vec![None];
+    if let Parse::Plain { segments, .. } = parse(command) {
+        dirs.extend(segments.into_iter().map(|segment| segment.dir));
+    }
+    dirs.sort();
+    dirs.dedup();
+    dirs
+}
+
 pub(crate) fn ship_reasons(command: &str, facts: &dyn Fn(Option<&str>) -> Facts) -> Vec<String> {
     let parsed = parse(command);
     let mut reasons = Vec::new();
@@ -757,9 +997,13 @@ pub(crate) fn ship_reasons(command: &str, facts: &dyn Fn(Option<&str>) -> Facts)
     if confirms_completion(command) {
         add(&mut reasons, CONFIRM);
     }
-    // A write under .git/ (the config, the hooks) is a redirect that the words do not show.
-    if command.contains(".git/") {
+    if names_dot_git(command, &parsed) {
         add(&mut reasons, DOT_GIT);
+    }
+    if (names_goals(command) || names_goals(&unquoted(command)))
+        && !only_copies_and_reads(command, &parsed)
+    {
+        add(&mut reasons, GOALS_ONLY);
     }
     match &parsed {
         Parse::Complex => add(&mut reasons, COMPLEX),
@@ -881,7 +1125,7 @@ mod tests {
             ][..]),
             2 => proptest::sample::select(&[
                 "$x", "$(echo", "`x`", "(", ")", "{", "}", "!", "~", "if", "then", "fi", "for",
-                "done", "\\", "<<'EOF'", "<<EOF", "{a,b}",
+                "done", "\u{5c}", "<<'EOF'", "<<EOF", "{a,b}",
             ][..]),
         ]
     }
@@ -900,7 +1144,7 @@ mod tests {
         "}",
         "!",
         "~",
-        "\\",
+        "\u{5c}",
         "<<'EOF'",
         "<<EOF",
         "{a,b}",
@@ -1008,6 +1252,9 @@ mod tests {
             "remote" if args.is_empty() => Git::Ok,
             "notes" if args.iter().all(|w| w.starts_with('-')) => Git::Ok,
             "merge" => Git::Changes,
+            "symbolic-ref" if args.len() <= 1 && args.iter().all(|w| !w.starts_with('-')) => {
+                Git::Ok
+            }
             "symbolic-ref" | "update-ref" | "reset" | "branch" | "pull" => Git::Asks,
             known if OK_SUBS.contains(&known) => {
                 if CHANGERS.contains(&known) {
@@ -1180,6 +1427,8 @@ mod tests {
                 "blame", "grep", "describe", "shortlog", "cat-file", "merge-base", "name-rev",
                 "for-each-ref", "fetch", "add", "rm", "mv", "restore", "commit", "switch",
                 "checkout", "branch", "stash", "reset", "cherry-pick", "revert", "worktree",
+                "ls-tree", "show-ref", "cherry", "range-diff", "check-ignore", "help", "version",
+                "clean", "init",
             ][..]),
             words in proptest::collection::vec(
                 proptest::sample::select(&["x", "foo", "-la", "config", "remote", "push", "HEAD~1"][..]),
@@ -1438,11 +1687,12 @@ mod tests {
         }
 
         #[test]
-        fn a_git_or_gh_variable_asks_wherever_it_is_set(
+        fn a_git_gh_or_shell_startup_variable_asks_wherever_it_is_set(
             name in prop_oneof![
                 Just("GIT_DIR"), Just("GIT_WORK_TREE"), Just("GIT_CONFIG_COUNT"),
                 Just("GIT_CONFIG_KEY_0"), Just("GIT_CONFIG_VALUE_0"), Just("GIT_CONFIG_PARAMETERS"),
                 Just("GIT_EXEC_PATH"), Just("GIT_EDITOR"), Just("GH_TOKEN"), Just("GH_HOST"),
+                Just("BASH_ENV"), Just("ENV"),
             ],
             program in prop_oneof![Just("git status"), Just("gh pr view 1")],
         ) {
@@ -1480,16 +1730,293 @@ mod tests {
             prop_assert_eq!(reasons(&any_flags), vec![FEEDS.to_owned()], "{}", any_flags);
             let bare = format!("git status; {path}{scripter} script.sh");
             prop_assert_eq!(reasons(&bare), vec![FEEDS.to_owned()], "{}", bare);
-            // A shell's -e is errexit, and a shell that runs a file reads no string.
+            // A shell's -e is errexit, and a shell given no string and no file has nothing to run.
             for command in [
-                format!("git status; {path}{shell} -e script.sh"),
-                format!("git status; {path}{shell} script.sh"),
+                format!("git status; {path}{shell} -e"),
                 format!("git status; {path}{shell} --version"),
                 format!("git status; echo {flag} {scripter}"),
+                format!("git status; echo {shell} {text}.sh"),
             ] {
                 prop_assert_eq!(reasons(&command), Vec::<String>::new(), "{}", command);
             }
         }
+
+        // A file may have been written by the same command: `echo 'git push' > f.sh && sh f.sh`.
+        #[test]
+        fn a_shell_given_a_file_is_a_program_nobody_read(
+            shell in proptest::sample::select(&SHELLS[..]),
+            path in prop_oneof![Just(""), Just("/bin/"), Just("./")],
+            option in prop_oneof![Just(""), Just("-e "), Just("-x "), Just("--norc ")],
+            file in "[a-z]{1,8}[.]sh",
+        ) {
+            for command in [
+                format!("git status; {path}{shell} {option}{file}"),
+                format!("echo x > {file} && git status; {path}{shell} {option}./{file}"),
+                format!("git status; env X=1 {path}{shell} {option}{file}"),
+                format!("git status; {path}{shell} < {file}"),
+                format!("git status; {path}{shell} {option}<{file}"),
+            ] {
+                prop_assert_eq!(reasons(&command), vec![FEEDS.to_owned()], "{}", command);
+            }
+        }
+
+        #[test]
+        fn source_reading_a_pipe_or_a_device_is_a_program_nobody_read(
+            source in prop_oneof![Just("source"), Just(".")],
+            device in prop_oneof![Just("/dev/stdin"), Just("/dev/fd/0"), Just("/proc/self/fd/0")],
+            file in "[a-z]{1,8}[.]sh",
+        ) {
+            for command in [
+                format!("git status; {source} {device}"),
+                format!("git status; echo x | {source} {file}"),
+                format!("git status; echo x | {source} {device}"),
+            ] {
+                prop_assert_eq!(reasons(&command), vec![FEEDS.to_owned()], "{}", command);
+            }
+            for command in [
+                format!("git status; {source} ./{file}"),
+                format!("git status; {source} {file} && git log"),
+                format!("git status; echo {source} {device}"),
+            ] {
+                prop_assert_eq!(reasons(&command), Vec::<String>::new(), "{}", command);
+            }
+        }
+
+        // The command slots of the programs that otherwise only read text.
+        #[test]
+        fn a_command_slot_of_a_text_program_asks(
+            command in "[a-z]{1,8}",
+            pattern in "[a-z]{1,8}",
+        ) {
+            for text in [
+                format!("rg --pre {command} {pattern} src"),
+                format!("rg --pre={command} {pattern}"),
+                format!("rg --hostname-bin {command} {pattern}"),
+                format!("ag --pager {command} {pattern}"),
+                format!("ag --pager={command} {pattern}"),
+                format!("man -P {command} {pattern}"),
+                format!("man -P{command} {pattern}"),
+                format!("man -aP {command} {pattern}"),
+                format!("man --pager={command} {pattern}"),
+                format!("man -H{command} {pattern}"),
+                format!("A=1 rg --pre 'git push origin main' {pattern}"),
+            ] {
+                prop_assert_eq!(reasons(&format!("git status; {text}")), vec![RUNS_COMMAND.to_owned()], "{}", text);
+            }
+            for text in [
+                format!("rg -n {pattern} src"),
+                format!("rg -P {pattern}"),
+                format!("rg --pre-glob {pattern} {command}"),
+                format!("ag -i {pattern}"),
+                format!("ag --nopager {pattern}"),
+                format!("man {pattern}"),
+                format!("man -k {pattern}"),
+                format!("grep --pre {command} {pattern}"),
+                format!("echo man -P {command}"),
+            ] {
+                prop_assert_eq!(reasons(&format!("git status; {text}")), Vec::<String>::new(), "{}", text);
+            }
+        }
+        // The goals of the store are the skills' own place; nothing else of .git passes.
+        #[test]
+        fn only_the_goals_folder_of_the_store_may_be_named_under_dot_git(
+            root in "/?[a-z]{1,6}(/[a-z]{1,6}){0,2}",
+            goal in name(),
+            other in name(),
+            file in "[a-z]{1,6}[.]md",
+        ) {
+            let goals = format!("{root}/.git/shipit/goals");
+            for command in [
+                format!("mkdir -p {goals}/{goal} && cp a {goals}/{goal}/roadmap.v1.md"),
+                format!("cat {goals}/{goal}/{file}"),
+                format!("ls {goals}/"),
+                format!("ls -la {goals}/{goal}/slices/{other} | wc -l"),
+                format!("shipit validate build-plan {goals}/{goal}/slices/{other}/build-plan.md"),
+                format!("cp ../{file} {goals}/{goal}/{file}"),
+                format!("cp {goals}/{goal}/{file} {goals}/{other}/{file}"),
+                format!("cp a '{goals}/{goal}/{file}'"),
+            ] {
+                prop_assert_eq!(reasons(&command), Vec::<String>::new(), "{}", command);
+            }
+            for command in [
+                format!("cp x {goals}/../../hooks/{other}"),
+                format!("cp x {goals}/{goal}/../../../hooks/{other}"),
+                format!("cat {goals}/{goal}/.."),
+                format!("cp x {goals}/{goal}/{file} ../{other}"),
+                format!("cp x {root}/.git/shipit/receipts/check/{file}"),
+                format!("cp x {goals}/{goal}/receipts/{file}"),
+                format!("cat {goals}/{goal}/{file} {root}/.git/config"),
+                format!("cat {root}/.git/config {goals}/{goal}/{file}"),
+                format!("cat {goals}x/{file}"),
+                format!("ls {goals}"),
+                format!("cp x {root}/.git/hooks/{other}"),
+                format!("cp x {root}/.g'it'/hooks/{other}"),
+                format!("cp x '{root}/.git'/shipit/goals/../hooks/{other}"),
+                format!("echo x > {root}/.git/shipit/goals/../hooks/{other}"),
+                // `.git` as a path part of its own.
+                format!("cd {root}/.git && cp x hooks/{other}"),
+                "cd .git && ls".to_owned(),
+                format!("git --git-dir={root}/.git status"),
+                format!("cp x {root}/.git"),
+            ] {
+                prop_assert!(reasons(&command).contains(&DOT_GIT.to_owned()), "{}", command);
+            }
+            // A link made in goals/ reaches the hooks, an archive can hold one: only copies and reads run.
+            for command in [
+                format!("ln -s ../../../hooks {goals}/{goal}/h"),
+                format!("ln -s ../../hooks {goals}/{other}"),
+                format!("tar -xf x.tar -C {goals}/{goal}"),
+                format!("rsync -a x {goals}/{goal}/"),
+                format!("mv x {goals}/{goal}/{file}"),
+                format!("install x {goals}/{goal}/{file}"),
+                format!("tee {goals}/{goal}/{file}"),
+                format!("cat x > {goals}/{goal}/{file}"),
+                format!("cat x >> {goals}/{goal}/{file}"),
+                format!("cat x &> {goals}/{goal}/{file}"),
+                format!("cp -rL x {goals}/{goal}/"),
+                format!("cp -r x {goals}/{goal}/"),
+                format!("cp -R x {goals}/{goal}/"),
+                format!("cp -a x {goals}/{goal}/"),
+                format!("cp -s ../../hooks {goals}/{goal}/h"),
+                format!("cp -ls x {goals}/{goal}/h"),
+                format!("cp --dereference x {goals}/{goal}/"),
+                format!("cp --symbolic-link x {goals}/{goal}/"),
+                format!("cp -P x {goals}/{goal}/h"),
+                format!("cp -d x {goals}/{goal}/h"),
+                format!("cp -pP x {goals}/{goal}/h"),
+                format!("cp --preserve=links x {goals}/{goal}/h"),
+                format!("cp --no-dereference x {goals}/{goal}/h"),
+                format!("cp --parents a/b/../../x {goals}/{goal}/"),
+                format!("cp -u x {goals}/{goal}/h"),
+                format!("env cp x {goals}/{goal}/{file}"),
+                format!("git status && cp x {goals}/{goal}/{file}"),
+                format!("cp x {goals}/{goal}/{file} && ln -s a b"),
+            ] {
+                prop_assert!(reasons(&command).contains(&GOALS_ONLY.to_owned()), "{}", command);
+            }
+            for command in [
+                format!("cat {goals}/{goal}/{file} 2>&1"),
+                format!("ls {goals}/ 2>/dev/null"),
+                format!("cp x {goals}/{goal}/{file} && ls -R {goals}/ | head -n 3"),
+                format!("cp -p -t {goals}/{goal}/ x"),
+                format!("cp -pfnivT x {goals}/{goal}/{file}"),
+                format!("cp --target-directory={goals}/{goal}/ x"),
+                format!("cp -- x {goals}/{goal}/{file}"),
+            ] {
+                prop_assert_eq!(reasons(&command), Vec::<String>::new(), "{}", command);
+            }
+            // A name that only holds the letters is no path part, and a message is text.
+            for command in [
+                format!("git add .gitignore .github/{file}"),
+                format!("git fetch https://example.com/{other}.git"),
+                format!("git log -- ..git {other}.gitx"),
+                format!("git commit -m 'the .git folder, and {other}.git'"),
+                format!("ls .git {other}"),
+            ] {
+                prop_assert_eq!(reasons(&command), Vec::<String>::new(), "{}", command);
+            }
+        }
+
+        #[test]
+        fn harmless_git_reads_and_edits_pass_and_the_forms_that_write_ask(
+            reference in "[a-z]{1,6}[0-9]",
+            file in "[a-z]{1,6}[.]patch",
+        ) {
+            for command in [
+                "git reflog".to_owned(),
+                format!("git reflog show {reference}"),
+                format!("git reflog -n 5 {reference}@{{1}}"),
+                "git reflog exists HEAD".to_owned(),
+                format!("git ls-tree -r {reference}"),
+                "git show-ref --heads".to_owned(),
+                format!("git cherry -v {reference}"),
+                format!("git range-diff {reference}...{reference} {reference}"),
+                format!("git check-ignore -v {reference}"),
+                "git symbolic-ref HEAD".to_owned(),
+                "git symbolic-ref --short -q HEAD".to_owned(),
+                "git help log".to_owned(),
+                "git version".to_owned(),
+                "git --version".to_owned(),
+                format!("git apply --check {file}"),
+                format!("git apply --index --check {file}"),
+                format!("git apply --stat --numstat --summary {file}"),
+                format!("git clean -fdn {reference}"),
+                format!("git init -b {reference} d"),
+                // A read of a symbolic ref moves nothing, so a push may follow it.
+                "git symbolic-ref --short HEAD && git push -u origin slice/v1/x".to_owned(),
+                "git branch".to_owned(),
+                format!("git branch -avv --contains {reference}"),
+                "git branch --show-current".to_owned(),
+                format!("git branch {reference} HEAD"),
+                "git fetch".to_owned(),
+                format!("git fetch --prune origin {reference}"),
+                format!("git fetch https://example.com/{reference}.git"),
+            ] {
+                prop_assert_eq!(reasons(&command), Vec::<String>::new(), "{}", command);
+            }
+            for command in [
+                format!("git reflog expire --all {reference}"),
+                format!("git reflog delete {reference}@{{1}}"),
+                format!("git symbolic-ref HEAD refs/heads/{reference}"),
+                "git symbolic-ref -d HEAD".to_owned(),
+                format!("git symbolic-ref -m {reference} HEAD"),
+                "git symbolic-ref --delete HEAD".to_owned(),
+                format!("git apply {file}"),
+                format!("git apply --index {file}"),
+                format!("git apply --stat --apply {file}"),
+                format!("git apply --unsafe-paths --check --apply {file}"),
+                format!("git init --separate-git-dir={reference} d"),
+                format!("git init --separate-git-dir {reference}"),
+                format!("git init --template={reference} d"),
+                // What can empty the rule that a repository is a project.
+                format!("git branch -d {reference}"),
+                format!("git branch -D {reference}"),
+                format!("git branch -rd origin/{reference}"),
+                format!("git branch -m main {reference}"),
+                format!("git branch -M {reference}"),
+                format!("git branch -c main {reference}"),
+                format!("git branch -C main {reference}"),
+                format!("git branch --delete {reference}"),
+                format!("git branch --move main {reference}"),
+                format!("git branch --copy main {reference}"),
+                format!("git branch -f main {reference}"),
+                format!("git fetch . +{reference}:refs/remotes/origin/main"),
+                format!("git fetch origin {reference}:{reference}"),
+                format!("git init --template {reference}"),
+                format!("git symbolic-ref HEAD {reference} && git push -u origin slice/v1/x"),
+            ] {
+                prop_assert!(asks(&command), "{}", command);
+                prop_assert!(denies_in_bypass(&command), "{}", command);
+            }
+        }
+
+        // A `cd` to another folder never takes the working folder out of the judged ones.
+        #[test]
+        fn the_working_folder_and_every_folder_passed_are_judged(
+            a in "[a-z]{1,5}[0-9]",
+            b in "[a-z]{1,5}[0-9]",
+        ) {
+            prop_assume!(a != b);
+            let dirs = |command: String| judged_dirs(&command);
+            for command in [
+                format!("cd /{a} && git push origin x"),
+                format!("cd /{a} && bash -c 'cd /{b} && git push origin main'"),
+                format!("cd /{a} && gh pr merge 1 -R o/r"),
+                format!("cd /{a} && shipit complete d --confirm"),
+                format!("cd /{a} && cp x /{b}/.git/hooks/h"),
+            ] {
+                prop_assert_eq!(dirs(command.clone()), vec![None, Some(format!("/{a}"))], "{}", command);
+            }
+            prop_assert_eq!(dirs(format!("cd ~/{a} && git log")), vec![None, Some(format!("~/{a}"))]);
+            prop_assert_eq!(
+                dirs(format!("git status && cd /{a} && git log && cd {b} && git log")),
+                vec![None, Some(format!("/{a}")), Some(format!("/{a}/{b}"))]
+            );
+            // Unreadable, or no folder passed: the working folder.
+            prop_assert_eq!(dirs(format!("cd /{a} && git push $x")), vec![None]);
+            prop_assert_eq!(dirs(format!("git push origin {a}")), vec![None]);
+        }
+
         #[test]
         fn a_folder_the_command_names_for_git_is_named_with_its_segment_folder(
             dir in "[a-z]{1,6}",
