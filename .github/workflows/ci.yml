@@ -19,3 +19,21 @@ jobs:
       # ShipIt's own gate: the pull request's copy of the action rechecks it, and the check
       # command in .config/shipit.toml is `nix flake check`.
       - uses: ./
+
+  # The same recheck with shipit built from main, so a pull request that changes the checker is
+  # still judged by main's checker; `check` above keeps testing the pull request's own code.
+  # GitHub fetches the action at main, and the action builds in its own folder, never the checkout.
+  # The check commands come from .config/shipit.toml: on a slice/* branch the pull request's own,
+  # which ShipIt refuses if it differs from main's unless the change is setup files only; on
+  # other branches the base's.
+  # A branch, not a SHA: main moves only by the owner's merges, and a SHA would need a setup-only
+  # bump after every merge. Pull requests only: on a push to main the code is main's already.
+  recheck-by-base:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
+      - uses: qhquanghuy/shipit@main
