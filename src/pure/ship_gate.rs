@@ -1490,9 +1490,6 @@ mod tests {
             for command in commands {
                 prop_assert_eq!(reasons(&command), Vec::<String>::new(), "{}", command);
             }
-            for command in ["git log {a,b}", "git log {1..3}", "git add ~/x", "git { ls; }"] {
-                prop_assert_eq!(reasons(command), vec![COMPLEX.to_owned()], "{}", command);
-            }
         }
 
         #[test]
@@ -2234,6 +2231,49 @@ mod tests {
         assert_eq!(reasons("git push origin v1.0"), [TAG]);
         assert_eq!(reasons("git push origin refs/tags/v1.0"), [TAG]);
         assert_eq!(reasons("git push"), [NO_SLICE]);
+    }
+
+    // Each unreadable form is asked about with its own cause; the texts are written out here so a
+    // reworded cause fails.
+    #[test]
+    fn an_unreadable_command_is_asked_about_with_its_cause() {
+        let braces = "a brace expansion (`{a,b}` or `{1..3}`)";
+        let tilde = "a `~` other than in `cd ~/<folder>`";
+        let group = "a subshell, a group or a shell keyword (`(`, `{`, `!`, `if`, `for`, `while`, `case`, `function` and the like)";
+        let expansion = "a `$` or a backquote other than `$?`";
+        let comment = "a comment (a word that starts with `#`)";
+        let backslash = "a backslash outside quotes";
+        let unclosed = "a quote or a heredoc that is not closed";
+        let heredoc = "a heredoc ShipIt does not read (`<<<`, no delimiter, or an unquoted delimiter whose text has `$`, a backquote or a backslash)";
+        let redirect = "a redirect ShipIt does not read (`<(`, `>|`, `<>` or no target)";
+        let folder = "a folder ShipIt does not follow (`cd` alone, with `-`, an option, a glob, `$?` or two folders, a `cd` that may not run, `pushd`, `popd`, or a git `-C`, `--git-dir` or `--work-tree` that holds `$?`)";
+        for (command, cause) in [
+            ("git log {a,b}", braces),
+            ("git log {1..3}", braces),
+            ("git add ~/x", tilde),
+            ("git { ls; }", group),
+            ("git status; (ls)", group),
+            ("git status; if ls; then ls; fi", group),
+            ("git status; echo $(date)", expansion),
+            ("git status; echo `date`", expansion),
+            ("git status # x", comment),
+            ("git status \\x", backslash),
+            ("git log 'x", unclosed),
+            ("git status; cat <<< x", heredoc),
+            ("git status; cat <<EOF\n$x\nEOF\n", heredoc),
+            ("git status; ls >| x", redirect),
+            ("git status; ls <(x)", redirect),
+            ("git status; cd -", folder),
+            ("git status; pushd x", folder),
+        ] {
+            assert_eq!(
+                reasons(command),
+                [format!(
+                    "cannot be read as plain commands by ShipIt: it holds {cause}; it may ship (write plain commands, and name branches in plain text)"
+                )],
+                "{command}"
+            );
+        }
     }
 
     // A write to the config is one reason, whatever the key says.
