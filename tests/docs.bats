@@ -3,8 +3,8 @@
 bats_require_minimum_version 1.5.0
 load helpers
 
-# This test reads README.md and every file in docs/ and checks that what they name exists in the
-# code. A new doc is covered without editing this file.
+# This test reads README.md, every file in docs/ and every skill of skills/ and checks that what they
+# name exists in the code. A new doc or skill is covered without editing this file.
 #
 # Checked, in every one of those files (docs/goal.md included):
 #   - each --flag is in the output of `shipit help`, or is one of the git, nix and cargo flags
@@ -20,12 +20,12 @@ load helpers
 # prefix, receipt fields, store paths and default values.
 
 # Flags of git, nix and cargo that the docs mention; any other flag must be one of shipit's.
-EXTERNAL_FLAGS=(--all-targets --branch --check --command --ignore-submodules --print-build-logs --release --pager --pre --short --template --numstat --separate-git-dir --stat --target-directory)
+EXTERNAL_FLAGS=(--all-targets --branch --check --command --ignore-submodules --print-build-logs --release --pager --pre --short --template --numstat --separate-git-dir --stat --target-directory --body-file --title --git-common-dir --name-status --comments --detach --format)
 
-# files_in <root>: README.md and every file in docs/ under <root>.
+# files_in <root>: README.md, every file in docs/ and every skill under <root>.
 files_in() {
   local file
-  for file in "$1"/README.md "$1"/docs/*.md; do
+  for file in "$1"/README.md "$1"/docs/*.md "$1"/skills/*/SKILL.md; do
     [[ -f $file ]] && printf '%s\n' "$file"
   done
   return 0
@@ -100,11 +100,12 @@ check_docs() {
   return "$bad"
 }
 
-# copy_docs <root>: a copy of README.md and docs/ to break.
+# copy_docs <root>: a copy of README.md, docs/ and skills/ to break.
 copy_docs() {
   mkdir -p "$1/docs"
   cp "$SHIPIT_SRC/README.md" "$1/README.md"
   cp "$SHIPIT_SRC"/docs/*.md "$1/docs/"
+  if [[ -d $SHIPIT_SRC/skills ]]; then cp -r "$SHIPIT_SRC/skills" "$1/skills"; fi
 }
 
 @test "everything the reference docs name exists in the code" {
@@ -192,4 +193,13 @@ copy_docs() {
   [[ $output == *"setup key: gate.max_file"* ]]
   [[ $output == *"flag: --no-such-flag"* ]]
   [[ $output == *"variable: SHIPIT_NOTHING"* ]]
+}
+
+@test "a command that does not exist in a skill is found" {
+  copy_docs "$BATS_TEST_TMPDIR/docs"
+  mkdir -p "$BATS_TEST_TMPDIR/docs/skills/x"
+  printf -- '---\nname: x\n---\nRun `shipit verifyy` now.\n' >"$BATS_TEST_TMPDIR/docs/skills/x/SKILL.md"
+  run check_docs "$BATS_TEST_TMPDIR/docs"
+  [ "$status" -eq 1 ]
+  [[ $output == *"command: shipit verifyy"* ]]
 }

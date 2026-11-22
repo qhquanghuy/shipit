@@ -182,26 +182,36 @@ doc_lines() {
   [[ $stderr == "ShipIt: cannot build the shipit tool."* ]]
 }
 
-@test "the four agents are named by their files, and the two gated ones are in the hook code" {
+@test "the eight agents are named by their files, and the two gated ones are in the hook code" {
   local names
   names=$(cd "$PLUGIN/agents" && printf '%s\n' *.md | sed 's/\.md$//' | sort | tr '\n' ' ')
-  [ "$names" = "plan-reviewer reader tester work-reviewer " ]
+  [ "$names" = "maker model-scout plan-reviewer reader scout slice tester work-reviewer " ]
   grep -q '"shipit:work-reviewer"' "$PLUGIN/src/pure/claude_hook.rs"
   grep -q '"shipit:tester"' "$PLUGIN/src/pure/claude_hook.rs"
-  run ! grep -q 'const .*"shipit:\(plan-reviewer\|reader\)"' "$PLUGIN/src/pure/claude_hook.rs"
+  run ! grep -q 'const .*"shipit:\(plan-reviewer\|reader\|maker\|scout\|model-scout\|slice\)"' "$PLUGIN/src/pure/claude_hook.rs"
 }
 
-@test "an agent file holds a description, no model and no effort" {
-  local file
+@test "an agent file holds a description, no model and no effort, and only the slice agent may start agents" {
+  local file name
   for file in "$PLUGIN"/agents/*.md; do
     [ "$(sed -n 1p "$file")" = "---" ]
     grep -q '^description: .' "$file"
     run ! grep -qE '^(model|effort|name):' "$file"
+    name=$(basename "$file" .md)
+    if [ "$name" = slice ]; then
+      run ! grep -q '^tools:' "$file"
+    else
+      grep -q '^tools: ' "$file"
+      run ! grep -q '^tools:.*Agent' "$file"
+    fi
   done
   grep -q '^tools: Read, Grep, Glob, Bash$' "$PLUGIN/agents/plan-reviewer.md"
   grep -q '^tools: Read, Grep, Glob, Bash$' "$PLUGIN/agents/reader.md"
-  run ! grep -q '^tools:' "$PLUGIN/agents/work-reviewer.md"
-  run ! grep -q '^tools:' "$PLUGIN/agents/tester.md"
+  grep -q '^tools: Read, Grep, Glob, Bash$' "$PLUGIN/agents/scout.md"
+  grep -q '^tools: Read, Grep, Glob, Bash$' "$PLUGIN/agents/work-reviewer.md"
+  grep -q '^tools: Read, Grep, Glob, Bash, WebSearch, WebFetch$' "$PLUGIN/agents/model-scout.md"
+  grep -q '^tools: Read, Grep, Glob, Bash, Write, Edit, Skill$' "$PLUGIN/agents/maker.md"
+  grep -q '^tools: Read, Grep, Glob, Bash, Write, Edit, Skill$' "$PLUGIN/agents/tester.md"
 }
 
 @test "the agent files pass the lint" {
