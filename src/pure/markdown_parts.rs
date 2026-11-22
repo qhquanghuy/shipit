@@ -41,10 +41,11 @@ fn closing_run(text: &str, n: usize) -> Option<usize> {
     None
 }
 
-// A code span becomes one space, so that a name in it is a mention and a word cannot be joined
-// across it. A run of backticks with no closing run is text.
-pub(crate) fn without_code_spans(line: &str) -> String {
+// The line with each code span as one space, so that a name in it is a mention and a word cannot be
+// joined across it, and the text inside each span. A run of backticks with no closing run is text.
+fn spans(line: &str) -> (String, Vec<&str>) {
     let mut kept = String::new();
+    let mut inner = Vec::new();
     let mut rest = line;
     while let Some(open) = rest.find('`') {
         let Some((before, from)) = rest.split_at_checked(open) else {
@@ -53,16 +54,26 @@ pub(crate) fn without_code_spans(line: &str) -> String {
         kept.push_str(before);
         let run = from.chars().take_while(|c| *c == '`').count();
         let inside = from.get(run..).unwrap_or_default();
-        if let Some(tail) = closing_run(inside, run).and_then(|end| inside.get(end..)) {
+        if let Some(end) = closing_run(inside, run) {
             kept.push(' ');
-            rest = tail;
+            inner.extend(inside.get(..end - run));
+            rest = inside.get(end..).unwrap_or_default();
         } else {
             kept.push_str(from.get(..run).unwrap_or_default());
             rest = inside;
         }
     }
     kept.push_str(rest);
-    kept
+    (kept, inner)
+}
+
+pub(crate) fn without_code_spans(line: &str) -> String {
+    spans(line).0
+}
+
+// The text inside each code span of the line.
+pub(crate) fn code_spans(line: &str) -> Vec<&str> {
+    spans(line).1
 }
 
 #[cfg(test)]
@@ -137,6 +148,7 @@ mod tests {
             let fence = "`".repeat(ticks);
             let line = format!("{before}{fence}{inside}{fence}{after}");
             prop_assert_eq!(without_code_spans(&line), format!("{before} {after}"));
+            prop_assert_eq!(code_spans(&line), vec![inside.as_str()]);
         }
 
         #[test]
@@ -157,6 +169,7 @@ mod tests {
         assert_eq!(without_code_spans("a ``b ` c`` d"), "a   d");
         assert_eq!(without_code_spans("`a` and `b`"), "  and  ");
         assert_eq!(without_code_spans("`a``b`"), " ");
+        assert_eq!(code_spans("a ``b ` c`` d `e` `` "), ["b ` c", "e"]);
     }
 
     #[test]

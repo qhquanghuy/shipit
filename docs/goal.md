@@ -1,6 +1,6 @@
 # ShipIt: goal
 
-Status: version 4, approved by the owner on 2026-11-22 (v3 approved 2026-11-22; v2 and v1 approved 2026-11-21). Terms are defined in [vocab.md](vocab.md).
+Status: version 5, approved by the owner on 2026-11-22 (v4 and v3 approved 2026-11-22; v2 and v1 approved 2026-11-21). Terms are defined in [vocab.md](vocab.md).
 
 ## Goal
 
@@ -57,7 +57,7 @@ functional.
 | roadmap | Slices are complete, never broken pieces; each fits the cap and one session. Plan what runs in parallel; parallel slices only add files. Mark which slices need a test drive. |
 | build plan | Say how each part is verified before making. Fix interfaces; leave bodies to the maker. Reviewed by a higher rank first. |
 | make | Cheapest capable model, one task at a time, no review mid-way. Code is written for its reviewer. Use the machine's tools; never install globally. |
-| check | Tools enforce, not prose. Runs once per exact version and leaves a receipt. A slice cannot change its own checks; only a setup-only change (no other files) may. |
+| check | Tools enforce, not prose. Runs once per exact version and leaves a receipt. A slice cannot change its own checks; only a setup-only change may, and it touches only the setup file and the files the setup lists as setup files (the configs its check tools read), nothing else. |
 | review | Informed review and second opinion, ranked above the maker; the teach-back reader is a signal. Findings are fixed or written down as known issues. |
 | test drive | Use it as its audience would, from the goal only, never the code. Checklist first, then exploration. |
 | fix rounds | Limited (2 by default). Past the limit, the lead decides and records it. |
@@ -75,6 +75,17 @@ The human reviewer reads the change, so the code must be simple to read:
 
 A **reader** (a low-rank model) explains the change without seeing the build plan. The informed
 reviewer compares that explanation with the goal, or with what the pull request claims when there is no goal. It is a signal, not a gate.
+
+A review also gives the reader of the change a **reading path**: one flow for each entry point the
+change adds or alters, with the steps in call order, a risk word where care is needed, a link
+to each line, and a Mermaid diagram of the flow; the files on no path, grouped with a risk word; and **look here**, which opens with
+every test the change edited, removed or weakened, and then the spots the reviewer is least sure of.
+
+Every review, and every report an agent gives, ends with three lists: **Verified** (checked by
+running something; each item names the command or test), **Inferred** (reasoned, not run) and
+**Unverifiable** (could not be checked here, and why). A list may be the single item `none`.
+
+A bug fix starts with a test that reproduces the bug, committed failing before the fix.
 
 ## Keep a file only if a tool reads it or a test checks it against the code
 
@@ -189,8 +200,12 @@ one output of a known shape. A template fixes:
 - the **required parts** for each outcome, for example every fact a scout reports has a source;
 - a small machine-readable header that names the outcome and the input it answered.
 
-Templates exist for: a decision point, the roadmap, the build plan, a scout's report, model advice, a review (informed or second
-opinion), a test drive, and a known issue. `shipit validate` checks a filled output against its
+Templates exist for: a decision point, the roadmap, the build plan, a scout's report, model advice, an explanation,
+a review (`review`, the merged review the owner reads; `informed-review` and `second-opinion`, the two
+reviews it is made from), a review of a roadmap or a build plan (`plan-review`), a test drive, and a
+known issue. Every review and every agent report (`review`, `informed-review`, `second-opinion`, `plan-review`,
+`explanation`, `scout-report` and `test-drive`) ends with the
+Verified, Inferred and Unverifiable lists, as its last three parts, for every outcome. `shipit validate` checks a filled output against its
 template and refuses one with an unlisted outcome or a missing part. The lead hands an output to
 the next phase only after it validates.
 
@@ -198,7 +213,7 @@ the next phase only after it validates.
 |---|---|---|
 | scout | report | found, partial, not found |
 | planner | roadmap, build plan | ready for review |
-| reviewer | review | approve, approve after fixes, rework |
+| reviewer | review, or a review of a roadmap or a build plan | approve, approve after fixes, rework |
 | tester | test drive | pass, findings |
 | researcher | model advice | ready for the owner |
 | reader | explanation of the change, written without the build plan | understood, unclear |
