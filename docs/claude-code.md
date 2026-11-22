@@ -54,9 +54,10 @@ plain text. For git it is a list: in a command that names git, only these pass w
   `for-each-ref`, `fetch`, `ls-tree`, `show-ref`, `cherry`, `range-diff`, `check-ignore`, `help`,
   `version`.
 - Subcommands that edit the work and the branches: `add`, `rm`, `mv`, `restore`, `commit`,
-  `switch`, `checkout`, `branch`, `stash`, `reset`, `cherry-pick`, `revert`, `worktree`, `apply`
-  (also with `--index`, as `add` passes; not with `--unsafe-paths`), `clean` (as `reset`
-  passes) and `init` (not with `--template`, which copies hooks); also `rebase` without an option
+  `switch`, `checkout`, `branch`, `stash`, `reset`, `cherry-pick`, `revert`, `worktree`, `clean` (as
+  `reset` passes) and `init` (not with `--template` or `--separate-git-dir`, which copy hooks or
+  move the repository); also `apply` only to check (`--check`, `--stat`, `--numstat`,
+  `--summary`: a patch can add a symbolic link into `.git`); `rebase` without an option
   that runs a program, `merge` while the branch is not a base, `tag` to list, `notes` to read,
   `config` and `remote` to read, `reflog` without `expire` or `delete`, and `symbolic-ref` with
   one name and no `-d` or `-m`.
@@ -73,17 +74,20 @@ git push -u origin slice/v1/demo
 git push origin HEAD:refs/heads/slice/v1/demo
 ```
 
-A command is judged by the folder git or gh runs in. After `cd` to a folder that is no ShipIt
-project (`cd /other/repo && git push origin main`), and when no other folder of the command is
-one, there is no decision. `cd ~/dir` is read, with `~` as `$HOME`; any other tilde asks. The
-reads and edits that pass without a question:
+A command is judged in the working folder and in every folder it changes to with `cd`, so a
+ship command cannot hide behind a `cd` to a folder that is no project. `cd ~/dir` is read, with
+`~` as `$HOME`; any other tilde asks. A folder is in a ShipIt project when the repository is: the
+setup file is in the working tree, at `HEAD`, at the tip of the default branch (origin's `HEAD`,
+else `main` or `master`), or the store folder of the repository exists. So a worktree or a
+checkout of a commit from before the setup file is judged too; a repository whose only setup file
+is on another branch is no project. The reads and edits that pass without a question:
 
 ```sh silent
-cd ~/work/app && git push -u origin slice/v1/demo
+cd ~/work/app && git status
 git reflog -n 5
 git ls-tree -r HEAD && git show-ref && git cherry -v main
 git symbolic-ref --short HEAD && git push -u origin slice/v1/demo
-git apply fix.patch && git clean -n
+git apply --check fix.patch && git clean -n
 git help log && git version
 git status; rg -n pattern src
 ```
@@ -103,7 +107,11 @@ gh release create v1.0.0
 The goals of the store, `<git common dir>/shipit/goals/`, are the one place under `.git` that
 passes: the skills write them. Every `.git` in the command must be followed at once by
 `/shipit/goals/`, with no `..` part after it and no `receipts/` anywhere. Anything else naming
-`.git` asks, and so does `.git` as a path part of its own.
+`.git` asks, and so does `.git` as a path part of its own. A link made there reaches the hooks and
+the receipts, and an archive can hold one, so in a text that names the goals only `mkdir`, `cp`
+(without `-r`, `-R`, `-a`, `-L`, `-s`, `-l`, `-H` or a long form of them), `cat`, `ls`, `head`,
+`tail`, `wc` and `shipit` may run, and nothing may be redirected into a file (`2>&1` and
+`/dev/null` are fine).
 
 ```sh silent
 mkdir -p .git/shipit/goals/v1 && cp a.md .git/shipit/goals/v1/roadmap.v1.md
@@ -114,6 +122,13 @@ shipit validate build-plan .git/shipit/goals/v1/slices/x/build-plan.md
 
 ```sh asks
 cp a.md .git/shipit/goals/../../hooks/pre-push
+ln -s ../../../hooks .git/shipit/goals/v1/h
+cp -rL a .git/shipit/goals/v1/
+cat a.md > .git/shipit/goals/v1/b.md
+git apply fix.patch
+git init --separate-git-dir ../elsewhere
+BASH_ENV=x.sh git status
+cd /other/repo && git push origin main
 cp a.md .git/shipit/receipts/check/x.json
 cat .git/shipit/goals/v1/a.md .git/config
 ls .git/shipit/goalsx/
@@ -150,15 +165,21 @@ Known, and not caught:
 
 - git aliases, `gh alias`, git's own helpers by path, scripts and task runners, `curl` to the API,
   `gh workflow run`;
-- a symbolic link inside `.git/shipit/goals/` that points elsewhere: a text gate cannot see it, and
-  only ShipIt and the skills write there;
+- a symbolic link inside `.git/shipit/goals/` placed by other means (a file tool, a patch applied
+  earlier, an archive): a text gate cannot see it, and only ShipIt and the skills write there;
+- a write to `.git/hooks` with a file tool (no Bash call), and a path under `.git` named from a
+  folder outside every project;
+- a push from another repository whose remote is the project's own remote: that repository is
+  judged by its own setup, not the project's;
 - a program name built by a glob or a variable with no `git` or `gh` word in the text (`gi[t] push`,
   `$x push`), and any encoded script: a text gate cannot read what it does not spell out;
 - an MCP write that names its branch in a field other than `branch`;
 - false asks, on purpose: a word `eval`, `xargs`, `exec`, `su`, `ssh` or `watch` in a command that
   names git or gh, `ls ~/.config/gh`, a `for` loop over `git add`, a command substitution in such a
   command, `git clone`, `git pull`, `git submodule` and `git tag v1`, a `python` or `perl` run,
-  a text that names `.git/`, `.git/shipit/goals` without its closing slash, `bash script.sh`
+  `cd /other/repo && git push origin main` from inside a project (the working folder is always
+  judged), a text that names `.git/`, `.git/shipit/goals` without its closing slash, `git apply`
+  to apply a patch, `tar` or `mv` into the goals, `bash script.sh`
   and `bash -o x`, `git reflog expire`, `git init --template`, `nix develop -c git commit -m …`
   that holds `git push` in the message, and `git config` with a key and no flag that reads;
 - agents started outside the `Agent` tool, and a reviewer continued after the work changed;
