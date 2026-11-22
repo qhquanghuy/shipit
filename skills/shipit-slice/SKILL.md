@@ -14,6 +14,7 @@ Takes one slice from its build plan to a pull request that is ready to ship. The
 The pull request body, which has no form: `shipit status --summary <slice>`, then the merged review's Reading path with its diagrams, Other files and Look here, then the slice's Verified, Inferred and Unverifiable lists.
 ## Effects
 Writes the build plan into the store with `mkdir -p` and `cp`, drafting in a temporary folder that it makes itself with `mktemp -d`; runs `shipit validate`, `shipit receipt`, `shipit start`, `shipit check`, `shipit log` and `shipit doctor`; starts `shipit:scout`, `shipit:plan-reviewer`, `shipit:maker` and `shipit:tester`, and the reviewers through `shipit-review`; works in a worktree (`git worktree add`) and commits on the slice branch (`git add`, `git commit`); pushes the slice branch (`git push -u origin slice/<goal>/<slice>`); opens the pull request (`gh pr create`); sends one message to the lead.
+Questions to the owner use the words of the [guide](../../docs/guide.md) and its glossary, and ask only what changes what is built.
 Never: merge, tag, push another branch, change the setup, or review its own work as the lead. As a slice agent: ask the owner directly.
 ## Outcomes
 - **ready to ship**: `shipit status` says so, the branch is pushed and the pull request is open. Next: one message to the lead (as a slice agent, its final message); the owner reads the pull request and ships; after the merge the lead runs `shipit log <slice> shipped --merge <commit>`.

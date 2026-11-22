@@ -15,6 +15,7 @@ Reviews one change in full and merges the result into one `review`. The owner, t
 One merged `review`: `shipit template review`, checked with `shipit validate review <file>`. Its agents fill `explanation`, `informed-review` and `second-opinion`.
 ## Effects
 Reads git and gh: `git diff`, `git log`, `git fetch`, `gh pr view`, `gh pr diff`, `grep` and `sha256sum`. Starts `shipit:reader`, then two reviewers at once. Writes every output in a temporary folder that it makes itself with `mktemp -d` (it never asks the owner for one); in a slice only, copies them into the store and records the receipts. In v1 every review is full.
+Questions to the owner use the words of the [guide](../../docs/guide.md) and its glossary, and ask only what changes what is built.
 Never: edit code, push, merge, or review the work itself as the lead. Post to the pull request only when the owner says yes: no gate stops a gh write, so this is a rule of prose.
 ## Outcomes
 - **approve**: both reviews approve (the worse of the two decides the outcome; from worst to best: rework, approve-after-fixes, approve). Next: the owner decides whether to ship; in a slice `shipit-slice` goes on to the test drive if the roadmap marks one, then the pull request.

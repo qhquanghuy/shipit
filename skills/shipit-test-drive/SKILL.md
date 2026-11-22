@@ -7,6 +7,7 @@ Does the test drive of one slice. The tester (`shipit:tester`) runs it, started 
 ## Inputs
 - The goal and its done-when: in the prompt, from the lead.
 - A folder with only the built result, its docs and sample data: the lead prepares it as the domain pack says.
+- The path of the slice's worktree, from the lead: step 6 runs `shipit validate` from there.
 - The machine facts and notes: `shipit doctor`.
 ## Output
 One `test-drive`: `shipit template test-drive`, checked with `shipit validate test-drive <file>`.
