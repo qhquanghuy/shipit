@@ -23,7 +23,7 @@ sh_start() {
   plan_ready alpha
   sh_start alpha
   [ "$status" -eq 0 ]
-  [ "$output" = "started alpha on slice/demo/alpha; make it in its own working copy: git worktree add ../wt/alpha slice/demo/alpha" ]
+  [ "$output" = "started alpha on slice/demo/alpha; make it in its own working copy: git worktree add .shipit/wt/alpha slice/demo/alpha" ]
   [ "$(git rev-parse slice/demo/alpha)" = "$(git rev-parse main)" ]
   [ -z "$(git config --get branch.slice/demo/alpha.remote || true)" ]
   [ "$(jq -r 'select(.event == "started") | [.slice, .branch] | join(" ")' "$(store)/goals/demo/logbook.jsonl")" = "alpha slice/demo/alpha" ]
@@ -143,4 +143,24 @@ sh_start() {
   git fetch -q origin
   sh_start gamma
   [ "$status" -eq 0 ]
+}
+
+@test "start: keeps the worktree folder out of git once, in the common dir, and never the coverage maps" {
+  make_slice_repo
+  an_open_gamma
+  plan_ready alpha
+  plan_ready gamma
+  sh_start alpha
+  [ "$status" -eq 0 ]
+  common=$(git rev-parse --path-format=absolute --git-common-dir)
+  [ "$(grep -cxF '/.shipit/wt/' "$common/info/exclude")" -eq 1 ]
+  git worktree add -q .shipit/wt/alpha slice/demo/alpha
+  [ -z "$(git status --porcelain --ignore-submodules=none)" ]
+  run bash -c 'cd .shipit/wt/alpha && "$SHIPIT_BIN" start gamma'
+  [ "$status" -eq 0 ]
+  [ "$(grep -cxF '/.shipit/wt/' "$common/info/exclude")" -eq 1 ]
+  mkdir -p .shipit/coverage/demo
+  touch .shipit/coverage/demo/alpha.toml
+  run git check-ignore -q .shipit/coverage/demo/alpha.toml
+  [ "$status" -eq 1 ]
 }
