@@ -19,9 +19,10 @@ claude plugin install shipit@shipit
 A local folder is loaded with Claude Code's plugin folder option. The plugin needs Nix: at the start
 of a session it builds ShipIt into its own folder (`target/plugin/shipit`). This breaks the advice
 not to write state in a plugin folder on purpose: the tool must match the plugin's version, and an
-update brings a new folder. The first session waits for the build. Until a build exists, Bash in a
-ShipIt project is blocked with the command to run, and the review gate and the agent cap are off;
-other projects are untouched. The tool is on the agents' `PATH` as `shipit`. claude.ai and Cowork do not install a plugin that has a `bin/` folder.
+update brings a new folder. The first session waits for the build. Until a build exists, Bash,
+Monitor and MCP calls in a ShipIt project are blocked with the command to run, and the review
+gate and the agent cap are off; other projects are untouched. The tool is on the agents' `PATH`
+as `shipit`. claude.ai and Cowork do not install a plugin that has a `bin/` folder.
 
 ## The gates
 
@@ -44,9 +45,24 @@ other projects are untouched. The tool is on the agents' `PATH` as `shipit`. cla
 
 The gate judges the commands of Bash and Monitor, and the tools of MCP servers. It reads a command
 as plain shell and asks for anything it cannot read, so write plain commands and name branches in
-plain text. The only silent push is an explicit push of a slice branch, in a command that does not
-also switch, merge, rebase, reset, pull, configure or change folder, in a repository whose config
-does not send a push elsewhere:
+plain text. For git it is a list: in a command that names git, only these pass without a question.
+
+- Global options: only `-C <dir>` and `no-pager`. Any other, such as `-c`, runs a program or
+  changes the config.
+- Subcommands that read: `status`, `log`, `diff`, `show`, `rev-parse`, `rev-list`, `ls-files`,
+  `ls-remote`, `blame`, `grep`, `describe`, `shortlog`, `cat-file`, `merge-base`, `name-rev`,
+  `for-each-ref`, `fetch`.
+- Subcommands that edit the work and the branches: `add`, `rm`, `mv`, `restore`, `commit`,
+  `switch`, `checkout`, `branch`, `stash`, `reset`, `cherry-pick`, `revert`, `worktree`; also
+  `rebase` without an option that runs a program, `merge` while the branch is not a base, `tag` to
+  list, `notes` to read, `config` and `remote` to read.
+- Everything else asks, such as `submodule`, `bisect`, `filter-branch`, `send-pack`, an alias or
+  a typo, and an option that hands git a program to run.
+
+The only silent push is an explicit push of a slice branch, in a command that does not also
+switch, merge, rebase, reset, configure or change folder, in a repository whose config does not
+send a push elsewhere (a remote's push or mirror setting, `push.default` other than `simple` or
+`current`, `help.autocorrect`):
 
 ```sh silent
 git push -u origin slice/v1/demo
@@ -65,10 +81,11 @@ gh pr merge 1
 gh release create v1.0.0
 ```
 
-A heredoc commit message and read-only commands such as `git log @{u}..` pass. A message is text
-only when the command starts with `git` or `gh`. Also asking: any `GIT_` or `GH_` variable, a
-change of the git config or remotes, `send-pack`, a shell or interpreter given a string to run, a
-comment, and an MCP tool that writes to a branch that is not a slice branch.
+A heredoc commit message and commands such as `git add -A`, `git log @{u}..` and `git fetch` pass.
+A message is text only when the command starts with `git` or `gh`, and the words of `echo`,
+`grep`, `ls`, `cat` and a few like them are text. Also asking: any `GIT_` or `GH_` variable, a
+path under `.git/`, a shell given a string to run, any run of `python`, `perl`, `ruby`, `node` or
+`script`, a comment, and an MCP tool that writes to a branch that is not a slice branch.
 
 ## Sessions
 
@@ -85,11 +102,13 @@ Known, and not caught:
 
 - git aliases, `gh alias`, git's own helpers by path, scripts and task runners, `curl` to the API,
   `gh workflow run`;
-- a program name built by a glob or a variable (`gi[t] push`, `$x push`), and any encoded script:
-  a text gate cannot read what it does not spell out;
+- a program name built by a glob or a variable with no `git` or `gh` word in the text (`gi[t] push`,
+  `$x push`), and any encoded script: a text gate cannot read what it does not spell out;
+- an MCP write that names its branch in a field other than `branch`;
 - false asks, on purpose: a word `eval`, `xargs`, `exec`, `su`, `ssh` or `watch` in a command that
-  names git or gh, `echo git push`, `ls ~/.config/gh`, a `for` loop over `git add`, a command
-  substitution in such a command, `nix develop -c git commit -m …` that holds `git push` in the
+  names git or gh, `ls ~/.config/gh`, a `for` loop over `git add`, a command substitution in such a
+  command, `git clone`, `git pull`, `git submodule` and `git tag v1`, a `python` or `perl` run,
+  a text that names `.git/`, `nix develop -c git commit -m …` that holds `git push` in the
   message, and `git config` with a key and no flag that reads;
 - agents started outside the `Agent` tool, and a reviewer continued after the work changed;
 - resumed agents and teammate messages count towards the cap but are never refused, and Claude
