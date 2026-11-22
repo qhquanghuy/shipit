@@ -7,9 +7,9 @@ use serde_json::Value;
 use crate::commands::check::settle_base;
 use crate::commands::setup::load_setup_table;
 use crate::edge::git::Git;
-use crate::edge::hook_process::{exists, home_dir, make_folder, project_dir, read_hook_input};
+use crate::edge::hook_process::{exists, home_dir, make_folder, project_dir, run_gate};
 use crate::edge::records::store_dir;
-use crate::pure::claude_hook::{HookInput, answer_json, mcp_ship, parse_input, resolve};
+use crate::pure::claude_hook::{HookInput, mcp_ship, resolve};
 use crate::pure::failure::Failure;
 use crate::pure::setup::{HEAD, SETUP_PATH};
 use crate::pure::ship_gate::{
@@ -26,9 +26,6 @@ pub(crate) const EXITS: [&str; 4] = [
     "internal failure: the hook blocks",
     "",
 ];
-
-// Larger than any command a person types, and as much as the hook is asked to hold.
-const INPUT_LIMIT: usize = 8 * 1024 * 1024;
 
 // The tip of the default branch: what origin says its HEAD is, else origin's or a local main or
 // master. A folder checked out at a commit from before the setup file is still in the same repository.
@@ -263,12 +260,5 @@ pub(crate) fn run(
     out: &mut dyn Write,
     _err: &mut dyn Write,
 ) -> Result<(), Failure> {
-    if !args.is_empty() {
-        return Err(Failure::usage(USAGE));
-    }
-    let input = read_hook_input(INPUT_LIMIT).and_then(|bytes| parse_input(&bytes));
-    if let Some(json) = answer_json(&decide(&input)) {
-        writeln!(out, "{json}").ok();
-    }
-    Ok(())
+    run_gate(args, out, USAGE, decide)
 }

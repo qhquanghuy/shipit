@@ -5,8 +5,8 @@ use serde_json::Value;
 
 use crate::commands::claude_ship_gate::{gate_folder, input_folder};
 use crate::edge::home::machine_notes;
-use crate::edge::hook_process::read_hook_input;
-use crate::pure::claude_hook::{HookInput, answer_json, parse_input};
+use crate::edge::hook_process::run_gate;
+use crate::pure::claude_hook::HookInput;
 use crate::pure::failure::Failure;
 use crate::pure::install_gate::install_refusal;
 use crate::pure::machine_notes::parse_notes;
@@ -23,8 +23,6 @@ pub(crate) const EXITS: [&str; 4] = [
     "internal failure: the hook blocks",
     "",
 ];
-
-const INPUT_LIMIT: usize = 8 * 1024 * 1024;
 
 fn unreadable(why: &str) -> Answer {
     Answer::Deny(format!("ShipIt cannot read the hook input ({why})."))
@@ -65,12 +63,5 @@ pub(crate) fn run(
     out: &mut dyn Write,
     _err: &mut dyn Write,
 ) -> Result<(), Failure> {
-    if !args.is_empty() {
-        return Err(Failure::usage(USAGE));
-    }
-    let input = read_hook_input(INPUT_LIMIT).and_then(|bytes| parse_input(&bytes));
-    if let Some(json) = answer_json(&decide(&input)) {
-        writeln!(out, "{json}").ok();
-    }
-    Ok(())
+    run_gate(args, out, USAGE, decide)
 }
