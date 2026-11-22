@@ -18,7 +18,15 @@ The check is the list `gate.check` of the setup, run by `shipit check`. For code
 - the linter, with every warning an error;
 - the tests, wrapped as `shipit coverage -- <command>` so that the tests the build plan names are known to have run.
 
-The measures and scans that belong to this pack (clones, complexity, dependency advisories, secrets) are added to the list by the slice that builds them.
+The measures and scans of this pack are these check commands, added after the tests:
+
+- `shipit measure clones`, which fails when a clone touches the slice;
+- `shipit metric clone-ratio "$(shipit measure clone-ratio)"`, which records the share of the changed lines that are cloned;
+- `shipit metric cognitive-complexity "$(shipit measure cognitive-complexity)"`, which records the highest cognitive complexity of a function in the changed files, and never fails on it;
+- `cargo deny check`, for a Rust project: advisories, licences, bans and sources of the dependencies, per `deny.toml`; the advisories need the network, so this command runs outside the Nix build;
+- `gitleaks git --redact --no-banner --log-opts="$(shipit measure merge-base)..HEAD" .`, which scans the commits of the slice for secrets and prints no secret.
+
+The limits of the clone and complexity measures are in `shipit help measure`.
 
 ## Recheck
 
