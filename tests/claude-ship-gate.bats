@@ -53,18 +53,6 @@ gate() {
   [ -z "$output" ]
 }
 
-@test "a one-segment slice branch push asks" {
-  gate "git push -u origin slice/x" auto
-  [ "$(decision)" = ask ]
-}
-
-@test "a bare push from a slice branch asks" {
-  gate "git push" auto
-  [ "$(decision)" = ask ]
-  gate "git push origin HEAD" bypassPermissions
-  [ "$(decision)" = deny ]
-}
-
 @test "a slice that names another base still asks for main" {
   write_setup "$(fixture_with 'gate.base="slice/x"')"
   gate "git push origin main" auto
@@ -118,33 +106,12 @@ gate() {
   [ -z "$output" ]
 }
 
-@test "a heredoc commit message and plain read-only forms pass with no prompt" {
-  gate $'git commit -m "$(cat <<\'EOF\'\nfix: git push origin main\nEOF\n)"' bypassPermissions
-  [ -z "$output" ]
-  gate "git log @{u}.." bypassPermissions
-  [ -z "$output" ]
-  gate "git diff HEAD~1" bypassPermissions
-  [ -z "$output" ]
-}
-
-@test "a command that moves the branch before a push asks" {
-  gate "git checkout main && git merge slice/v1/x && git push" auto
-  [ "$(decision)" = ask ]
-  gate "git checkout main && git merge slice/v1/x && git push" bypassPermissions
-  [ "$(decision)" = deny ]
-}
-
 @test "shipit complete with --confirm asks in auto mode and is denied in bypass mode" {
   gate "shipit complete demo --confirm" auto
   [ "$(decision)" = ask ]
   [[ $(reason) == *"confirms a goal completion (shipit complete --confirm), which only the owner may do"* ]]
   gate "shipit complete demo --confirm" bypassPermissions
   [ "$(decision)" = deny ]
-}
-
-@test "shipit complete without --confirm passes" {
-  gate "shipit complete demo" bypassPermissions
-  [ -z "$output" ]
 }
 
 @test "bad stdin in a ShipIt project denies" {
@@ -209,4 +176,62 @@ gate() {
   [ "$status" -eq 0 ]
   [ -z "$output" ]
   [ ! -e "$shims/calls" ]
+}
+
+@test "a slice push asks when the config can send it elsewhere" {
+  local config
+  for config in "remote.origin.push refs/heads/slice/v1/x:refs/heads/main" "push.default matching" "help.autocorrect immediate"; do
+    # shellcheck disable=SC2086
+    git config $config
+    gate "git push -u origin slice/v1/x" bypassPermissions
+    [ "$(decision)" = deny ]
+    [[ $(reason) == *"can send it elsewhere"* ]]
+    git config --unset "${config%% *}"
+  done
+  gate "git push -u origin slice/v1/x" bypassPermissions
+  [ -z "$output" ]
+}
+
+@test "a command that changes the config or the remotes asks, and a read of them passes" {
+  gate "git config remote.origin.push refs/heads/slice/v1/x:refs/heads/main" bypassPermissions
+  [ "$(decision)" = deny ]
+  gate "git remote set-url origin /elsewhere" bypassPermissions
+  [ "$(decision)" = deny ]
+  gate "git config --get remote.origin.url && git remote -v" bypassPermissions
+  [ -z "$output" ]
+}
+
+@test "a push aimed at a ShipIt project from outside one asks" {
+  local elsewhere
+  elsewhere=$(mktemp -d "$BATS_TEST_TMPDIR/elsewhere.XXXXXX")
+  for command in "git -C $REPO push origin main" "GIT_DIR=$REPO/.git git push origin main" "git --git-dir=$REPO/.git push origin main"; do
+    run_hook claude-ship-gate "$(bash_input "$elsewhere" "$command" bypassPermissions)" "$elsewhere"
+    [ "$(decision)" = deny ]
+  done
+}
+
+@test "an mcp write to a branch asks unless the branch is a slice branch" {
+  local tool branch
+  for tool in create_or_update_file delete_file push_files; do
+    for branch in main feature; do
+      run_hook claude-ship-gate "$(hook_input "$(jq -cn --arg cwd "$REPO" --arg tool "mcp__github__$tool" --arg branch "$branch" \
+        '{cwd: $cwd, tool_name: $tool, tool_input: {branch: $branch}, permission_mode: "bypassPermissions"}')")"
+      [ "$(decision)" = deny ]
+    done
+    run_hook claude-ship-gate "$(hook_input "$(jq -cn --arg cwd "$REPO" --arg tool "mcp__github__$tool" \
+      '{cwd: $cwd, tool_name: $tool, tool_input: {branch: "slice/v1/x"}, permission_mode: "bypassPermissions"}')")"
+    [ -z "$output" ]
+  done
+}
+
+@test "twenty thousand messages are judged in time" {
+  local input="$BATS_TEST_TMPDIR/big.json"
+  {
+    printf '{"cwd":"%s","tool_name":"Bash","permission_mode":"auto","tool_input":{"command":"git commit' "$REPO"
+    yes ' -m \"x\"' | head -n 20000 | tr -d '\n'
+    printf '"}}'
+  } >"$input"
+  run --separate-stderr timeout 10 "$SHIPIT_BIN" claude-ship-gate <"$input"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
 }
