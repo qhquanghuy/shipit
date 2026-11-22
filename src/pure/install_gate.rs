@@ -3,7 +3,7 @@
 
 use crate::pure::machine_notes::Notes;
 use crate::pure::shell_words::{Parse, parse, program, raw_words_unquoted};
-use crate::pure::ship_gate::INTERPRETERS;
+use crate::pure::ship_gate::{INTERPRETERS, runs_as};
 
 // `-S` is also in `-Syu`, but never in `--S…`.
 fn matches_word(pattern: &str, word: &str) -> bool {
@@ -66,7 +66,7 @@ fn matched<'a>(command: &str, notes: &'a Notes) -> Option<&'a Vec<String>> {
                 segment
                     .words
                     .iter()
-                    .any(|word| INTERPRETERS.contains(&program(word)))
+                    .any(|word| runs_as(word, &INTERPRETERS))
             });
             direct.or_else(|| {
                 if read_as_commands {
@@ -102,14 +102,9 @@ mod tests {
         }
     }
 
+    // The `x` keeps a generated name from being a keyword, `cd` or a wrapper.
     fn name() -> impl Strategy<Value = String> {
-        "[a-z]{2,6}".prop_filter("not a shell keyword or folder command", |word| {
-            ![
-                "if", "then", "elif", "else", "fi", "for", "while", "until", "do", "done", "case",
-                "esac", "cd", "pushd", "popd", "function",
-            ]
-            .contains(&word.as_str())
-        })
+        "x[a-z]{1,5}"
     }
 
     fn pattern() -> impl Strategy<Value = Vec<String>> {
@@ -155,7 +150,6 @@ mod tests {
             let command = format!("echo {mark} && {spread}");
             prop_assert!(install_refusal(&command, &notes).is_some());
             let reversed: Vec<String> = pattern.iter().rev().cloned().collect();
-            prop_assume!(reversed != pattern);
             let backwards = format!("echo {mark} && {}", reversed.join(" "));
             let wanted = in_raw_words(&pattern, &raw_words_unquoted(&backwards));
             prop_assert_eq!(install_refusal(&backwards, &notes).is_some(), wanted);

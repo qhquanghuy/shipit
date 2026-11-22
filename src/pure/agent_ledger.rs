@@ -184,6 +184,17 @@ mod tests {
         ]
     }
 
+    // A ledger holds one entry per file name.
+    fn unique(entries: Vec<Entry>) -> Vec<Entry> {
+        let mut kept: Vec<Entry> = Vec::new();
+        for entry in entries {
+            if kept.iter().all(|have| file_name(have) != file_name(&entry)) {
+                kept.push(entry);
+            }
+        }
+        kept
+    }
+
     fn applied(mut entries: Vec<Entry>, changes: &[Change]) -> Vec<Entry> {
         for change in changes {
             match change {
@@ -240,7 +251,7 @@ mod tests {
 
         #[test]
         fn a_started_agent_is_counted_once(
-            entries in proptest::collection::vec(entry(), 0..6),
+            entries in proptest::collection::vec(entry(), 0..6).prop_map(unique),
             agent in id(),
             now in 0_i64..1000,
         ) {
@@ -258,7 +269,7 @@ mod tests {
 
         #[test]
         fn a_failed_call_frees_its_reservation(
-            entries in proptest::collection::vec(entry(), 0..6),
+            entries in proptest::collection::vec(entry(), 0..6).prop_map(unique),
             tool_use_id in id(),
             now in 0_i64..1000,
         ) {
@@ -271,7 +282,7 @@ mod tests {
 
         #[test]
         fn stop_reconciles_down(
-            entries in proptest::collection::vec(entry(), 0..8),
+            entries in proptest::collection::vec(entry(), 0..8).prop_map(unique),
             background in 0_usize..8,
             now in 0_i64..1200,
         ) {

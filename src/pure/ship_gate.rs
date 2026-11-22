@@ -359,6 +359,16 @@ fn gh_word(rest: &[String], reasons: &mut Vec<String>) {
     }
 }
 
+// A word runs a program by its name or by a path to it; a branch such as `slice/v1/watch` is neither.
+pub(crate) fn runs_as(word: &str, names: &[&str]) -> bool {
+    let base = if word.starts_with('/') || word.starts_with("./") || word.starts_with("../") {
+        program(word)
+    } else {
+        word
+    };
+    names.contains(&base)
+}
+
 fn hides_a_command(word: &str) -> bool {
     let words = raw_words(word);
     let has = |name: &str| words.contains(&name);
@@ -382,7 +392,7 @@ fn plain_reasons(
             if data.get(at) == Some(&true) {
                 continue;
             }
-            if hides_a_command(word) || WRAPPERS.contains(&program(word)) {
+            if hides_a_command(word) || runs_as(word, &WRAPPERS) {
                 add(reasons, HIDES);
             }
             match program(word) {
@@ -397,7 +407,7 @@ fn plain_reasons(
             && segment
                 .words
                 .iter()
-                .any(|word| INTERPRETERS.contains(&program(word)))
+                .any(|word| runs_as(word, &INTERPRETERS))
     });
     if !heredocs.is_empty() || piped_into_interpreter {
         add(reasons, FEEDS);
@@ -739,11 +749,14 @@ mod tests {
             let branch = format!("slice/{goal}/{slice}");
             let mut known = facts();
             known.heads.push(branch.clone());
+            let named_like_a_program = format!("slice/{goal}/watch");
+            known.heads.push(named_like_a_program.clone());
             let judged = |command: &str| ship_reasons(command, &|_dir| known.clone());
             for command in [
                 format!("git push {up}origin {branch}"),
                 format!("git push {up}origin HEAD:refs/heads/{branch}"),
                 format!("git push {up}origin some-ref:refs/heads/{branch}"),
+                format!("git push {up}origin {named_like_a_program}"),
             ] {
                 prop_assert_eq!(judged(&command), Vec::<String>::new(), "{}", command);
             }
