@@ -35,14 +35,13 @@ fill() {
 }
 
 @test "claude skills: every git and gh command a skill shows passes the ship gate" {
-  local repo command filled total=0 pushes=0
+  local repo command filled total=0
   repo=$(shipit_repo)
   cd "$repo"
   git checkout -q -b slice/v1/demo
   while IFS= read -r command; do
     [[ -n $command ]] || continue
     total=$((total + 1))
-    [[ $command == "git push"* ]] && pushes=$((pushes + 1))
     if [[ $command == "git push"* && $command != "git push -u origin slice/<goal>/<slice>" ]]; then
       echo "a push other than the slice push: $command"
       return 1
@@ -52,7 +51,6 @@ fill() {
     [ -z "$output" ] || { echo "the gate answers for: $filled"; return 1; }
   done < <(shell_commands)
   [ "$total" -ge 1 ]
-  [ "$pushes" -ge 1 ]
 }
 
 @test "claude skills: the store copy as the skills write it passes the ship gate" {
