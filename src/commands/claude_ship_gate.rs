@@ -8,8 +8,7 @@ use serde_json::Value;
 use crate::commands::check::settle_base;
 use crate::commands::setup::load_setup_table;
 use crate::edge::git::Git;
-use crate::edge::hook_process::{exists, project_dir};
-use crate::edge::input::read_stdin;
+use crate::edge::hook_process::{exists, project_dir, read_hook_input};
 use crate::pure::claude_hook::{HookInput, answer_json, mcp_ship, parse_input, resolve};
 use crate::pure::failure::Failure;
 use crate::pure::setup::{HEAD, SETUP_PATH};
@@ -193,7 +192,7 @@ pub(crate) fn run(
     if !args.is_empty() {
         return Err(Failure::usage(USAGE));
     }
-    let input = read_stdin(INPUT_LIMIT).and_then(|bytes| parse_input(&bytes));
+    let input = read_hook_input(INPUT_LIMIT).and_then(|bytes| parse_input(&bytes));
     if let Some(json) = answer_json(&decide(&input)) {
         writeln!(out, "{json}").ok();
     }

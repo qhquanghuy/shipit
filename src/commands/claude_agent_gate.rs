@@ -2,12 +2,20 @@ use std::ffi::{OsStr, OsString};
 use std::io::Write;
 
 use crate::commands::claude_ship_gate::{base_names, gate_folder};
+use crate::commands::setup::load_setup_table;
 use crate::commands::verify::verify_at;
+use crate::edge::agent_store::Ledger;
+use crate::edge::clock::now_utc;
 use crate::edge::git::Git;
-use crate::edge::input::read_stdin;
+use crate::edge::hook_process::read_hook_input;
+use crate::edge::slice_git::load_policy;
+use crate::pure::agent_ledger::{Change, Entry, admit, seconds};
 use crate::pure::base::BranchName;
-use crate::pure::claude_hook::{HookInput, Target, answer_json, parse_input, review_target};
+use crate::pure::claude_hook::{
+    HookInput, Target, agent_call, answer_json, parse_input, review_target, safe_field,
+};
 use crate::pure::failure::{Exit, Failure};
+use crate::pure::setup::HEAD;
 use crate::pure::ship_gate::Answer;
 
 pub(crate) const HIDDEN: bool = true;
@@ -61,7 +69,7 @@ fn review_gate(git: &Git, input: &HookInput) -> Option<Answer> {
     let (role, branch) = match review_target(input) {
         Target::NotGated => return None,
         Target::Bad(why) => {
-            return Some(deny(format!("ShipIt: the agent cannot start: {why}.")));
+            return Some(deny(cannot_start(why)));
         }
         Target::Gated { role, branch } => (role, branch),
     };
@@ -87,13 +95,53 @@ fn review_gate(git: &Git, input: &HookInput) -> Option<Answer> {
     }
 }
 
+// The cap is the base branch's word, as every other limit is: a slice cannot raise its own.
+fn agent_cap(git: &Git) -> Result<u64, Failure> {
+    let (head, _table) = load_setup_table(git, OsStr::new(HEAD))?;
+    let mut ignored = Vec::new();
+    let (policy, _base) = load_policy(git, head, &mut ignored)?;
+    Ok(u64::from(&policy.agents.parallel.agents))
+}
+
+fn cannot_start(why: impl std::fmt::Display) -> String {
+    format!("ShipIt: the agent cannot start: {why}.")
+}
+
+// The text of the denial when the start is not admitted.
+fn admit_start(git: &Git, input: &HookInput) -> Result<(), String> {
+    let session = safe_field(input.session_id.as_deref(), "session_id").map_err(cannot_start)?;
+    let call = safe_field(input.tool_use_id.as_deref(), "tool_use_id").map_err(cannot_start)?;
+    let cap = agent_cap(git).map_err(|failure| cannot_start(failure.message))?;
+    let now = seconds(&now_utc()).ok_or_else(|| cannot_start("cannot read the clock"))?;
+    let ledger = Ledger::open(session, true)
+        .map_err(|why| format!("ShipIt cannot count the running agents: {why}."))?
+        .ok_or_else(|| cannot_start("the ledger is missing"))?;
+    let held = ledger.locked().map_err(cannot_start)?;
+    admit(&held.entries(), now, cap)?;
+    held.apply(&[Change::Write(Entry::Reserved {
+        tool_use_id: call.to_owned(),
+        at: now,
+    })])
+    .map_err(cannot_start)
+}
+
 fn decide(input: &Result<HookInput, String>) -> Answer {
     let Some(git) = gate_folder(input) else {
         return Answer::Pass;
     };
-    match input {
-        Ok(input) => review_gate(&git, input).unwrap_or(Answer::Pass),
-        Err(why) => deny(format!("ShipIt: the agent cannot start: {why}.")),
+    let input = match input {
+        Ok(input) => input,
+        Err(why) => return deny(cannot_start(why)),
+    };
+    if let Some(answer) = review_gate(&git, input) {
+        return answer;
+    }
+    if !agent_call(input) {
+        return Answer::Pass;
+    }
+    match admit_start(&git, input) {
+        Ok(()) => Answer::Pass,
+        Err(text) => deny(text),
     }
 }
 
@@ -105,7 +153,7 @@ pub(crate) fn run(
     if !args.is_empty() {
         return Err(Failure::usage(USAGE));
     }
-    let input = read_stdin(INPUT_LIMIT).and_then(|bytes| parse_input(&bytes));
+    let input = read_hook_input(INPUT_LIMIT).and_then(|bytes| parse_input(&bytes));
     if let Some(json) = answer_json(&decide(&input)) {
         writeln!(out, "{json}").ok();
     }

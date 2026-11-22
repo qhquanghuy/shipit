@@ -5,9 +5,10 @@ load helpers
 load claude-helpers
 
 # A repo on main with the slice branch slice/v1/x, checked out, one commit ahead of main. Its
-# setup has no check commands, so that shipit check is instant.
+# setup has no check commands, so that shipit check is instant. The agent cap needs a data folder.
 setup() {
   REPO=$(shipit_repo)
+  export CLAUDE_PLUGIN_DATA="$BATS_TEST_TMPDIR/plugin-data"
   cd "$REPO" || return 1
   git checkout -q -b slice/v1/x
   printf 'work\n' >work.txt

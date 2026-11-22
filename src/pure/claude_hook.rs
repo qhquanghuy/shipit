@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
+use crate::pure::agent_ledger::safe_id;
 use crate::pure::ship_gate::{Answer, Mode};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -13,6 +14,12 @@ pub(crate) struct HookInput {
     pub(crate) tool_input: Option<Value>,
     pub(crate) cwd: PathBuf,
     pub(crate) mode: Mode,
+    pub(crate) event: String,
+    pub(crate) session_id: Option<String>,
+    pub(crate) tool_use_id: Option<String>,
+    pub(crate) agent_id: Option<String>,
+    pub(crate) source: Option<String>,
+    pub(crate) background_subagents: Option<usize>,
 }
 
 // Only the folder is required: every other field is read by the event that needs it, so a
@@ -31,6 +38,20 @@ pub(crate) fn parse_input(bytes: &[u8]) -> Result<HookInput, String> {
         tool_input: object.get("tool_input").cloned(),
         cwd: PathBuf::from(cwd),
         mode: Mode::parse(text("permission_mode").as_deref().unwrap_or("")),
+        event: text("hook_event_name").unwrap_or_default(),
+        session_id: text("session_id"),
+        tool_use_id: text("tool_use_id"),
+        agent_id: text("agent_id"),
+        source: text("source"),
+        background_subagents: object
+            .get("background_tasks")
+            .and_then(Value::as_array)
+            .map(|tasks| {
+                tasks
+                    .iter()
+                    .filter(|task| task.get("type").and_then(Value::as_str) == Some("subagent"))
+                    .count()
+            }),
     })
 }
 
@@ -76,12 +97,11 @@ pub(crate) fn review_target(input: &HookInput) -> Target {
             .and_then(|value| value.get(key))
             .and_then(Value::as_str)
     };
-    let agent_tool = matches!(input.tool_name.as_deref(), Some("Agent" | "Task"));
     let Some(role) = text("subagent_type").filter(|role| [WORK_REVIEWER, TESTER].contains(role))
     else {
         return Target::NotGated;
     };
-    if !agent_tool {
+    if !agent_call(input) {
         return Target::NotGated;
     }
     let mut named: Vec<&str> = Vec::new();
@@ -109,6 +129,17 @@ pub(crate) fn review_target(input: &HookInput) -> Target {
     }
 }
 
+// A field that becomes a file name: it must be there and be made of safe characters.
+pub(crate) fn safe_field<'a>(value: Option<&'a str>, name: &str) -> Result<&'a str, String> {
+    value
+        .filter(|text| safe_id(text))
+        .ok_or_else(|| format!("the hook input has no safe {name}"))
+}
+
+pub(crate) fn agent_call(input: &HookInput) -> bool {
+    matches!(input.tool_name.as_deref(), Some("Agent" | "Task"))
+}
+
 pub(crate) fn resolve(cwd: &Path, dir: Option<&str>) -> PathBuf {
     dir.map_or_else(|| cwd.to_path_buf(), |dir| cwd.join(dir))
 }
@@ -128,6 +159,21 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
+
+    fn bare(tool: &str, tool_input: Value) -> HookInput {
+        HookInput {
+            tool_name: Some(tool.to_owned()),
+            tool_input: Some(tool_input),
+            cwd: PathBuf::from("/r"),
+            mode: Mode::Auto,
+            event: String::new(),
+            session_id: None,
+            tool_use_id: None,
+            agent_id: None,
+            source: None,
+            background_subagents: None,
+        }
+    }
 
     proptest! {
         #![proptest_config(ProptestConfig {
@@ -184,12 +230,7 @@ mod tests {
             role in prop_oneof![Just(WORK_REVIEWER), Just(TESTER)],
         ) {
             let call = |prompt: String| {
-                review_target(&HookInput {
-                    tool_name: Some("Agent".to_owned()),
-                    tool_input: Some(json!({"subagent_type": role, "prompt": prompt})),
-                    cwd: PathBuf::from("/r"),
-                    mode: Mode::Auto,
-                })
+                review_target(&bare("Agent", json!({"subagent_type": role, "prompt": prompt})))
             };
             let gated = |branch: Option<&str>| Target::Gated {
                 role: role.to_owned(),
@@ -225,14 +266,21 @@ mod tests {
                 "[a-z:-]{0,16}",
             ],
         ) {
-            let target = review_target(&HookInput {
-                tool_name: Some(tool.to_owned()),
-                tool_input: Some(json!({"subagent_type": kind, "prompt": "p"})),
-                cwd: PathBuf::from("/r"),
-                mode: Mode::Default,
-            });
+            let target = review_target(&bare(tool, json!({"subagent_type": kind, "prompt": "p"})));
             let gated = matches!(tool, "Agent" | "Task") && (kind == WORK_REVIEWER || kind == TESTER);
             prop_assert_eq!(target != Target::NotGated, gated);
+        }
+
+        #[test]
+        fn background_tasks_count_only_the_subagents(subagents in 0_usize..5, others in 0_usize..5) {
+            let mut tasks = vec![json!({"type": "subagent"}); subagents];
+            tasks.extend(vec![json!({"type": "shell"}); others]);
+            tasks.push(json!("not an object"));
+            let text = json!({"cwd": "/r", "background_tasks": tasks}).to_string();
+            prop_assert_eq!(
+                parse_input(text.as_bytes()).map(|input| input.background_subagents),
+                Ok(Some(subagents))
+            );
         }
 
         #[test]
@@ -257,10 +305,32 @@ mod tests {
         assert_eq!(input.tool_name.as_deref(), Some("Bash"));
         assert_eq!(input.mode, Mode::Auto);
         assert_eq!(input.tool_input, Some(json!({"command": "ls"})));
-        let bare = parse_input(br#"{"cwd":"/r"}"#).expect("reads");
-        assert_eq!(bare.tool_name, None);
-        assert_eq!(bare.tool_input, None);
-        assert_eq!(bare.mode, Mode::Unknown);
+        let minimal = parse_input(br#"{"cwd":"/r"}"#).expect("reads");
+        assert_eq!(minimal.tool_name, None);
+        assert_eq!(minimal.tool_input, None);
+        assert_eq!(minimal.mode, Mode::Unknown);
+        assert_eq!(minimal.event, "");
+        assert_eq!(minimal.session_id, None);
+        assert_eq!(minimal.background_subagents, None);
+        let event = parse_input(
+            br#"{"cwd":"/r","hook_event_name":"SubagentStart","session_id":"s","tool_use_id":"t","agent_id":"a","source":"startup"}"#,
+        )
+        .expect("reads");
+        assert_eq!(event.event, "SubagentStart");
+        assert_eq!(
+            (
+                event.session_id,
+                event.tool_use_id,
+                event.agent_id,
+                event.source
+            ),
+            (
+                Some("s".to_owned()),
+                Some("t".to_owned()),
+                Some("a".to_owned()),
+                Some("startup".to_owned())
+            )
+        );
     }
 
     #[test]
