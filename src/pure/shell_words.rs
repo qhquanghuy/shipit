@@ -179,6 +179,30 @@ fn has_brace_expansion(unquoted: &str) -> bool {
     })
 }
 
+// Only git takes a folder whose runtime digits could name a repository a gate must judge: `$?`
+// expands to digits only, so elsewhere it can never spell `git`, `.git` or a branch. The program is
+// `git` itself (after `NAME=value`, by any path), or any word after `env` or `command`, which
+// run the next program (reading too much here only asks).
+fn git_folder_holds_exit_status(words: &[String]) -> bool {
+    let mut rest = words.iter().skip_while(|word| is_assignment(word));
+    let args: Vec<&String> = match rest.next().map(|word| program(word)) {
+        Some("git") => rest.collect(),
+        Some("env" | "command") => rest
+            .skip_while(|word| program(word) != "git")
+            .skip(1)
+            .collect(),
+        Some(_) | None => return false,
+    };
+    args.iter().enumerate().any(|(at, word)| {
+        let after_flag = at
+            .checked_sub(1)
+            .and_then(|prior| args.get(prior))
+            .is_some_and(|flag| matches!(flag.as_str(), "-C" | "--git-dir" | "--work-tree"));
+        let glued = word.starts_with("--git-dir=") || word.starts_with("--work-tree=");
+        (after_flag || glued) && word.contains("$?")
+    })
+}
+
 fn join_dir(base: Option<&str>, dir: &str) -> String {
     match base {
         Some(base) if !dir.starts_with('/') && !dir.starts_with("~/") => format!("{base}/{dir}"),
@@ -466,6 +490,11 @@ impl Reader {
                         return Err(Unreadable::Backslash);
                     }
                 }
+                '$' if self.peek_ahead(1) == Some('?') => {
+                    self.at += 2;
+                    word.text.push_str("$?");
+                    word.unquoted.push_str("$?");
+                }
                 '$' | '`' => return Err(Unreadable::Expansion),
                 '(' | ')' => return Err(Unreadable::Group),
                 plain => {
@@ -493,6 +522,10 @@ impl Reader {
             self.at += 1;
             match c {
                 '"' => return Ok(()),
+                '$' if self.peek() == Some('?') => {
+                    self.at += 1;
+                    text.push_str("$?");
+                }
                 '$' | '`' => return Err(Unreadable::Expansion),
                 '\n' if !self.pending.is_empty() => return Err(Unreadable::Heredoc),
                 '\\' => match self.peek() {
@@ -569,6 +602,9 @@ impl Reader {
             return Ok(());
         }
         let texts: Vec<String> = words.iter().map(|word| word.text.clone()).collect();
+        if git_folder_holds_exit_status(&texts) {
+            return Err(Unreadable::Folder);
+        }
         let mut next_dir = None;
         if texts.first().map(String::as_str) == Some("cd") {
             let [_, dir] = texts.as_slice() else {
@@ -579,7 +615,13 @@ impl Reader {
                 .is_some_and(|word| word.unquoted.contains(['*', '?', '[']));
             let plain_before = matches!(before, Sep::Start | Sep::Semi | Sep::And | Sep::Newline);
             let plain_after = matches!(after, Sep::Semi | Sep::And | Sep::Newline | Sep::End);
-            if dir.is_empty() || dir.starts_with('-') || glob || !plain_before || !plain_after {
+            if dir.is_empty()
+                || dir.starts_with('-')
+                || dir.contains("$?")
+                || glob
+                || !plain_before
+                || !plain_after
+            {
                 return Err(Unreadable::Folder);
             }
             // A tilde inside quotes is a folder called `~`, not the home folder.
