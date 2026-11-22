@@ -34,13 +34,17 @@ check = [
 # rust-toolchain.toml, rust-toolchain: the action's build reads them to pick the compiler.
 # build.rs: it writes the `#[forbid]` lines that keep effects out of pure code.
 # flake.nix, flake.lock: the dev shell and every Nix check, so a fake tool or a pinned old one.
-# shellcheckrc, .shellcheckrc: the shellcheck rules of the flake's lint check (shellcheck reads both).
-# .github: CI, the gate that judges the pull request, and the actionlint settings.
-# Only root files are listed. A nested rustfmt.toml or .shellcheckrc, and a suppression inside a
-# file (`#[rustfmt::skip]`, `# shellcheck disable`, `# gitleaks:allow`), cannot be listed; review
-# catches those.
+# .shellcheckrc: the shellcheck rules of the flake's lint check. shellcheckrc (no dot) is listed for
+# a future fileset change; today the flake copies only .shellcheckrc.
+# .github: CI, the gate that judges the pull request. Its actionlint settings matter only if a check
+# ever runs actionlint inside the repository (today none does).
+# Only root files are listed. Nested configs (a rustfmt.toml or .shellcheckrc in a folder) cannot
+# all be listed (no globs), and a suppression inside a file (`#[rustfmt::skip]`,
+# `# shellcheck disable`, `# gitleaks:allow`) cannot be listed at all; review catches those.
 # Cargo.toml holds the lint levels and stays unlisted by the owner's choice: listing it would make
-# every dependency change a setup change. Cargo.lock is left out for the same reason.
+# every dependency change a setup change. It also chooses the build script (`[package] build = ...`),
+# so listing build.rs does not close that path while Cargo.toml is unlisted. Cargo.lock is left out
+# for the same reason.
 # action.yml is unlisted: CI runs this repository's own action (`uses: ./`), built from the pull
 # request's source, so for ShipIt itself the recheck trusts code the pull request can change. The
 # owner's review is the guard until the recheck runs the base's shipit.
