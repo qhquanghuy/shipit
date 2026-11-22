@@ -49,7 +49,6 @@ impl Mode {
     }
 }
 
-const COMPLEX: &str = "cannot be read as plain commands by ShipIt; it may ship (write plain commands, and name branches in plain text)";
 const HIDES: &str = "hides a git or gh command inside one word";
 const FEEDS: &str = "feeds a shell or interpreter";
 const NO_SLICE: &str =
@@ -216,7 +215,7 @@ fn triggered_by(text: &str, parsed: &Parse) -> bool {
             .iter()
             .flat_map(|segment| segment.words.iter())
             .any(|word| is_git_or_gh(program(word))),
-        Parse::Complex => false,
+        Parse::Complex(_) => false,
     };
     named || program_of_a_word || confirms_completion(text)
 }
@@ -970,7 +969,7 @@ fn names_dot_git(command: &str, parsed: &Parse) -> bool {
                     .zip(data)
                     .any(|(word, is_data)| !is_data && is_bare_dot_git(word))
             }),
-        Parse::Complex => false,
+        Parse::Complex(_) => false,
     };
     bare || dot_git_beyond_goals(command) || dot_git_beyond_goals(&unquoted(command))
 }
@@ -1006,7 +1005,13 @@ pub(crate) fn ship_reasons(command: &str, facts: &dyn Fn(Option<&str>) -> Facts)
         add(&mut reasons, GOALS_ONLY);
     }
     match &parsed {
-        Parse::Complex => add(&mut reasons, COMPLEX),
+        Parse::Complex(cause) => add(
+            &mut reasons,
+            format!(
+                "cannot be read as plain commands by ShipIt: it holds {}; it may ship (write plain commands, and name branches in plain text)",
+                cause.text()
+            ),
+        ),
         Parse::Plain { segments, heredocs } => {
             plain_reasons(segments, heredocs, facts, &mut reasons);
         }
