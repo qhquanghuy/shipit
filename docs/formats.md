@@ -234,3 +234,17 @@ that cannot be read are all named, one per line, before the result is judged.
 |---|---|
 | `usage: shipit format findings <review\|test-drive> <result> [<finding>…]` | missing arguments, or a kind that is not `review` or `test-drive` |
 | `"<word>" is not a result: approve, approve-after-fixes, rework, pass or findings` | an unknown result |
+
+## Harness file
+
+`harness/claude-code.txt` lists the files that may name the harness. It is a plain text file, read by `shipit lint` at the
+base branch of the setup (never at the slice's own commit, so a slice cannot loosen the lint for itself). A missing file
+lists nothing. Any other tool that reads the file follows the same rules:
+
+- One glob per line, with white space at both ends dropped.
+- A blank line, and a line that starts with `#`, say nothing.
+- A glob is a path relative to the repository root, written as git lists it. `*` stands for any text inside one folder and
+  never crosses a `/`; there is no `**`, no `?` and no negation.
+
+A file that a glob matches may name the harness (Claude Code and its folders and files) without a finding; the lint's other
+rules, model names among them, still apply to it. A test of `shipit lint` holds each of these rules.
