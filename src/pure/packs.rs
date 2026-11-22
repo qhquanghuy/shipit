@@ -120,7 +120,8 @@ struct Cited {
 
 // The head of an override names each skill as `superpowers:<skill>` followed by
 // `(<file>:<lines>; <file>:<lines>)`, where lines are `a` or `a-b`, joined by `, `. A file in
-// a code span is the same file: a file named after a harness may be cited only so.
+// a code span is the same file: a file whose name the lint refuses (a harness name or a rejected
+// term) may be cited only so.
 fn citations(item: &str) -> Vec<Cited> {
     let head = item.split(" · ").next().unwrap_or_default();
     let mut found = Vec::new();
@@ -181,19 +182,30 @@ fn every_override_cites_lines_that_exist() {
     }
 }
 
-// A range as wide as a file would hide which lines an override is about: the review found items
-// cited with a whole file and every other test passing.
+// A range as wide as a file, or a file cut into adjacent ranges, would hide which lines an
+// override is about: the reviews found items cited that way with every other test passing.
 #[test]
-fn no_citation_is_wider_than_sixty_lines() {
+fn no_override_cites_a_file_whole() {
     let overrides = items(pack("packs/skill/superpowers.md"), "## Overrides");
     for item in &overrides {
-        for cite in citations(item) {
+        let found = citations(item);
+        for cite in &found {
             assert!(
                 cite.last.saturating_sub(cite.first) < 60,
                 "{}:{}-{} is wider than 60 lines: {item}",
                 cite.file,
                 cite.first,
                 cite.last
+            );
+            let total: usize = found
+                .iter()
+                .filter(|other| other.file == cite.file)
+                .map(|other| other.last.saturating_sub(other.first).saturating_add(1))
+                .sum();
+            assert!(
+                total <= 120,
+                "{} is cited for {total} lines in one item: {item}",
+                cite.file
             );
         }
     }
