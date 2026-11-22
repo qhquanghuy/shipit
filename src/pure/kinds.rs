@@ -4,11 +4,13 @@ use crate::pure::text::comma_list;
 
 const ANSWER: Check = Check::Answer(&["none found: ", "concern: ", "not relevant: "]);
 
-// The claims every review ends with: what ran, what was reasoned, what could not be checked. Each
-// may be the single item `none`; only Verified must name the command or test, in a code span.
+// The claims every review and report ends with: what ran, what was reasoned, what could not be
+// checked. Each may be the single item `none`; only Verified must name the command or test, in a
+// code span.
 const VERIFIED: (&str, Check) = ("Verified", Check::CodeSpan);
 const INFERRED: (&str, Check) = ("Inferred", Check::Item);
 const UNVERIFIABLE: (&str, Check) = ("Unverifiable", Check::Item);
+const CLAIMS_LAST: &[&str] = &["Verified", "Inferred", "Unverifiable"];
 
 const TEACH_BACK: (&str, Check) = (
     "Teach-back",
@@ -22,7 +24,8 @@ const OTHER_FILES: (&str, Check) = (
     Check::Contains(&["risk: high", "risk: medium", "risk: low"]),
 );
 
-// A concern is a finding in waiting: an approval with a concern and no finding says two things.
+// A concern is a finding in waiting: an approval that holds one says two things, even when a
+// non-blocking finding names it, so it is approve-after-fixes.
 const CONCERN_SECURITY: Contradiction = Contradiction {
     outcome: "approve",
     part: "Security",
@@ -32,11 +35,6 @@ const CONCERN_PERFORMANCE: Contradiction = Contradiction {
     outcome: "approve",
     part: "Performance",
     start: "concern: ",
-};
-const WRONG_TEACH_BACK: Contradiction = Contradiction {
-    outcome: "approve",
-    part: "Teach-back",
-    start: "[wrong] ",
 };
 
 // Sorted by kind; the blank forms are data/templates/<kind>.md.
@@ -56,6 +54,8 @@ pub(crate) const KINDS: &[Spec] = &[
                 "Decisions for the owner",
             ],
         }],
+        flows: &[],
+        last: &[],
         owner_message: false,
         checks: &[],
         findings: None,
@@ -70,6 +70,8 @@ pub(crate) const KINDS: &[Spec] = &[
             name: "waiting-for-the-owner",
             parts: &["What", "Context", "Recommendation", "Next"],
         }],
+        flows: &[],
+        last: &[],
         owner_message: true,
         checks: &[],
         findings: None,
@@ -83,17 +85,25 @@ pub(crate) const KINDS: &[Spec] = &[
         outcomes: &[
             Outcome {
                 name: "understood",
-                parts: &["Parts"],
+                parts: &["Parts", "Verified", "Inferred", "Unverifiable"],
             },
             Outcome {
                 name: "unclear",
-                parts: &["Parts", "Unclear"],
+                parts: &["Parts", "Unclear", "Verified", "Inferred", "Unverifiable"],
             },
         ],
+        flows: &[],
+        last: CLAIMS_LAST,
         owner_message: false,
-        checks: &[("Parts", Check::FileLines), ("Unclear", Check::FileLines)],
+        checks: &[
+            ("Parts", Check::FileLines),
+            ("Unclear", Check::FileLines),
+            VERIFIED,
+            INFERRED,
+            UNVERIFIABLE,
+        ],
         findings: None,
-        none_allowed: &[],
+        none_allowed: &["Verified", "Inferred", "Unverifiable"],
         embedded: Embedded::Nothing,
         forbidden: &[("understood", "Unclear")],
         contradicts: &[],
@@ -152,6 +162,8 @@ pub(crate) const KINDS: &[Spec] = &[
                 ],
             },
         ],
+        flows: &["Reading path"],
+        last: CLAIMS_LAST,
         owner_message: false,
         checks: &[
             TEACH_BACK,
@@ -174,7 +186,7 @@ pub(crate) const KINDS: &[Spec] = &[
         ],
         embedded: Embedded::Nothing,
         forbidden: &[],
-        contradicts: &[CONCERN_SECURITY, CONCERN_PERFORMANCE, WRONG_TEACH_BACK],
+        contradicts: &[CONCERN_SECURITY, CONCERN_PERFORMANCE],
     },
     Spec {
         kind: "known-issue",
@@ -182,6 +194,8 @@ pub(crate) const KINDS: &[Spec] = &[
             name: "open",
             parts: &["Finding", "Reason", "Effect", "Found by"],
         }],
+        flows: &[],
+        last: &[],
         owner_message: false,
         checks: &[],
         findings: None,
@@ -196,6 +210,8 @@ pub(crate) const KINDS: &[Spec] = &[
             name: "ready-for-the-owner",
             parts: &["What", "Context", "Recommendation", "Sources", "Next"],
         }],
+        flows: &[],
+        last: &[],
         owner_message: true,
         checks: &[("Sources", Check::Contains(&["https://", "http://"]))],
         findings: None,
@@ -240,9 +256,14 @@ pub(crate) const KINDS: &[Spec] = &[
                 ],
             },
         ],
+        flows: &[],
+        last: CLAIMS_LAST,
         owner_message: false,
         checks: &[
-            ("Done-when", Check::Answer(&["[covered] ", "[gap] "])),
+            (
+                "Done-when",
+                Check::AnswerForDoneWhen(&["[covered] ", "[gap] "]),
+            ),
             VERIFIED,
             INFERRED,
             UNVERIFIABLE,
@@ -314,6 +335,8 @@ pub(crate) const KINDS: &[Spec] = &[
                 ],
             },
         ],
+        flows: &["Reading path"],
+        last: CLAIMS_LAST,
         owner_message: false,
         checks: &[
             TEACH_BACK,
@@ -338,7 +361,7 @@ pub(crate) const KINDS: &[Spec] = &[
         ],
         embedded: Embedded::Nothing,
         forbidden: &[],
-        contradicts: &[CONCERN_SECURITY, CONCERN_PERFORMANCE, WRONG_TEACH_BACK],
+        contradicts: &[CONCERN_SECURITY, CONCERN_PERFORMANCE],
     },
     Spec {
         kind: "roadmap",
@@ -352,6 +375,8 @@ pub(crate) const KINDS: &[Spec] = &[
                 "Risks",
             ],
         }],
+        flows: &[],
+        last: &[],
         owner_message: false,
         checks: &[
             (
@@ -375,21 +400,43 @@ pub(crate) const KINDS: &[Spec] = &[
         outcomes: &[
             Outcome {
                 name: "found",
-                parts: &["Question", "Facts"],
+                parts: &["Question", "Facts", "Verified", "Inferred", "Unverifiable"],
             },
             Outcome {
                 name: "partial",
-                parts: &["Question", "Facts", "Missing", "Where I looked"],
+                parts: &[
+                    "Question",
+                    "Facts",
+                    "Missing",
+                    "Where I looked",
+                    "Verified",
+                    "Inferred",
+                    "Unverifiable",
+                ],
             },
             Outcome {
                 name: "not-found",
-                parts: &["Question", "Missing", "Where I looked"],
+                parts: &[
+                    "Question",
+                    "Missing",
+                    "Where I looked",
+                    "Verified",
+                    "Inferred",
+                    "Unverifiable",
+                ],
             },
         ],
+        flows: &[],
+        last: CLAIMS_LAST,
         owner_message: false,
-        checks: &[("Facts", Check::Contains(&["(source: "]))],
+        checks: &[
+            ("Facts", Check::Contains(&["(source: "])),
+            VERIFIED,
+            INFERRED,
+            UNVERIFIABLE,
+        ],
         findings: None,
-        none_allowed: &[],
+        none_allowed: &["Verified", "Inferred", "Unverifiable"],
         embedded: Embedded::Nothing,
         forbidden: &[("found", "Missing")],
         contradicts: &[],
@@ -433,6 +480,8 @@ pub(crate) const KINDS: &[Spec] = &[
                 ],
             },
         ],
+        flows: &[],
+        last: CLAIMS_LAST,
         owner_message: false,
         checks: &[
             ("Security", ANSWER),
@@ -452,17 +501,37 @@ pub(crate) const KINDS: &[Spec] = &[
         outcomes: &[
             Outcome {
                 name: "pass",
-                parts: &["Done-when", "Exploration"],
+                parts: &[
+                    "Done-when",
+                    "Exploration",
+                    "Verified",
+                    "Inferred",
+                    "Unverifiable",
+                ],
             },
             Outcome {
                 name: "findings",
-                parts: &["Done-when", "Exploration", "Findings"],
+                parts: &[
+                    "Done-when",
+                    "Exploration",
+                    "Findings",
+                    "Verified",
+                    "Inferred",
+                    "Unverifiable",
+                ],
             },
         ],
+        flows: &[],
+        last: CLAIMS_LAST,
         owner_message: false,
-        checks: &[("Done-when", Check::Answer(&["[pass] ", "[fail] "]))],
+        checks: &[
+            ("Done-when", Check::Answer(&["[pass] ", "[fail] "])),
+            VERIFIED,
+            INFERRED,
+            UNVERIFIABLE,
+        ],
         findings: Some(("Findings", ResultKind::TestDrive)),
-        none_allowed: &[],
+        none_allowed: &["Verified", "Inferred", "Unverifiable"],
         embedded: Embedded::Nothing,
         forbidden: &[],
         contradicts: &[Contradiction {

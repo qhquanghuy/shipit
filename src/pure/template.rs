@@ -8,7 +8,7 @@ use crate::pure::finding::{
 use crate::pure::goal::goal_items;
 use crate::pure::kinds::form;
 use crate::pure::markdown::{Kind, Line, lines};
-use crate::pure::markdown_parts::{bold_marker, heading, list_item, without_code_spans};
+use crate::pure::markdown_parts::{bold_marker, code_spans, heading, list_item};
 use crate::pure::messages::{FILE_PROBLEM, NO_BLOCK, NOT_TOML, say};
 use crate::pure::roadmap::{Element, meets_problems, parse_roadmap};
 use crate::pure::setup::toml_table;
@@ -23,6 +23,9 @@ const EXAMPLE: &str = "example";
 const SLICES: &str = "## Slices";
 const COVERAGE: &str = "## Done-when coverage";
 const SPIKE: &str = "settled by spike ";
+const FLOW: &str = "Flow:";
+const FLOW_LEVEL: usize = 3;
+const DIAGRAM: &str = "mermaid";
 
 #[derive(Debug)]
 pub(crate) struct Outcome {
@@ -34,6 +37,11 @@ pub(crate) struct Outcome {
 pub(crate) struct Spec {
     pub(crate) kind: &'static str,
     pub(crate) outcomes: &'static [Outcome],
+    // Parts that tell the way through a change: unless a part is the single item `none`, each of
+    // its flows is a `### Flow:` heading with a Mermaid diagram.
+    pub(crate) flows: &'static [&'static str],
+    // The parts the output ends with, in this order.
+    pub(crate) last: &'static [&'static str],
     pub(crate) owner_message: bool,
     pub(crate) checks: &'static [(&'static str, Check)],
     // The part whose items are findings, and the kind of result they go with.
@@ -65,11 +73,13 @@ pub(crate) enum Embedded {
 #[derive(Debug)]
 pub(crate) enum Check {
     Answer(&'static [&'static str]),
+    // An answer whose why starts with a done-when id such as `DW3`.
+    AnswerForDoneWhen(&'static [&'static str]),
     Contains(&'static [&'static str]),
     FileLines,
     // The item contains one of the phrases and then the name of a slice or proof step.
     NamesElement(&'static [&'static str]),
-    // The item names what ran in a code span.
+    // The item names what ran, in a code span with something in it.
     CodeSpan,
     // The item points at a line of a file: a diff or line link, or `<file>:<line>` somewhere in it.
     Place,
@@ -415,7 +425,16 @@ fn items<'a>(part: &Part<'a>) -> Vec<&'a str> {
         .collect()
 }
 
-// `path:line: text` or `path:first-last: text`, the path without spaces and first not after last.
+// `<first>` or `<first>-<last>`, the first not after the last.
+fn line_range(lines: &str) -> Option<(u64, u64)> {
+    let range = match lines.split_once('-') {
+        Some((first, last)) => first.parse::<u64>().ok().zip(last.parse::<u64>().ok()),
+        None => lines.parse::<u64>().ok().map(|line| (line, line)),
+    };
+    range.filter(|(first, last)| first <= last)
+}
+
+// `path:line: text` or `path:first-last: text`, the path without spaces.
 fn is_file_lines(item: &str) -> bool {
     let Some((place, text)) = item.split_once(": ") else {
         return false;
@@ -423,32 +442,64 @@ fn is_file_lines(item: &str) -> bool {
     let Some((path, lines)) = place.rsplit_once(':') else {
         return false;
     };
-    let range = match lines.split_once('-') {
-        Some((first, last)) => first.parse::<u64>().ok().zip(last.parse::<u64>().ok()),
-        None => lines.parse::<u64>().ok().map(|line| (line, line)),
-    };
     !path.is_empty()
         && !path.contains(char::is_whitespace)
-        && range.is_some_and(|(first, last)| first <= last)
+        && line_range(lines).is_some()
         && !text.trim().is_empty()
 }
 
-// A diff or line link, or a word that is `<file>:<line>` or `<file>:<first>-<last>` once the marks around it are
-// gone, so a step can say where it is the way a reader's tool opens it.
+const BARE_FILES: [&str; 5] = ["Makefile", "Dockerfile", "Justfile", "LICENSE", "Gemfile"];
+
+// A path a reader can open: it has a folder or an extension, or it is a well-known bare name; a
+// time, an address or a template's placeholder is not.
+fn is_file(path: &str) -> bool {
+    !path.contains("://")
+        && !path.contains(['<', '>'])
+        && (path.contains(['/', '.']) || BARE_FILES.contains(&path))
+}
+
+// A link to a diff or to a line, with every placeholder of the form filled in.
+fn is_line_link(link: &str) -> bool {
+    let link = link.trim_end_matches(['>', '.', ',', ';']);
+    !link.contains(['<', '>'])
+        && (link.contains("#diff-")
+            || link
+                .split("#L")
+                .skip(1)
+                .any(|after| after.starts_with(|c: char| c.is_ascii_digit())))
+}
+
+// A link, or a word that is `<file>:<line>` or `<file>:<first>-<last>` once the marks around it are
+// gone, so a step can say where it is the way a reader's tool opens it. Lines count from 1.
 fn names_a_place(item: &str) -> bool {
-    (item.contains("https://") && (item.contains("#diff-") || item.contains("#L")))
+    let linked = item.match_indices("https://").any(|(at, _)| {
+        let link = item.get(at..).unwrap_or_default();
+        let end = link
+            .find(|c: char| c.is_whitespace() || matches!(c, ')' | ']' | '`' | '"'))
+            .unwrap_or(link.len());
+        is_line_link(link.get(..end).unwrap_or_default())
+    });
+    linked
         || item.split_whitespace().any(|word| {
             let word = word
                 .trim_matches(|c: char| matches!(c, '`' | '(' | ')' | '[' | ']' | ',' | ';' | '.'))
                 .trim_end_matches(':');
             word.rsplit_once(':').is_some_and(|(path, lines)| {
-                let range = match lines.split_once('-') {
-                    Some((first, last)) => first.parse::<u64>().ok().zip(last.parse::<u64>().ok()),
-                    None => lines.parse::<u64>().ok().map(|line| (line, line)),
-                };
-                !path.is_empty() && range.is_some_and(|(first, last)| first <= last)
+                is_file(path) && line_range(lines).is_some_and(|(first, _last)| first >= 1)
             })
         })
+}
+
+// A done-when id such as `DW3` at the start, not the start of a longer word.
+fn starts_with_done_when(text: &str) -> bool {
+    text.strip_prefix("DW").is_some_and(|rest| {
+        let digits = rest.chars().take_while(char::is_ascii_digit).count();
+        digits > 0
+            && !rest
+                .get(digits..)
+                .and_then(|tail| tail.chars().next())
+                .is_some_and(char::is_alphanumeric)
+    })
 }
 
 // A name after a phrase; a spike is not in the roadmap, so any name will do for it. Without the
@@ -495,8 +546,22 @@ impl Check {
                     comma_list(phrases.iter().map(|phrase| phrase.trim_end()))
                 )
             }),
-            Self::CodeSpan => (without_code_spans(item) == item)
-                .then(|| "must name the command or test that ran, in a code span".to_owned()),
+            Self::CodeSpan => (!code_spans(item).iter().any(|span| !span.trim().is_empty()))
+                .then(|| {
+                    "must name the command or test that ran, in a code span (the only item may be none)"
+                        .to_owned()
+                }),
+            Self::AnswerForDoneWhen(starts) => {
+                let right = starts
+                    .iter()
+                    .any(|start| item.strip_prefix(start).is_some_and(starts_with_done_when));
+                (!right).then(|| {
+                    format!(
+                        "must start with one of: {}, then a done-when id such as DW3 and why",
+                        comma_list(starts.iter().map(|start| start.trim_end()))
+                    )
+                })
+            }
             Self::Place => (!names_a_place(item)).then(|| {
                 "must hold a diff link (https://...#diff-...) or <file>:<line>".to_owned()
             }),
@@ -515,7 +580,7 @@ fn check_problems(
     if items.is_empty() {
         return vec![format!("part \"{name}\" has no list items")];
     }
-    if none_is_ok && items == ["none"] {
+    if none_is_ok && matches!(items, [only] if only.eq_ignore_ascii_case("none")) {
         return Vec::new();
     }
     items
@@ -576,7 +641,22 @@ fn once<'l, 'a>(found: &'l [Part<'a>], name: &str) -> Option<&'l Part<'a>> {
     mine.next().is_none().then_some(first)
 }
 
-// An answer that says the opposite of the outcome is refused; the rules are in the spec.
+// A line as a reader takes it: the Markdown that is skipped over (quotes, list markers, bold and
+// indent) gone, in lower case.
+fn bare(line: &str) -> String {
+    let mut text = line.trim_start();
+    loop {
+        let stripped = strip_marker(text);
+        if stripped == text {
+            break;
+        }
+        text = stripped;
+    }
+    text.replace("**", "").to_lowercase()
+}
+
+// An answer that says the opposite of the outcome is refused; the rules are in the spec. Every line
+// of the part is read, so nesting an answer under another or writing it as a paragraph hides nothing.
 fn contradictions(spec: &Spec, outcome: &str, found: &[Part<'_>]) -> Vec<String> {
     let mut problems = Vec::new();
     for rule in spec
@@ -588,33 +668,30 @@ fn contradictions(spec: &Spec, outcome: &str, found: &[Part<'_>]) -> Vec<String>
             continue;
         };
         let start = rule.start.trim_end();
-        for (index, item) in items(part).iter().enumerate() {
-            if !item.starts_with(rule.start) {
-                continue;
+        let wanted = rule.start.to_lowercase();
+        let named = part
+            .lines
+            .iter()
+            .zip(&part.numbers)
+            .filter(|(line, _)| matches!(line.kind, Kind::Prose))
+            .map(|(line, number)| (line.text, format!(" line {number}")))
+            .chain(std::iter::once((part.lead, String::new())));
+        for (text, place) in named {
+            if bare(text).starts_with(&wanted) {
+                problems.push(format!(
+                    "part \"{}\"{place} starts with {start}, which does not fit the outcome {outcome}",
+                    rule.part
+                ));
             }
-            let place = format!(
-                "part \"{}\" item {} starts with {start}",
-                rule.part,
-                index + 1
-            );
-            problems.push(format!("{place}, which does not fit the outcome {outcome}"));
         }
     }
     problems
 }
 
 // A Conventional Comments label, optional decorations and a colon, once the Markdown that a
-// reader skips over is gone: quotes, list markers, bold and indent, in any case.
+// reader skips over is gone.
 fn finding_shaped(line: &str) -> bool {
-    let mut text = line.trim_start();
-    loop {
-        let stripped = strip_marker(text);
-        if stripped == text {
-            break;
-        }
-        text = stripped;
-    }
-    let lower = text.replace("**", "").to_lowercase();
+    let lower = bare(line);
     FINDING_LABELS.iter().any(|label| {
         lower.strip_prefix(label).is_some_and(|rest| {
             let rest = rest
@@ -681,6 +758,85 @@ fn hidden_findings(name: &str, loose: &[usize], found: &[Part<'_>]) -> Vec<Strin
         .collect()
 }
 
+// A part that tells the way through the change has a flow for each entry point, and a diagram for
+// each flow; the single item `none` says the change has no entry point.
+fn flow_problems(name: &str, part: &Part<'_>) -> Vec<String> {
+    let listed = items(part);
+    if part.is_empty() || matches!(listed.as_slice(), [only] if only.eq_ignore_ascii_case("none")) {
+        return Vec::new();
+    }
+    let mut flows: Vec<(&str, bool)> = Vec::new();
+    for line in &part.lines {
+        match line.kind {
+            Kind::Prose => {
+                if let Some((FLOW_LEVEL, title)) = heading(line.text)
+                    && let Some(entry) = title.strip_prefix(FLOW)
+                {
+                    flows.push((entry.trim(), false));
+                }
+            }
+            Kind::Open { info: DIAGRAM } => {
+                if let Some(last) = flows.last_mut() {
+                    last.1 = true;
+                }
+            }
+            Kind::Open { .. } | Kind::Inside | Kind::Close => {}
+        }
+    }
+    if flows.is_empty() {
+        return vec![format!(
+            "part \"{name}\" needs a \"### {FLOW} <entry point>\" heading for each entry point, or the single item none"
+        )];
+    }
+    flows
+        .iter()
+        .filter(|(_, drawn)| !drawn)
+        .map(|(entry, _)| format!("part \"{name}\" flow \"{entry}\" has no {DIAGRAM} diagram"))
+        .collect()
+}
+
+// Parts the spec puts last must be the last, in its order; a part that is missing or doubled is
+// already a problem of its own.
+fn order_problems(spec: &Spec, found: &[Part<'_>]) -> Vec<String> {
+    if spec.last.iter().any(|name| once(found, name).is_none()) {
+        return Vec::new();
+    }
+    let names: Vec<&str> = found.iter().map(|part| part.name).collect();
+    let tail = names
+        .len()
+        .checked_sub(spec.last.len())
+        .and_then(|from| names.get(from..));
+    if tail == Some(spec.last) {
+        Vec::new()
+    } else {
+        vec![format!(
+            "the last parts must be {}, in this order",
+            comma_list(spec.last.iter())
+        )]
+    }
+}
+
+// The findings of the part the spec names, judged against the outcome: their counts, or the problems.
+fn findings_verdict(
+    spec: &Spec,
+    outcome: &str,
+    found: &[Part<'_>],
+) -> Result<Option<[usize; 3]>, Vec<String>> {
+    let Some((name, kind)) = spec.findings else {
+        return Ok(None);
+    };
+    let part = once(found, name);
+    // An empty part is reported once, by the part check.
+    if part.is_some_and(Part::is_empty) {
+        return Ok(None);
+    }
+    let listed = part.map(items).unwrap_or_default();
+    if part.is_some() && listed.is_empty() {
+        return Err(vec![format!("part \"{name}\" has no list items")]);
+    }
+    judge(name, kind, outcome, &listed).map(Some)
+}
+
 pub(crate) fn validate(spec: &Spec, ctx: &Context<'_>, text: &str) -> Result<Verdict, Vec<String>> {
     let head = header(ctx.file, text)?;
     if head.kind != spec.kind {
@@ -732,7 +888,7 @@ pub(crate) fn validate(spec: &Spec, ctx: &Context<'_>, text: &str) -> Result<Ver
         }
     }
     for (name, check) in spec.checks {
-        if let Some(part) = once(&found, name) {
+        if let Some(part) = once(&found, name).filter(|part| !part.is_empty()) {
             let none_is_ok = spec.none_allowed.contains(name);
             problems.extend(check_problems(
                 name,
@@ -743,18 +899,19 @@ pub(crate) fn validate(spec: &Spec, ctx: &Context<'_>, text: &str) -> Result<Ver
             ));
         }
     }
-    let mut counts = None;
-    if let Some((name, kind)) = spec.findings {
-        let listed = once(&found, name).map(items).unwrap_or_default();
-        if once(&found, name).is_some() && listed.is_empty() {
-            problems.push(format!("part \"{name}\" has no list items"));
-        } else {
-            match judge(name, kind, &head.outcome, &listed) {
-                Ok(done) => counts = Some(done),
-                Err(more) => problems.extend(more),
-            }
+    let counts = match findings_verdict(spec, &head.outcome, &found) {
+        Ok(counts) => counts,
+        Err(more) => {
+            problems.extend(more);
+            None
+        }
+    };
+    for name in spec.flows {
+        if let Some(part) = once(&found, name) {
+            problems.extend(flow_problems(name, part));
         }
     }
+    problems.extend(order_problems(spec, &found));
     problems.extend(contradictions(spec, &head.outcome, &found));
     if let Some((name, _kind)) = spec.findings {
         problems.extend(hidden_findings(name, &loose, &found));
@@ -834,6 +991,21 @@ mod tests {
         block.iter().map(|line| (*line).to_owned()).collect()
     }
 
+    // One flow with a step and its diagram. A heading would end a bold part, so a kind with flows
+    // is rendered with heading parts only.
+    fn flow_lines() -> Vec<String> {
+        lines_of(&[
+            "### Flow: shipit run",
+            "",
+            "- `run` takes args: src/a.rs:4",
+            "",
+            "```mermaid",
+            "sequenceDiagram",
+            "  A->>B: call",
+            "```",
+        ])
+    }
+
     // The lines of a part: list items made so that the check of the part passes, or the block
     // the formats read.
     fn sample(spec: &Spec, outcome: &str, part: &str, seed: u64) -> Vec<String> {
@@ -841,6 +1013,9 @@ mod tests {
             (Embedded::Roadmap, "Slices") => return lines_of(&ROADMAP_BLOCK),
             (Embedded::CoverageMap, "Done-when coverage") => return lines_of(&COVERAGE_BLOCK),
             _ => {}
+        }
+        if spec.flows.contains(&part) {
+            return flow_lines();
         }
         let item = if let Some((name, _kind)) = spec.findings
             && name == part
@@ -853,7 +1028,12 @@ mod tests {
         } else {
             let check = spec.checks.iter().find(|(name, _)| *name == part);
             match check.map(|(_, check)| check) {
-                Some(Check::Answer(starts)) => {
+                Some(Check::Answer(starts) | Check::AnswerForDoneWhen(starts)) => {
+                    let id = if matches!(check, Some((_, Check::AnswerForDoneWhen(_)))) {
+                        format!("DW{}: ", seed % 90 + 1)
+                    } else {
+                        String::new()
+                    };
                     // An answer that says the opposite of the outcome is not a valid sample.
                     let fits: Vec<&str> = starts
                         .iter()
@@ -864,7 +1044,7 @@ mod tests {
                             })
                         })
                         .collect();
-                    format!("{}because of {seed}", chosen(&fits, seed))
+                    format!("{}{id}because of {seed}", chosen(&fits, seed))
                 }
                 Some(Check::Contains(phrases)) => format!("a {}word", chosen(phrases, seed)),
                 Some(Check::FileLines | Check::Place) if seed.is_multiple_of(2) => {
@@ -897,7 +1077,8 @@ mod tests {
     // The seed picks the style of the part markers and whether nested content is added.
     fn render(spec: &Spec, shown: &str, seed: u64, parts: &Bodies) -> String {
         // A block is found under a heading, so a kind with one has heading parts only.
-        let bold = seed & 1 == 0 && matches!(spec.embedded, Embedded::Nothing);
+        let bold =
+            seed & 1 == 0 && matches!(spec.embedded, Embedded::Nothing) && spec.flows.is_empty();
         let nested = seed & 2 == 0;
         let mut text = format!(
             "## Form\n\n```toml\nkind = \"{}\"\noutcome = \"{shown}\"\ninput = \"x\"\n```\n\n",
@@ -984,9 +1165,23 @@ mod tests {
                 .into_iter()
                 .find(|name| *name == part)
                 .expect("a part of the spec");
-            parts.push((name, items));
+            // The parts the output ends with stay last.
+            let at = parts
+                .iter()
+                .position(|(part, _)| spec.last.first() == Some(part))
+                .unwrap_or(parts.len());
+            parts.insert(at, (name, items));
         }
         render(spec, outcome, 0, &parts)
+    }
+
+    // The problem that says a line of the part starts with `start` against the outcome.
+    fn does_not_fit(part: &str, start: &str, outcome: &str) -> impl Fn(&String) -> bool {
+        let (head, tail) = (
+            format!("part \"{part}\""),
+            format!(" starts with {start}, which does not fit the outcome {outcome}"),
+        );
+        move |problem| problem.starts_with(&head) && problem.ends_with(&tail)
     }
 
     // A finding as the formats read it, or as it would be refused.
@@ -1220,6 +1415,8 @@ mod tests {
             name: "found",
             parts: &["Facts"],
         }],
+        flows: &[],
+        last: &[],
         owner_message: false,
         checks: &[("Facts", Check::Contains(&["(source: "]))],
         findings: None,
@@ -1608,9 +1805,10 @@ mod tests {
     fn an_answer_that_says_the_opposite_of_the_outcome_is_refused() {
         let spec = spec_of("test-drive");
         let text = with_body(spec, "pass", "Done-when", &["[fail] nothing works"]);
-        assert_eq!(
-            problems_of(spec, &text),
-            ["part \"Done-when\" item 1 starts with [fail], which does not fit the outcome pass"]
+        let problems = problems_of(spec, &text);
+        assert!(
+            problems.len() == 1 && does_not_fit("Done-when", "[fail]", "pass")(&problems[0]),
+            "{problems:?}"
         );
         let text = with_body(spec, "findings", "Done-when", &["[fail] nothing works"]);
         assert!(validate(spec, &ctx(1000), &text).is_ok());
@@ -1622,11 +1820,10 @@ mod tests {
             "Security",
             &["concern: injection everywhere"],
         );
-        assert_eq!(
-            problems_of(spec, &text),
-            [
-                "part \"Security\" item 1 starts with concern:, which does not fit the outcome approve"
-            ]
+        let problems = problems_of(spec, &text);
+        assert!(
+            problems.len() == 1 && does_not_fit("Security", "concern:", "approve")(&problems[0]),
+            "{problems:?}"
         );
         let with_finding = {
             let mut parts = bodies(spec, "approve", 0);
@@ -1635,35 +1832,24 @@ mod tests {
                     *body = vec!["- concern: injection everywhere".to_owned()];
                 }
             }
-            parts.push((
-                "Findings",
-                vec![
-                    "- question: is it fixed?".to_owned(),
-                    "- nitpick: a comma".to_owned(),
-                ],
-            ));
+            let at = parts.len() - 3;
+            parts.insert(
+                at,
+                (
+                    "Findings",
+                    vec![
+                        "- question: is it fixed?".to_owned(),
+                        "- nitpick: a comma".to_owned(),
+                    ],
+                ),
+            );
             render(spec, "approve", 0, &parts)
         };
         // A concern makes an approval wrong whatever findings come with it.
-        assert_eq!(
-            problems_of(spec, &with_finding),
-            [
-                "part \"Security\" item 1 starts with concern:, which does not fit the outcome approve"
-            ]
-        );
-
-        let spec = spec_of("informed-review");
-        let text = with_body(
-            spec,
-            "approve",
-            "Teach-back",
-            &["[wrong] the reader misread it"],
-        );
-        assert_eq!(
-            problems_of(spec, &text),
-            [
-                "part \"Teach-back\" item 1 starts with [wrong], which does not fit the outcome approve"
-            ]
+        let problems = problems_of(spec, &with_finding);
+        assert!(
+            problems.len() == 1 && does_not_fit("Security", "concern:", "approve")(&problems[0]),
+            "{problems:?}"
         );
     }
 
@@ -1702,16 +1888,21 @@ mod tests {
     fn findings_are_optional_with_approve_but_never_a_must_fix() {
         let spec = spec_of("second-opinion");
         let mut parts = bodies(spec, "approve", 0);
-        parts.push((
-            "Findings",
-            vec!["- nitpick: a word".to_owned(), "- question: why".to_owned()],
-        ));
+        let at = parts.len() - 3;
+        parts.insert(
+            at,
+            (
+                "Findings",
+                vec!["- nitpick: a word".to_owned(), "- question: why".to_owned()],
+            ),
+        );
         let text = render(spec, "approve", 0, &parts);
         let done = validate(spec, &ctx(1000), &text).expect("valid");
         assert_eq!(done.counts, Some([0, 1, 1]));
 
         let mut worse = bodies(spec, "approve", 0);
-        worse.push(("Findings", vec!["- issue (blocking): bad".to_owned()]));
+        let at = worse.len() - 3;
+        worse.insert(at, ("Findings", vec!["- issue (blocking): bad".to_owned()]));
         let text = render(spec, "approve", 0, &worse);
         assert_eq!(
             problems_of(spec, &text),
@@ -1787,15 +1978,37 @@ mod tests {
         );
     }
 
-    const CLAIM_KINDS: [&str; 4] = ["review", "informed-review", "second-opinion", "plan-review"];
+    const CLAIM_KINDS: [&str; 7] = [
+        "review",
+        "informed-review",
+        "second-opinion",
+        "plan-review",
+        "scout-report",
+        "test-drive",
+        "explanation",
+    ];
     const CLAIMS: [&str; 3] = ["Verified", "Inferred", "Unverifiable"];
 
-    // A review kind that has these parts, with the outcome picked by index.
-    fn review_with(parts: &[&str], kind: &str, outcome: usize) -> (&'static Spec, &'static str) {
+    // An outcome of a kind, by index.
+    fn outcome_of(kind: &str, outcome: usize) -> (&'static Spec, &'static str) {
         let spec = spec_of(kind);
-        let listed = &spec.outcomes[outcome % spec.outcomes.len()];
-        assert!(parts.iter().all(|part| listed.parts.contains(part)));
-        (spec, listed.name)
+        (spec, spec.outcomes[outcome % spec.outcomes.len()].name)
+    }
+
+    fn reading_path(spec: &Spec, outcome: &str, lines: &[String]) -> String {
+        let mut parts = bodies(spec, outcome, 0);
+        if let Some((_, body)) = parts.iter_mut().find(|(name, _)| *name == "Reading path") {
+            *body = lines.to_vec();
+        }
+        render(spec, outcome, 0, &parts)
+    }
+
+    // Every (spec, rule) that refuses an outcome because of what a part says.
+    fn contradiction_cases() -> Vec<(&'static Spec, &'static Contradiction)> {
+        KINDS
+            .iter()
+            .flat_map(|spec| spec.contradicts.iter().map(move |rule| (spec, rule)))
+            .collect()
     }
 
     proptest! {
@@ -1804,15 +2017,15 @@ mod tests {
             ..ProptestConfig::default()
         })]
 
-        // Every outcome of a review kind asks for all three lists; none is optional.
+        // Every outcome of a review or a report asks for all three lists; none is optional.
         #[test]
-        fn every_review_outcome_needs_the_three_claim_lists(
+        fn every_outcome_needs_the_three_claim_lists(
             kind in prop::sample::select(CLAIM_KINDS.to_vec()),
             outcome in 0_usize..3,
             claim in prop::sample::select(CLAIMS.to_vec()),
             seed in any::<u64>(),
         ) {
-            let (spec, outcome) = review_with(&CLAIMS, kind, outcome);
+            let (spec, outcome) = outcome_of(kind, outcome);
             let mut parts = bodies(spec, outcome, seed);
             parts.retain(|(part, _)| *part != claim);
             let text = render(spec, outcome, seed, &parts);
@@ -1820,29 +2033,50 @@ mod tests {
         }
 
         #[test]
-        fn a_claim_list_may_be_the_single_item_none(
+        fn a_claim_list_may_be_the_single_item_none_in_any_case(
             kind in prop::sample::select(CLAIM_KINDS.to_vec()),
             outcome in 0_usize..3,
             claim in prop::sample::select(CLAIMS.to_vec()),
+            none in prop::sample::select(vec!["none", "None", "NONE"]),
         ) {
-            let (spec, outcome) = review_with(&CLAIMS, kind, outcome);
-            let text = with_body(spec, outcome, claim, &["none"]);
+            let (spec, outcome) = outcome_of(kind, outcome);
+            let text = with_body(spec, outcome, claim, &[none]);
             prop_assert!(validate(spec, &ctx(1000), &text).is_ok());
         }
 
-        // Inferred and Unverifiable take any item, but must have one; Verified needs a code span.
+        // The three lists are the last parts, in order: any other part after one is refused.
+        #[test]
+        fn the_claim_lists_come_last_in_order(
+            kind in prop::sample::select(CLAIM_KINDS.to_vec()),
+            outcome in 0_usize..3,
+            by in 1_usize..32,
+            seed in any::<u64>(),
+        ) {
+            let (spec, outcome) = outcome_of(kind, outcome);
+            let mut parts = bodies(spec, outcome, seed);
+            let by = by % (parts.len() - 1) + 1;
+            parts.rotate_left(by);
+            let text = render(spec, outcome, seed, &parts);
+            prop_assert_eq!(
+                problems_of(spec, &text),
+                vec!["the last parts must be Verified, Inferred, Unverifiable, in this order".to_owned()]
+            );
+        }
+
+        // Verified needs a code span with something in it; the other two take any item.
         #[test]
         fn verified_items_name_what_ran_in_a_code_span(
             kind in prop::sample::select(CLAIM_KINDS.to_vec()),
             words in "[a-z][a-z ]{0,10}",
             span in "[a-z][a-z ]{0,10}",
+            blank in prop::sample::select(vec!["``", "` `", "`  `"]),
         ) {
-            let (spec, outcome) = review_with(&CLAIMS, kind, 0);
-            let bare = with_body(spec, outcome, "Verified", &[&words]);
-            prop_assert_eq!(
-                problems_of(spec, &bare),
-                vec!["part \"Verified\" item 1 must name the command or test that ran, in a code span".to_owned()]
-            );
+            let (spec, outcome) = outcome_of(kind, 0);
+            let message = "part \"Verified\" item 1 must name the command or test that ran, in a code span (the only item may be none)";
+            for bare in [words.clone(), format!("{words} {blank} {words}")] {
+                let text = with_body(spec, outcome, "Verified", &[&bare]);
+                prop_assert_eq!(problems_of(spec, &text), vec![message.to_owned()]);
+            }
             let named = with_body(spec, outcome, "Verified", &[&format!("`{span}`: {words}")]);
             prop_assert!(validate(spec, &ctx(1000), &named).is_ok());
             for claim in ["Inferred", "Unverifiable"] {
@@ -1851,32 +2085,35 @@ mod tests {
             }
         }
 
-        // A step of the reading path and a spot of look here say where they are: a diff link or a line.
+        // A place is a link to a diff or a line with nothing left to fill in, or a file with a
+        // folder or an extension and a line from 1.
         #[test]
         fn a_step_says_where_it_is(
             kind in prop::sample::select(vec!["review", "informed-review"]),
-            part in prop::sample::select(vec!["Reading path", "Look here"]),
-            path in "[a-z][a-z/.]{0,8}",
-            line in 0_u64..500,
-            first in 0_u64..500,
-            last in 0_u64..500,
-            style in 0_usize..6,
+            part in prop::sample::select(vec!["Look here", "Reading path"]),
+            path in "[a-z]{1,5}(/[a-z]{1,5}){0,2}\\.[a-z]{1,3}",
+            line in 1_u64..500,
+            span in 0_u64..20,
+            style in 0_usize..7,
         ) {
-            let (spec, outcome) = review_with(&["Reading path"], kind, 0);
+            let (spec, outcome) = outcome_of(kind, 0);
+            let last = line + span;
             let place = [
                 format!("`f` at {path}:{line}"),
-                format!("`f` ({path}:{first}-{last})"),
-                format!("`f` https://github.com/o/r/pull/1/files#diff-ab{path}R{line}"),
+                format!("`f` ({path}:{line}-{last})"),
+                format!("`f` [here](https://github.com/o/r/pull/1/files#diff-ab{line}R{last})"),
+                format!("`f` https://github.com/o/r/blob/main/{path}#L{line}"),
+                "`f` at Makefile:3".to_owned(),
+                format!("`f` at {path}:{last}-{line}x"),
                 format!("`f` at {path}"),
-                format!("`f` at {path}:{line}x"),
-                "`f` https://github.com/o/r".to_owned(),
             ][style].clone();
-            let accepted = match style {
-                0 | 2 => true,
-                1 => first <= last,
-                _ => false,
+            let accepted = style < 5;
+            let text = if part == "Reading path" {
+                let flow = ["### Flow: x".to_owned(), format!("- {place}"), "```mermaid".to_owned(), "```".to_owned()];
+                reading_path(spec, outcome, &flow)
+            } else {
+                with_body(spec, outcome, part, &[&place])
             };
-            let text = with_body(spec, outcome, part, &[&place]);
             let got = validate(spec, &ctx(1000), &text);
             prop_assert_eq!(got.is_ok(), accepted, "{} {:?}", place, got);
             if !accepted {
@@ -1889,12 +2126,79 @@ mod tests {
             }
         }
 
-        // Look here cannot be none, and the reading path and other files can.
+        // What is not a place: a time, an address, line 0, a bare word, a link that is not to a
+        // line, and the form's own placeholder.
+        #[test]
+        fn what_only_looks_like_a_place_is_refused(
+            kind in prop::sample::select(vec!["review", "informed-review"]),
+            hour in 0_u32..24,
+            minute in 0_u32..60,
+            port in 1_u32..9999,
+            word in "[a-z]{1,6}",
+            style in 0_usize..8,
+        ) {
+            let (spec, outcome) = outcome_of(kind, 0);
+            let place = [
+                format!("it fires at {hour}:{minute:02}"),
+                format!("none at {hour}:{minute}"),
+                format!("calls http://localhost:{port}"),
+                format!("{word}.rs:0"),
+                format!("https://example.com/#L{word}"),
+                format!("{word}:{port}"),
+                "https://github.com/<owner>/<repo>/pull/<n>/files#diff-<sha256 of the path>R<line>".to_owned(),
+                format!("https://example.com/{word}"),
+            ][style].clone();
+            let text = with_body(spec, outcome, "Look here", &[&place]);
+            prop_assert!(validate(spec, &ctx(1000), &text).is_err(), "{}", place);
+        }
+
+        // Unless it is `none`, the reading path has a flow for each entry point and a diagram for
+        // each flow.
+        #[test]
+        fn each_flow_has_its_diagram(
+            kind in prop::sample::select(vec!["review", "informed-review"]),
+            drawn in proptest::collection::vec(any::<bool>(), 1..5),
+        ) {
+            let (spec, outcome) = outcome_of(kind, 0);
+            let mut lines = Vec::new();
+            for (index, drawn) in drawn.iter().enumerate() {
+                lines.push(format!("### Flow: entry{index}"));
+                lines.push(format!("- `f` at src/a.rs:{}", index + 1));
+                if *drawn {
+                    lines.extend(["```mermaid".to_owned(), "sequenceDiagram".to_owned(), "```".to_owned()]);
+                }
+            }
+            let got = validate(spec, &ctx(1000), &reading_path(spec, outcome, &lines));
+            let missing: Vec<String> = drawn
+                .iter()
+                .enumerate()
+                .filter(|(_, drawn)| !**drawn)
+                .map(|(index, _)| format!("part \"Reading path\" flow \"entry{index}\" has no mermaid diagram"))
+                .collect();
+            prop_assert_eq!(got.map(|_| ()), if missing.is_empty() { Ok(()) } else { Err(missing) });
+        }
+
+        #[test]
+        fn steps_without_a_flow_heading_are_refused_and_none_is_not(
+            kind in prop::sample::select(vec!["review", "informed-review"]),
+            none in prop::sample::select(vec!["none", "None"]),
+        ) {
+            let (spec, outcome) = outcome_of(kind, 0);
+            let steps = reading_path(spec, outcome, &["- `f` at src/a.rs:1".to_owned()]);
+            prop_assert_eq!(
+                problems_of(spec, &steps),
+                vec!["part \"Reading path\" needs a \"### Flow: <entry point>\" heading for each entry point, or the single item none".to_owned()]
+            );
+            let nothing = reading_path(spec, outcome, &[format!("- {none}")]);
+            prop_assert!(validate(spec, &ctx(1000), &nothing).is_ok());
+        }
+
+        // Look here cannot be none; the reading path and other files can.
         #[test]
         fn none_in_look_here_is_refused_and_in_the_other_two_accepted(
             kind in prop::sample::select(vec!["review", "informed-review"]),
         ) {
-            let (spec, outcome) = review_with(&["Reading path"], kind, 0);
+            let (spec, outcome) = outcome_of(kind, 0);
             for part in ["Reading path", "Other files"] {
                 let text = with_body(spec, outcome, part, &["none"]);
                 prop_assert!(validate(spec, &ctx(1000), &text).is_ok());
@@ -1908,7 +2212,7 @@ mod tests {
             kind in prop::sample::select(vec!["review", "informed-review"]),
             risk in prop::sample::select(vec!["high", "medium", "low", "none", ""]),
         ) {
-            let (spec, outcome) = review_with(&["Other files"], kind, 0);
+            let (spec, outcome) = outcome_of(kind, 0);
             let text = with_body(spec, outcome, "Other files", &[&format!("tests: risk: {risk} words")]);
             prop_assert_eq!(
                 validate(spec, &ctx(1000), &text).is_ok(),
@@ -1916,62 +2220,92 @@ mod tests {
             );
         }
 
-        // An approval cannot carry a teach-back that is wrong, or a gap in the done-when items.
+        // The reader's teach-back is a signal, not a gate: no answer in it refuses an approval.
         #[test]
-        fn an_approval_cannot_contradict_its_own_parts(
-            case in prop::sample::select(vec![
-                ("review", "Teach-back", "[wrong] "),
-                ("informed-review", "Teach-back", "[wrong] "),
-                ("plan-review", "Done-when", "[gap] "),
-            ]),
+        fn a_wrong_teach_back_does_not_refuse_an_approval(
+            kind in prop::sample::select(vec!["review", "informed-review"]),
+            start in prop::sample::select(vec!["[matches] ", "[wrong] ", "[unclear] "]),
             why in "[a-z][a-z ]{0,8}",
         ) {
-            let (kind, part, start) = case;
-            let spec = spec_of(kind);
-            let said = format!("{start}{why}");
-            let approved = with_body(spec, "approve", part, &[&said]);
+            let (spec, outcome) = outcome_of(kind, 0);
+            let text = with_body(spec, outcome, "Teach-back", &[&format!("{start}{why}")]);
+            prop_assert!(validate(spec, &ctx(1000), &text).is_ok());
+        }
+
+        // Each item of a review of a roadmap or a build plan names the done-when item it judges.
+        #[test]
+        fn a_done_when_item_names_its_id(
+            mark in prop::sample::select(vec!["[covered] ", "[gap] "]),
+            id in 1_u32..200,
+            tail in prop::sample::select(vec![": slice alpha", " is met", "x: slice alpha"]),
+            bare in "[a-z][a-z ]{0,10}",
+        ) {
+            let spec = spec_of("plan-review");
+            let outcome = "approve-after-fixes";
+            let named = with_body(spec, outcome, "Done-when", &[&format!("{mark}DW{id}{tail}")]);
+            prop_assert_eq!(validate(spec, &ctx(1000), &named).is_ok(), !tail.starts_with('x'));
+            let unnamed = with_body(spec, outcome, "Done-when", &[&format!("{mark}{bare}")]);
             prop_assert_eq!(
-                problems_of(spec, &approved),
-                vec![format!(
-                    "part \"{part}\" item 1 starts with {}, which does not fit the outcome approve",
-                    start.trim_end()
-                )]
+                problems_of(spec, &unnamed),
+                vec!["part \"Done-when\" item 1 must start with one of: [covered], [gap], then a done-when id such as DW3 and why".to_owned()]
             );
-            let reworked = with_body(spec, "rework", part, &[&said]);
-            prop_assert!(validate(spec, &ctx(1000), &reworked).is_ok());
+        }
+
+        // An answer that says the opposite of the outcome is refused wherever it sits in the part:
+        // nested, as a paragraph, quoted, bold or in another case. The other outcome takes it.
+        #[test]
+        fn a_contradiction_is_found_on_any_line_of_the_part(
+            case in prop::sample::select(contradiction_cases()),
+            shape in 0_usize..6,
+            seed in any::<u64>(),
+        ) {
+            let (spec, rule) = case;
+            let start = rule.start.trim_end();
+            let line = [
+                format!("  - {start} hidden"),
+                format!("{} hidden", rule.start),
+                format!("> - {start} hidden"),
+                format!("**{start}** hidden"),
+                format!("1) {start} hidden"),
+                format!("    - {} hidden", rule.start.to_uppercase()),
+            ][shape].clone();
+            let mut parts = bodies(spec, rule.outcome, seed);
+            parts
+                .iter_mut()
+                .find(|(name, _)| *name == rule.part)
+                .expect("the part of the rule")
+                .1
+                .push(line.clone());
+            let text = render(spec, rule.outcome, seed, &parts);
+            let problems = problems_of(spec, &text);
+            prop_assert!(
+                problems.iter().any(does_not_fit(rule.part, start, rule.outcome)),
+                "{:?} for {}", problems, line
+            );
         }
     }
 
-    // A filled review as an agent writes it: flows under sub-headings with a diagram in a fence stay
-    // inside their part.
+    // An empty part is one problem, not two.
     #[test]
-    fn a_reading_path_may_hold_flows_and_a_diagram() {
-        let spec = spec_of("review");
-        let mut parts = bodies(spec, "approve", 1);
-        if let Some((_, body)) = parts.iter_mut().find(|(name, _)| *name == "Reading path") {
-            *body = vec![
-                "### Flow: shipit run".to_owned(),
-                String::new(),
-                "- `run` takes args, returns a result: src/a.rs:4 risk: low".to_owned(),
-                String::new(),
-                "```mermaid".to_owned(),
-                "sequenceDiagram".to_owned(),
-                "  A->>B: call".to_owned(),
-                "```".to_owned(),
-            ];
+    fn an_empty_part_is_reported_once() {
+        let spec = spec_of("second-opinion");
+        for (outcome, part) in [
+            ("approve", "Security"),
+            ("rework", "Findings"),
+            ("approve", "Verified"),
+        ] {
+            let mut parts = bodies(spec, outcome, 3);
+            if let Some((_, body)) = parts.iter_mut().find(|(name, _)| *name == part) {
+                body.clear();
+            }
+            let text = render(spec, outcome, 3, &parts).replace(
+                &format!("## {part}\n\nsome words\n"),
+                &format!("## {part}\n"),
+            );
+            assert_eq!(
+                problems_of(spec, &text),
+                [format!("part \"{part}\" is empty")]
+            );
         }
-        let text = render(spec, "approve", 1, &parts);
-        assert!(text.contains("### Flow: shipit run"));
-        assert!(validate(spec, &ctx(1000), &text).is_ok());
-    }
-
-    #[test]
-    fn a_plan_review_marks_each_done_when_item() {
-        let spec = spec_of("plan-review");
-        let text = with_body(spec, "approve-after-fixes", "Done-when", &["DW1 words"]);
-        assert_eq!(
-            problems_of(spec, &text),
-            ["part \"Done-when\" item 1 must start with one of: [covered], [gap], then say why"]
-        );
     }
 }

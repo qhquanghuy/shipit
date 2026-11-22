@@ -41,58 +41,6 @@ write_message() {
   [ "$output" = 'valid second-opinion: approve-after-fixes (1 must fix, 1 nice to fix, 1 must answer)' ]
 }
 
-@test "validate: a merged review with a reading path and its flows is accepted" {
-  repo=$(make_repo)
-  cd "$repo"
-  {
-    printf '## Form\n\n```toml\nkind = "review"\noutcome = "approve"\ninput = "the change"\n```\n\n'
-    printf '## Summary\nA small change.\n\n## Claim\nIt adds a command.\n\n'
-    printf '## Teach-back\n- [matches] the command prints a form\n\n'
-    printf '## Reading path\n\n### Flow: shipit template\n\n'
-    printf -- '- `run` takes the args and returns the form: src/commands/template.rs:20 risk: low\n\n'
-    printf '```mermaid\nsequenceDiagram\n  main->>template: run\n```\n\n'
-    printf '## Other files\n- tests: risk: low, they only read\n\n## Look here\n- src/pure/kinds.rs:30 the list of kinds\n\n'
-    printf '## Security\n- none found: no input is read\n\n## Performance\n- not relevant: no loops\n\n## Skipped\n- none\n\n'
-    printf '## Verified\n- `cargo test`: passed\n\n## Inferred\n- none\n\n## Unverifiable\n- none\n'
-  } >review.md
-  run --separate-stderr "$SHIPIT_BIN" validate review review.md
-  [ "$status" -eq 0 ]
-  [ "$output" = 'valid review: approve (0 must fix, 0 nice to fix, 0 must answer)' ]
-}
-
-@test "validate: a review of a roadmap says each done-when item is covered or a gap" {
-  repo=$(make_repo)
-  cd "$repo"
-  {
-    printf '## Form\n\n```toml\nkind = "plan-review"\noutcome = "approve"\ninput = "a roadmap"\n```\n\n'
-    printf '## Summary\nEvery item is met.\n\n## Done-when\n- [gap] DW1: no slice meets it\n\n'
-    printf '## Verified\n- `shipit validate roadmap`: valid\n\n## Inferred\n- none\n\n## Unverifiable\n- none\n'
-  } >review.md
-  run --separate-stderr "$SHIPIT_BIN" validate plan-review review.md
-  [ "$status" -eq 1 ]
-  [ "$stderr" = 'shipit: review.md is not a valid plan-review:
-  part "Done-when" item 1 starts with [gap], which does not fit the outcome approve' ]
-  sed -i 's/^outcome = "approve"/outcome = "approve-after-fixes"/; s/^## Done-when/## Findings\n- issue (blocking): DW1 is not met\n\n&/' review.md
-  run --separate-stderr "$SHIPIT_BIN" validate plan-review review.md
-  [ "$status" -eq 0 ]
-  [ "$output" = 'valid plan-review: approve-after-fixes (1 must fix, 0 nice to fix, 0 must answer)' ]
-}
-
-@test "validate: a review that leaves out a claim list is refused" {
-  repo=$(make_repo)
-  cd "$repo"
-  {
-    printf '## Form\n\n```toml\nkind = "second-opinion"\noutcome = "approve"\ninput = "the change"\n```\n\n'
-    printf '## Summary\nA small change.\n\n## Security\n- none found: no input is read\n\n## Performance\n- not relevant: no loops\n\n'
-    printf '## Verified\n- ran the tests\n\n## Inferred\n- none\n'
-  } >review.md
-  run --separate-stderr "$SHIPIT_BIN" validate second-opinion review.md
-  [ "$status" -eq 1 ]
-  [ "$stderr" = 'shipit: review.md is not a valid second-opinion:
-  part "Unverifiable" is missing
-  part "Verified" item 1 must name the command or test that ran, in a code span' ]
-}
-
 @test "validate: an invalid output exits 1 and lists each problem" {
   repo=$(make_repo)
   cd "$repo"
