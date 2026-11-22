@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use toml::{Table, Value};
 
 use crate::pure::block::toml_block;
@@ -448,7 +450,15 @@ fn is_file_lines(item: &str) -> bool {
         && !text.trim().is_empty()
 }
 
-const BARE_FILES: [&str; 5] = ["Makefile", "Dockerfile", "Justfile", "LICENSE", "Gemfile"];
+const BARE_FILES: [&str; 7] = [
+    "Makefile",
+    "Dockerfile",
+    "Justfile",
+    "LICENSE",
+    "Gemfile",
+    "README",
+    "CHANGELOG",
+];
 
 // A path a reader can open: it has a folder or an extension, or it is a well-known bare name; a
 // time, an address or a template's placeholder is not.
@@ -469,6 +479,23 @@ fn is_line_link(link: &str) -> bool {
                 .any(|after| after.starts_with(|c: char| c.is_ascii_digit())))
 }
 
+// The word without the marks around it and the colon after it, whichever order they come in:
+// `` `a.rs:4`: why ``, `(a.rs:4):` and `**a.rs:4**:` all end at the line number.
+fn trim_marks(word: &str) -> &str {
+    let mut word = word;
+    loop {
+        let trimmed = word
+            .trim_matches(|c: char| {
+                matches!(c, '`' | '(' | ')' | '[' | ']' | ',' | ';' | '.' | '*')
+            })
+            .trim_end_matches(':');
+        if trimmed == word {
+            return word;
+        }
+        word = trimmed;
+    }
+}
+
 // A link, or a word that is `<file>:<line>` or `<file>:<first>-<last>` once the marks around it are
 // gone, so a step can say where it is the way a reader's tool opens it. Lines count from 1.
 fn names_a_place(item: &str) -> bool {
@@ -481,12 +508,11 @@ fn names_a_place(item: &str) -> bool {
     });
     linked
         || item.split_whitespace().any(|word| {
-            let word = word
-                .trim_matches(|c: char| matches!(c, '`' | '(' | ')' | '[' | ']' | ',' | ';' | '.'))
-                .trim_end_matches(':');
-            word.rsplit_once(':').is_some_and(|(path, lines)| {
-                is_file(path) && line_range(lines).is_some_and(|(first, _last)| first >= 1)
-            })
+            trim_marks(word)
+                .rsplit_once(':')
+                .is_some_and(|(path, lines)| {
+                    is_file(path) && line_range(lines).is_some_and(|(first, _last)| first >= 1)
+                })
         })
 }
 
@@ -655,9 +681,31 @@ fn bare(line: &str) -> String {
     text.replace("**", "").to_lowercase()
 }
 
+// The prose lines of the file with their numbers: what a reader sees, outside code fences.
+fn prose_lines<'a>(all: &[Line<'a>]) -> Vec<(usize, &'a str)> {
+    all.iter()
+        .enumerate()
+        .filter(|(_, line)| matches!(line.kind, Kind::Prose))
+        .map(|(index, line)| (index + 1, line.text))
+        .collect()
+}
+
 // An answer that says the opposite of the outcome is refused; the rules are in the spec. Every line
-// of the part is read, so nesting an answer under another or writing it as a paragraph hides nothing.
-fn contradictions(spec: &Spec, outcome: &str, found: &[Part<'_>]) -> Vec<String> {
+// of the part is read, so nesting an answer under another or writing it as a paragraph hides
+// nothing, and so is every line that belongs to no part: a heading that is not a part name closes
+// the part, and what follows it is still read. A heading counts as a line. Code fences are the
+// one place such a word may stand.
+fn contradictions(
+    spec: &Spec,
+    outcome: &str,
+    found: &[Part<'_>],
+    prose: &[(usize, &str)],
+) -> Vec<String> {
+    let owned: BTreeSet<usize> = found
+        .iter()
+        .flat_map(|part| part.numbers.iter().copied())
+        .collect();
+    let mut loose_said = BTreeSet::new();
     let mut problems = Vec::new();
     for rule in spec
         .contradicts
@@ -669,15 +717,20 @@ fn contradictions(spec: &Spec, outcome: &str, found: &[Part<'_>]) -> Vec<String>
         };
         let start = rule.start.trim_end();
         let wanted = rule.start.to_lowercase();
-        let named = part
-            .lines
+        let mine: BTreeSet<usize> = part.numbers.iter().copied().collect();
+        let own = prose
             .iter()
-            .zip(&part.numbers)
-            .filter(|(line, _)| matches!(line.kind, Kind::Prose))
-            .map(|(line, number)| (line.text, format!(" line {number}")))
-            .chain(std::iter::once((part.lead, String::new())));
-        for (text, place) in named {
-            if bare(text).starts_with(&wanted) {
+            .filter(|(number, _)| mine.contains(number))
+            .map(|(number, text)| (*text, format!(" line {number}"), None));
+        let loose = prose
+            .iter()
+            .filter(|(number, _)| !owned.contains(number))
+            .map(|(number, text)| (*text, format!(" line {number}"), Some(*number)));
+        let lead = std::iter::once((part.lead, String::new(), None));
+        for (text, place, outside) in own.chain(loose).chain(lead) {
+            let shown = heading(text).map_or(text, |(_, name)| name);
+            let fresh = outside.is_none_or(|number| loose_said.insert(number));
+            if fresh && bare(shown).starts_with(&wanted) {
                 problems.push(format!(
                     "part \"{}\"{place} starts with {start}, which does not fit the outcome {outcome}",
                     rule.part
@@ -868,6 +921,7 @@ pub(crate) fn validate(spec: &Spec, ctx: &Context<'_>, text: &str) -> Result<Ver
         Embedded::CoverageMap => (None, map_problems(ctx.file, text)),
     };
     let loose = loose_findings(spec, &all);
+    let prose = prose_lines(&all);
     let found = parts(spec, all);
     let blank = form(spec.kind)
         .and_then(|blank| lines(blank).ok())
@@ -912,7 +966,7 @@ pub(crate) fn validate(spec: &Spec, ctx: &Context<'_>, text: &str) -> Result<Ver
         }
     }
     problems.extend(order_problems(spec, &found));
-    problems.extend(contradictions(spec, &head.outcome, &found));
+    problems.extend(contradictions(spec, &head.outcome, &found, &prose));
     if let Some((name, _kind)) = spec.findings {
         problems.extend(hidden_findings(name, &loose, &found));
     }
@@ -2094,7 +2148,7 @@ mod tests {
             path in "[a-z]{1,5}(/[a-z]{1,5}){0,2}\\.[a-z]{1,3}",
             line in 1_u64..500,
             span in 0_u64..20,
-            style in 0_usize..7,
+            style in 0_usize..11,
         ) {
             let (spec, outcome) = outcome_of(kind, 0);
             let last = line + span;
@@ -2104,10 +2158,14 @@ mod tests {
                 format!("`f` [here](https://github.com/o/r/pull/1/files#diff-ab{line}R{last})"),
                 format!("`f` https://github.com/o/r/blob/main/{path}#L{line}"),
                 "`f` at Makefile:3".to_owned(),
+                format!("`{path}:{line}`: why"),
+                format!("`f` ({path}:{line}): why"),
+                format!("**{path}:{line}**: why"),
+                "README:3 why".to_owned(),
                 format!("`f` at {path}:{last}-{line}x"),
                 format!("`f` at {path}"),
             ][style].clone();
-            let accepted = style < 5;
+            let accepted = style < 9;
             let text = if part == "Reading path" {
                 let flow = ["### Flow: x".to_owned(), format!("- {place}"), "```mermaid".to_owned(), "```".to_owned()];
                 reading_path(spec, outcome, &flow)
@@ -2251,23 +2309,27 @@ mod tests {
             );
         }
 
-        // An answer that says the opposite of the outcome is refused wherever it sits in the part:
-        // nested, as a paragraph, quoted, bold or in another case. The other outcome takes it.
+        // An answer that says the opposite of the outcome is refused wherever it sits: in the part
+        // (nested, a paragraph, quoted, bold, a heading, in any case) or after a heading that
+        // closes the part. The other outcome takes it.
         #[test]
-        fn a_contradiction_is_found_on_any_line_of_the_part(
+        fn a_contradiction_is_found_on_any_line_of_the_file(
             case in prop::sample::select(contradiction_cases()),
-            shape in 0_usize..6,
+            shape in 0_usize..9,
             seed in any::<u64>(),
         ) {
             let (spec, rule) = case;
             let start = rule.start.trim_end();
-            let line = [
-                format!("  - {start} hidden"),
-                format!("{} hidden", rule.start),
-                format!("> - {start} hidden"),
-                format!("**{start}** hidden"),
-                format!("1) {start} hidden"),
-                format!("    - {} hidden", rule.start.to_uppercase()),
+            let said = [
+                vec![format!("  - {start} hidden")],
+                vec![format!("{} hidden", rule.start)],
+                vec![format!("> - {start} hidden")],
+                vec![format!("**{start}** hidden")],
+                vec![format!("1) {start} hidden")],
+                vec![format!("    - {} hidden", rule.start.to_uppercase())],
+                vec![format!("## {} notes", rule.part), format!("- {start} hidden")],
+                vec![format!("### {start} hidden")],
+                vec![format!("## {} (extra)", rule.part), format!("{} hidden", rule.start)],
             ][shape].clone();
             let mut parts = bodies(spec, rule.outcome, seed);
             parts
@@ -2275,13 +2337,33 @@ mod tests {
                 .find(|(name, _)| *name == rule.part)
                 .expect("the part of the rule")
                 .1
-                .push(line.clone());
+                .extend(said.clone());
             let text = render(spec, rule.outcome, seed, &parts);
             let problems = problems_of(spec, &text);
+            // A line outside every part is named once, by the first rule that has its word.
+            let tail = format!(" starts with {start}, which does not fit the outcome {}", rule.outcome);
             prop_assert!(
-                problems.iter().any(does_not_fit(rule.part, start, rule.outcome)),
-                "{:?} for {}", problems, line
+                problems.iter().any(|problem| problem.ends_with(&tail)),
+                "{:?} for {:?}", problems, said
             );
+        }
+
+        // A code fence is the one place such a word may stand, and it is said in the forms.
+        #[test]
+        fn a_contradiction_inside_a_code_fence_is_not_one(
+            case in prop::sample::select(contradiction_cases()),
+            seed in any::<u64>(),
+        ) {
+            let (spec, rule) = case;
+            let mut parts = bodies(spec, rule.outcome, seed);
+            parts
+                .iter_mut()
+                .find(|(name, _)| *name == rule.part)
+                .expect("the part of the rule")
+                .1
+                .extend(["```text".to_owned(), format!("{} in a fence", rule.start), "```".to_owned()]);
+            let text = render(spec, rule.outcome, seed, &parts);
+            prop_assert!(validate(spec, &ctx(1000), &text).is_ok());
         }
     }
 

@@ -7,7 +7,7 @@ input = "the built result, its docs and sample data, with the goal and the done-
 ```
 
 ## Done-when
-One item per done-when item you tried, each starting `[pass] ` or `[fail] `, then what you did and saw. Every outcome.
+One item per done-when item you tried, each starting `[pass] ` or `[fail] `, then what you did and saw. A pass with any `[fail] ` is refused, wherever a line starts with it in the file, headings included, except inside a code fence. Every outcome.
 
 ## Exploration
 What else you tried as a user of the result, and what happened. Every outcome.

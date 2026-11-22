@@ -28,10 +28,10 @@ First every changed test: one item each, saying whether the change edited, remov
 Needed for approve-after-fixes and rework (at least one must-fix finding); allowed with approve only when none is a must fix. One item per finding, written as a Conventional Comment: `issue (blocking, security): text`, `suggestion (non-blocking): text`, `question: text` or `nitpick: text`. Two reviews that found the same problem make one item that says both found it. The owner reads blocking as must fix, non-blocking and nitpick as nice to fix, and a question as must answer. No praise.
 
 ## Security
-Items that start `none found: `, `concern: ` or `not relevant: `, then the reason. Every outcome; never leave it out. An approve with any `concern: ` item is refused, even when a non-blocking finding names it: a concern means approve-after-fixes or rework.
+Items that start `none found: `, `concern: ` or `not relevant: `, then the reason. Every outcome; never leave it out. An approve with any `concern: ` item is refused, even when a non-blocking finding names it: a concern means approve-after-fixes or rework. The word counts wherever a line starts with it in the file, headings included, except inside a code fence.
 
 ## Performance
-Items that start `none found: `, `concern: ` or `not relevant: `, then the reason. Structural problems only, from the coding pack's list. No micro-tuning unless the owner asks or the goal sets a budget. An approve with any `concern: ` item is refused, even when a non-blocking finding names it: a concern means approve-after-fixes or rework.
+Items that start `none found: `, `concern: ` or `not relevant: `, then the reason. Structural problems only, from the coding pack's list. No micro-tuning unless the owner asks or the goal sets a budget. An approve with any `concern: ` item is refused, even when a non-blocking finding names it: a concern means approve-after-fixes or rework. The word counts wherever a line starts with it in the file, headings included, except inside a code fence.
 
 ## Skipped
 What this review did not do, each with why: a check that was not run (rank, receipt, coverage, validation) or a file that was not read. Write `none` as the only item when nothing was skipped. Every outcome.
