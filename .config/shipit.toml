@@ -26,15 +26,24 @@ check = [
 # that does not exist yet is listed too: the tool reads it as soon as someone adds it.
 # deny.toml and its two other places: cargo deny, its ignore list and licence rules.
 # .gitleaks.toml, .gitleaksignore: the secret scan, its rules and ignored fingerprints.
-# .gitattributes: a `binary` line there hides a file from the scan.
+# .gitattributes: a second guard; `--text` in the gitleaks line already makes a `binary` line
+# harmless, in any folder.
 # clippy.toml, .clippy.toml, rustfmt.toml, .rustfmt.toml: the lint and format settings, which the
 # flake's clippy and fmt checks read.
 # .cargo/config.toml, .cargo/config: cargo reads them for every build, test and lint run (flags, aliases).
+# rust-toolchain.toml, rust-toolchain: the action's build reads them to pick the compiler.
+# build.rs: it writes the `#[forbid]` lines that keep effects out of pure code.
 # flake.nix, flake.lock: the dev shell and every Nix check, so a fake tool or a pinned old one.
-# .shellcheckrc: the shellcheck rules of the flake's lint check.
-# .github/workflows, action.yml: CI, the gate that judges the pull request, and the recheck action it runs.
-# Cargo.toml is not listed (the owner's call): it holds the lint levels, but listing it would make
+# shellcheckrc, .shellcheckrc: the shellcheck rules of the flake's lint check (shellcheck reads both).
+# .github: CI, the gate that judges the pull request, and the actionlint settings.
+# Only root files are listed. A nested rustfmt.toml or .shellcheckrc, and a suppression inside a
+# file (`#[rustfmt::skip]`, `# shellcheck disable`, `# gitleaks:allow`), cannot be listed; review
+# catches those.
+# Cargo.toml holds the lint levels and stays unlisted by the owner's choice: listing it would make
 # every dependency change a setup change. Cargo.lock is left out for the same reason.
+# action.yml is unlisted: CI runs this repository's own action (`uses: ./`), built from the pull
+# request's source, so for ShipIt itself the recheck trusts code the pull request can change. The
+# owner's review is the guard until the recheck runs the base's shipit.
 setup_files = [
   "deny.toml",
   ".deny.toml",
@@ -48,11 +57,14 @@ setup_files = [
   ".rustfmt.toml",
   ".cargo/config.toml",
   ".cargo/config",
+  "rust-toolchain.toml",
+  "rust-toolchain",
+  "build.rs",
   "flake.nix",
   "flake.lock",
+  "shellcheckrc",
   ".shellcheckrc",
-  ".github/workflows",
-  "action.yml",
+  ".github",
 ]
 
 # Every check runs in the dev shell, which has pmd, lizard, cargo-deny and gitleaks.
