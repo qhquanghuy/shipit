@@ -223,7 +223,7 @@ mod tests {
         fn a_forbidden_character_or_sequence_is_never_a_branch(
             before in "[a-z]{0,4}",
             bad in proptest::sample::select(vec![
-                " ", "~", "^", ":", "?", "*", "[", "\\", "..", "@{", "\t", "\u{7f}",
+                " ", "~", "^", ":", "?", "*", "[", "\u{5c}", "..", "@{", "\t", "\u{7f}",
             ]),
             after in "[a-z]{0,4}",
         ) {

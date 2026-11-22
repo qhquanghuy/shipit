@@ -111,7 +111,7 @@ pub(crate) fn init_recipe(nix: bool) -> String {
 
 // A plain Nix string: the characters that end it, escape in it or start a splice are escaped.
 pub(crate) fn nix_string(text: &str) -> String {
-    text.replace('\\', "\\\\")
+    text.replace('\\', "\u{5c}\u{5c}")
         .replace('"', "\\\"")
         .replace("${", "\\${")
         .replace('\n', "\\n")
