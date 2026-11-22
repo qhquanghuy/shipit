@@ -212,8 +212,8 @@ fn no_override_cites_a_file_whole() {
 }
 
 // The places the informed review of the proof step superpowers-overrides-check (2026-11-22) and the
-// second opinion of fix round 1 found with no override or with a wrong citation, one line of each.
-const FOUND_BY_THE_REVIEWS: [(&str, usize); 53] = [
+// later reviews of the fix rounds found with no override or with a wrong citation, one line of each.
+const FOUND_BY_THE_REVIEWS: [(&str, usize); 59] = [
     ("subagent-driven-development/references/final-review.md", 12),
     ("subagent-driven-development/references/final-review.md", 18),
     ("subagent-driven-development/references/final-review.md", 29),
@@ -273,6 +273,12 @@ const FOUND_BY_THE_REVIEWS: [(&str, usize); 53] = [
     ("executing-plans/SKILL.md", 302),
     ("subagent-driven-development/implementer-prompt.md", 124),
     ("subagent-driven-development/SKILL.md", 283),
+    ("writing-skills/SKILL.md", 12),
+    ("brainstorming/visual-companion.md", 115),
+    ("brainstorming/visual-companion.md", 275),
+    ("diagnosing-superpowers/SKILL.md", 52),
+    ("diagnosing-superpowers/SKILL.md", 64),
+    ("diagnosing-superpowers/SKILL.md", 101),
 ];
 
 #[test]
