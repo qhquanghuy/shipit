@@ -18,4 +18,5 @@ DW10 = [
   "a stacked slice whose parent changed a listed file is not refused after the parent is squash-merged",
   "recheck on a slice branch refuses a listed file changed with code, naming the file",
   "coverage: a change of the files the base lists needs no map",
+  "coverage: the list is the base tip's, also when the base added it after the slice forked",
 ]
