@@ -203,7 +203,7 @@ Only `shipit:slice` may start agents: leaving `Agent` out of `tools` is what sto
 
 ### Permissions the skills need
 
-The skills run commands and write files. In a headless run (`claude -p`) every question becomes a refusal, so give the permissions first. Put this in `.claude/settings.json`, or give the same rules with `--allowedTools`. Replace `./test.sh` with your project's own test command, and add `Read(<folder>/**)` if the plugin is loaded from a folder of your own.
+The skills run commands and write files. In a headless run (`claude -p`) every question becomes a refusal, so give the permissions first. Put this in `.claude/settings.json` at the root of the project (commit it in its own pull request after adoption, not with the setup), or give the same rules with `--allowedTools`. Replace `./test.sh` with your project's own test command. The skills read and search with the Read and Grep tools, so the list has no `cat`, `grep` or `ls` rule. An installed plugin is read from its cache folder, as the last rule shows; a plugin loaded from a folder of your own needs `Read(//<plugin folder>/**)` instead (`//` starts an absolute path).
 
 ```json
 {
@@ -224,21 +224,24 @@ The skills run commands and write files. In a headless run (`claude -p`) every q
       "Bash(gh pr create *)",
       "Bash(gh pr view *)",
       "Bash(gh pr diff *)",
-      "Bash(mktemp -d)",
+      "Bash(mktemp -d /tmp/shipit.XXXXXX)",
       "Bash(mkdir -p *)",
       "Bash(cp *)",
-      "Bash(grep *)",
-      "Bash(cat *)",
-      "Bash(ls *)",
+      "Bash(printf *)",
+      "Bash(sha256sum *)",
       "Bash(./test.sh *)",
-      "Edit(//tmp/**)",
-      "Read(~/.claude/plugins/**)"
+      "Edit(//tmp/shipit.*/**)",
+      "Read(~/.claude/plugins/cache/shipit/**)"
     ]
   }
 }
 ```
 
-The store is in the git folder; a skill copies a file into it with one `mkdir -p` and one `cp`, which these rules allow. A skill makes its own temporary folder with `mktemp -d` under `/tmp`, so `Edit(//tmp/**)` lets it write drafts there.
+A skill makes its own drafts folder with `mktemp -d /tmp/shipit.XXXXXX`, so `Edit(//tmp/shipit.*/**)` lets it write drafts there and nowhere else under `/tmp`.
+
+**The worktree.** The slice's worktree is made at `../wt/<slice>`, outside the folder of the session. Start the session with `--add-dir ../wt`, or the owner approves the prompt for it. This is a known gap until a follow-up slice.
+
+**The store.** The harness treats files under the git folder as sensitive: it asks for each write into the store, and a headless run refuses. The rules above do not change that. In a headless run the skills stop and hand the owner the exact `mkdir -p` and `cp` commands to run. This is a known gap until a follow-up slice.
 
 ## Limits
 
