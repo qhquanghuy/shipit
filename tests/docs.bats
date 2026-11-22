@@ -20,7 +20,7 @@ load helpers
 # prefix, receipt fields, store paths and default values.
 
 # Flags of git, nix and cargo that the docs mention; any other flag must be one of shipit's.
-EXTERNAL_FLAGS=(--all-targets --branch --check --command --ignore-submodules --print-build-logs --release --pager --pre --short --template --numstat --separate-git-dir --stat)
+EXTERNAL_FLAGS=(--all-targets --branch --check --command --ignore-submodules --print-build-logs --release --pager --pre --short --template --numstat --separate-git-dir --stat --target-directory)
 
 # files_in <root>: README.md and every file in docs/ under <root>.
 files_in() {

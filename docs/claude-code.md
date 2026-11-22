@@ -77,10 +77,16 @@ git push origin HEAD:refs/heads/slice/v1/demo
 A command is judged in the working folder and in every folder it changes to with `cd`, so a
 ship command cannot hide behind a `cd` to a folder that is no project. `cd ~/dir` is read, with
 `~` as `$HOME`; any other tilde asks. A folder is in a ShipIt project when the repository is: the
-setup file is in the working tree, at `HEAD`, at the tip of the default branch (origin's `HEAD`,
-else `main` or `master`), or the store folder of the repository exists. So a worktree or a
-checkout of a commit from before the setup file is judged too; a repository whose only setup file
-is on another branch is no project. The reads and edits that pass without a question:
+setup file is in the working tree, at `HEAD`, at the tip of the default branch (origin's `HEAD`;
+without it `origin/main`, `origin/master`, then `main` or `master`), or the store folder of the
+repository exists. So a worktree or a checkout of a commit from before the setup file is judged
+too; a repository whose only setup file is on another branch is no project. A session that starts
+or resumes in a project makes its store folder (`<git common dir>/shipit/`), so that a commit, a
+checkout or a branch change cannot make the repository look like no project; for the same reason
+`git branch` with `-d`, `-D`, `-m`, `-M`, `-c`, `-C`, `-f` or a long form of them, and `git fetch`
+with a refspec that holds a colon, ask. If the setup file is removed on purpose, a leftover
+`.git/shipit/` keeps the repository gated: remove that folder to undo it. The reads and edits
+that pass without a question:
 
 ```sh silent
 cd ~/work/app && git status
@@ -109,9 +115,10 @@ passes: the skills write them. Every `.git` in the command must be followed at o
 `/shipit/goals/`, with no `..` part after it and no `receipts/` anywhere. Anything else naming
 `.git` asks, and so does `.git` as a path part of its own. A link made there reaches the hooks and
 the receipts, and an archive can hold one, so in a text that names the goals only `mkdir`, `cp`
-(without `-r`, `-R`, `-a`, `-L`, `-s`, `-l`, `-H` or a long form of them), `cat`, `ls`, `head`,
-`tail`, `wc` and `shipit` may run, and nothing may be redirected into a file (`2>&1` and
-`/dev/null` are fine).
+(with no option but `-p`, `-f`, `-n`, `-i`, `-v`, `-t`, `-T`, `--target-directory` and `--`), `cat`,
+`ls`, `head`, `tail`, `wc` and `shipit` may run, and nothing may be redirected into a file (`2>&1`
+and `/dev/null` are fine). Any other program in the same command makes it ask, so write the store
+copy as a command of its own.
 
 ```sh silent
 mkdir -p .git/shipit/goals/v1 && cp a.md .git/shipit/goals/v1/roadmap.v1.md
@@ -124,6 +131,10 @@ shipit validate build-plan .git/shipit/goals/v1/slices/x/build-plan.md
 cp a.md .git/shipit/goals/../../hooks/pre-push
 ln -s ../../../hooks .git/shipit/goals/v1/h
 cp -rL a .git/shipit/goals/v1/
+cp -P link .git/shipit/goals/v1/h
+git status; cp a.md .git/shipit/goals/v1/a.md
+git branch -D main
+git fetch . +old:refs/remotes/origin/main
 cat a.md > .git/shipit/goals/v1/b.md
 git apply fix.patch
 git init --separate-git-dir ../elsewhere

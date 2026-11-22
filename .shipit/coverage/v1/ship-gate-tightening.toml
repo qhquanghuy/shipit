@@ -16,5 +16,8 @@ DW9 = [
   "a worktree or a checkout from before the setup file is judged as the project",
   "a repository is a project by its default branch or its store, and not by another branch",
   "a_git_gh_or_shell_startup_variable_asks_wherever_it_is_set",
+  "a start or a resume in a project makes the store folder, and in no other folder nothing",
+  "origin's main stands in for the default branch when origin/HEAD is missing and main is gone",
+  "what could empty the rule that a repository is a project asks",
   "the push form the doc calls silent passes the ship gate, and the forms it says ask do ask",
 ]

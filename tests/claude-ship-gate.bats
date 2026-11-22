@@ -343,3 +343,23 @@ old_commit() {
   run_hook claude-ship-gate "$(bash_input "$store" "git push origin main" bypassPermissions)" "$store"
   [ "$(decision)" = deny ]
 }
+
+@test "origin's main stands in for the default branch when origin/HEAD is missing and main is gone" {
+  git push -q origin main
+  git fetch -q origin
+  git symbolic-ref --quiet refs/remotes/origin/HEAD && git remote set-head origin -d
+  local old
+  old=$(old_commit)
+  git checkout -q --detach "$old"
+  git branch -q -D main
+  gate "git push origin main" bypassPermissions
+  [ "$(decision)" = deny ]
+}
+
+@test "what could empty the rule that a repository is a project asks" {
+  local command
+  for command in "git branch -D main" "git branch -m main old" "git branch -rd origin/main" "git fetch . +x:refs/remotes/origin/main"; do
+    gate "$command" bypassPermissions
+    [ "$(decision)" = deny ]
+  done
+}

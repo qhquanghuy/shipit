@@ -72,6 +72,10 @@ const MERGES_BASE: &str = "merges into the base branch";
 const DOT_GIT: &str =
     "names .git, or a path under it, other than the goals folder .git/shipit/goals/";
 const GOALS_ONLY: &str = "does more than read, copy or make folders under .git/shipit/goals/ (only mkdir, cp without -r -R -a -L -s -l -H, cat, ls, head, tail, wc and shipit may run in such a command, with no redirect into a file)";
+const BRANCH_REWRITE: &str =
+    "deletes, renames, copies or force-moves a branch (a base branch holds the setup file)";
+const FETCH_REFSPEC: &str =
+    "fetches into a name (a refspec with a colon moves a remote-tracking branch)";
 const REFLOG: &str = "changes the reflog (expire, delete)";
 const SYMBOLIC_REF: &str = "changes a symbolic ref (HEAD and the like)";
 const APPLIES: &str = "applies a patch (a patch can add a link into .git; only apply --check, --stat, --numstat and --summary pass)";
@@ -357,6 +361,21 @@ fn changes_config(args: &[String]) -> bool {
     !reads || writes
 }
 
+// A branch that is deleted, renamed, copied or moved by force can empty what makes a folder a project.
+fn rewrites_branches(args: &[String]) -> bool {
+    args.iter().any(|word| {
+        matches!(word.as_str(), "--delete" | "--move" | "--copy" | "--force")
+            || cluster_has(word, &['d', 'D', 'm', 'M', 'c', 'C', 'f'])
+    })
+}
+
+// `git fetch origin +old:refs/remotes/origin/main` moves a remote-tracking branch; a URL has a
+// colon too and is no refspec.
+fn fetches_into_a_name(args: &[String]) -> bool {
+    args.iter()
+        .any(|word| !word.starts_with('-') && word.contains(':') && !word.contains("://"))
+}
+
 // Only a listing of the remotes passes: bare, `-v`, `show` and `get-url`.
 fn changes_remote(args: &[String]) -> bool {
     let mut after = args
@@ -544,6 +563,8 @@ impl Judge<'_> {
             "tag" if !lists_tags(args) => add(reasons, TAGS),
             "notes" if !reads_notes(args) => add(reasons, NOTES),
             "reflog" if writes_reflog(args) => add(reasons, REFLOG),
+            "branch" if rewrites_branches(args) => add(reasons, BRANCH_REWRITE),
+            "fetch" if fetches_into_a_name(args) => add(reasons, FETCH_REFSPEC),
             "symbolic-ref" if !reads_symbolic_ref(args) => add(reasons, SYMBOLIC_REF),
             "apply" if !only_checks_a_patch(args) => add(reasons, APPLIES),
             "merge" => {
@@ -557,7 +578,7 @@ impl Judge<'_> {
                 }
             }
             "config" | "remote" | "tag" | "notes" | "rebase" | "reflog" | "symbolic-ref"
-            | "apply" => {}
+            | "apply" | "branch" | "fetch" => {}
             known if GIT_READS.contains(&known) || GIT_EDITS.contains(&known) => {}
             _ => add(reasons, UNKNOWN_GIT),
         }
@@ -846,14 +867,10 @@ const GOALS_FOLDER: &str = "/shipit/goals/";
 // A link made in goals/ can point at the hooks or the receipts, and an archive can hold one, so
 // the programs that may run in a text naming the goals are a list, not a ban.
 const GOALS_PROGRAMS: [&str; 8] = ["mkdir", "cp", "cat", "ls", "head", "tail", "wc", "shipit"];
-const COPY_LINKS: [&str; 6] = [
-    "--recursive",
-    "--archive",
-    "--dereference",
-    "--symbolic-link",
-    "--link",
-    "--no-dereference",
-];
+// The letters of the `cp` options that only copy a file: `-p -f -n -i -v`, and `-t` and `-T` that name
+// the target. Any other option can copy a link as a link (`-P`, `-d`, `--preserve=links`) or build
+// paths from the source (`--parents`).
+const COPY_LETTERS: &str = "pfnivtT";
 
 fn is_name_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.')
@@ -894,6 +911,20 @@ fn redirects_to_a_file(command: &str) -> bool {
     })
 }
 
+// Every option before `--` is on the list; a word that is no option is a path.
+fn copies_plainly(words: &[String]) -> bool {
+    words
+        .iter()
+        .take_while(|word| *word != "--")
+        .filter(|word| word.starts_with('-'))
+        .all(|word| match word.strip_prefix("--") {
+            Some(long) => long == "target-directory" || long.starts_with("target-directory="),
+            None => word
+                .strip_prefix('-')
+                .is_some_and(|letters| letters.chars().all(|c| COPY_LETTERS.contains(c))),
+        })
+}
+
 fn only_copies_and_reads(command: &str, parsed: &Parse) -> bool {
     let Parse::Plain { segments, .. } = parsed else {
         return false;
@@ -902,11 +933,7 @@ fn only_copies_and_reads(command: &str, parsed: &Parse) -> bool {
         && segments.iter().all(|segment| {
             let name = leading_program(segment.words.iter().map(String::as_str));
             name.is_some_and(|name| GOALS_PROGRAMS.contains(&name))
-                && (name != Some("cp")
-                    || !segment.words.iter().any(|word| {
-                        cluster_has(word, &['r', 'R', 'a', 'L', 's', 'l', 'H'])
-                            || COPY_LINKS.contains(&word.as_str())
-                    }))
+                && (name != Some("cp") || copies_plainly(&segment.words))
         })
 }
 
@@ -1854,6 +1881,13 @@ mod tests {
                 format!("cp -ls x {goals}/{goal}/h"),
                 format!("cp --dereference x {goals}/{goal}/"),
                 format!("cp --symbolic-link x {goals}/{goal}/"),
+                format!("cp -P x {goals}/{goal}/h"),
+                format!("cp -d x {goals}/{goal}/h"),
+                format!("cp -pP x {goals}/{goal}/h"),
+                format!("cp --preserve=links x {goals}/{goal}/h"),
+                format!("cp --no-dereference x {goals}/{goal}/h"),
+                format!("cp --parents a/b/../../x {goals}/{goal}/"),
+                format!("cp -u x {goals}/{goal}/h"),
                 format!("env cp x {goals}/{goal}/{file}"),
                 format!("git status && cp x {goals}/{goal}/{file}"),
                 format!("cp x {goals}/{goal}/{file} && ln -s a b"),
@@ -1865,6 +1899,9 @@ mod tests {
                 format!("ls {goals}/ 2>/dev/null"),
                 format!("cp x {goals}/{goal}/{file} && ls -R {goals}/ | head -n 3"),
                 format!("cp -p -t {goals}/{goal}/ x"),
+                format!("cp -pfnivT x {goals}/{goal}/{file}"),
+                format!("cp --target-directory={goals}/{goal}/ x"),
+                format!("cp -- x {goals}/{goal}/{file}"),
             ] {
                 prop_assert_eq!(reasons(&command), Vec::<String>::new(), "{}", command);
             }
@@ -1907,6 +1944,13 @@ mod tests {
                 format!("git init -b {reference} d"),
                 // A read of a symbolic ref moves nothing, so a push may follow it.
                 "git symbolic-ref --short HEAD && git push -u origin slice/v1/x".to_owned(),
+                "git branch".to_owned(),
+                format!("git branch -avv --contains {reference}"),
+                "git branch --show-current".to_owned(),
+                format!("git branch {reference} HEAD"),
+                "git fetch".to_owned(),
+                format!("git fetch --prune origin {reference}"),
+                format!("git fetch https://example.com/{reference}.git"),
             ] {
                 prop_assert_eq!(reasons(&command), Vec::<String>::new(), "{}", command);
             }
@@ -1924,6 +1968,20 @@ mod tests {
                 format!("git init --separate-git-dir={reference} d"),
                 format!("git init --separate-git-dir {reference}"),
                 format!("git init --template={reference} d"),
+                // What can empty the rule that a repository is a project.
+                format!("git branch -d {reference}"),
+                format!("git branch -D {reference}"),
+                format!("git branch -rd origin/{reference}"),
+                format!("git branch -m main {reference}"),
+                format!("git branch -M {reference}"),
+                format!("git branch -c main {reference}"),
+                format!("git branch -C main {reference}"),
+                format!("git branch --delete {reference}"),
+                format!("git branch --move main {reference}"),
+                format!("git branch --copy main {reference}"),
+                format!("git branch -f main {reference}"),
+                format!("git fetch . +{reference}:refs/remotes/origin/main"),
+                format!("git fetch origin {reference}:{reference}"),
                 format!("git init --template {reference}"),
                 format!("git symbolic-ref HEAD {reference} && git push -u origin slice/v1/x"),
             ] {

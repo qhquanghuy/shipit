@@ -1,6 +1,6 @@
 #![expect(
     clippy::disallowed_methods,
-    reason = "this is the only module that tests for a file, reads CLAUDE_PROJECT_DIR and HOME and asks whether the input is a terminal for the hooks"
+    reason = "this is the only module that tests for a file, reads CLAUDE_PROJECT_DIR and HOME, makes the store folder and asks whether the input is a terminal for the hooks"
 )]
 
 use std::io::IsTerminal as _;
@@ -19,6 +19,11 @@ pub(crate) fn project_dir() -> Option<PathBuf> {
     std::env::var_os("CLAUDE_PROJECT_DIR")
         .filter(|dir| !dir.is_empty())
         .map(PathBuf::from)
+}
+
+// The store folder of a project, made when a session starts in it.
+pub(crate) fn make_folder(path: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(path).map_err(|why| format!("cannot make {}: {why}", path.display()))
 }
 
 // The home folder, for a `cd ~/x` that the gate resolves.

@@ -7,7 +7,7 @@ use serde_json::Value;
 use crate::commands::check::settle_base;
 use crate::commands::setup::load_setup_table;
 use crate::edge::git::Git;
-use crate::edge::hook_process::{exists, home_dir, project_dir, read_hook_input};
+use crate::edge::hook_process::{exists, home_dir, make_folder, project_dir, read_hook_input};
 use crate::edge::records::store_dir;
 use crate::pure::claude_hook::{HookInput, answer_json, mcp_ship, parse_input, resolve};
 use crate::pure::failure::Failure;
@@ -30,8 +30,8 @@ pub(crate) const EXITS: [&str; 4] = [
 // Larger than any command a person types, and as much as the hook is asked to hold.
 const INPUT_LIMIT: usize = 8 * 1024 * 1024;
 
-// The tip of the default branch: what origin says its HEAD is, else a local main or master. A
-// folder checked out at a commit from before the setup file is still in the same repository.
+// The tip of the default branch: what origin says its HEAD is, else origin's or a local main or
+// master. A folder checked out at a commit from before the setup file is still in the same repository.
 fn default_branch_has_setup(git: &Git) -> bool {
     let origin = lines_of(
         git,
@@ -43,9 +43,14 @@ fn default_branch_has_setup(git: &Git) -> bool {
         ],
     );
     let tips: Vec<String> = if origin.is_empty() {
-        ["main", "master"]
-            .map(|name| format!("refs/heads/{name}"))
-            .to_vec()
+        [
+            "refs/remotes/origin/main",
+            "refs/remotes/origin/master",
+            "refs/heads/main",
+            "refs/heads/master",
+        ]
+        .map(str::to_owned)
+        .to_vec()
     } else {
         origin
             .iter()
@@ -67,6 +72,22 @@ pub(crate) fn shipit_project(git: &Git) -> bool {
         || git
             .common_dir()
             .is_ok_and(|common| exists(&store_dir(&common)))
+}
+
+// A session that starts in a project makes the store folder of its repository, so that the
+// repository stays one when a commit, a checkout or a branch no longer shows the setup file. Only
+// the working tree and HEAD count here: a repository whose setup is elsewhere is not made one.
+pub(crate) fn settle_project(dir: &Path) -> Result<(), String> {
+    let Ok(git) = Git::at(dir) else {
+        return Ok(());
+    };
+    if !exists(&git.top().join(SETUP_PATH)) && !git.file_exists(OsStr::new(HEAD), SETUP_PATH) {
+        return Ok(());
+    }
+    let common = git
+        .common_dir()
+        .map_err(|_why| "cannot find the git folder of the project".to_owned())?;
+    make_folder(&store_dir(&common))
 }
 
 fn lines_of(git: &Git, args: &[&str]) -> Vec<String> {
