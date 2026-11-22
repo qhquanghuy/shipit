@@ -79,33 +79,6 @@ fill() {
   done
 }
 
-# forbidden_text <skills dir>: one line for each thing a skill must never say, in a code span or out
-# of one: a merge, a skipped hook, or a push that is not the slice push.
-forbidden_text() {
-  local dir=$1 word pushes slice_pushes file
-  for word in 'git merge' '--no-verify' 'gh pr merge'; do
-    grep -rnF -- "$word" "$dir" | sed "s/^/forbidden $word: /" || true
-  done
-  for file in "$dir"/*/SKILL.md; do
-    pushes=$(grep -oF 'git push' "$file" | wc -l)
-    slice_pushes=$(grep -oF 'git push -u origin slice/<goal>/<slice>' "$file" | wc -l)
-    [[ $pushes -eq $slice_pushes ]] || echo "a push other than the slice push in $file"
-  done
-}
-
-@test "claude skills: no skill merges, skips a hook, or pushes anything but the slice branch" {
-  run forbidden_text "$SKILLS"
-  [ "$output" = "" ]
-  local word broken
-  for word in 'git merge main' 'a --no-verify push' 'gh pr merge 1' 'git push origin main' 'git push -u origin main'; do
-    broken=$BATS_TEST_TMPDIR/broken-${word// /-}
-    mkdir -p "$broken"
-    cp -r "$SKILLS"/* "$broken"/
-    printf '\nOne more line: %s.\n' "$word" >>"$broken/shipit-review/SKILL.md"
-    run forbidden_text "$broken"
-    [ -n "$output" ] || { echo "not found: $word"; return 1; }
-  done
-}
 
 # allow_rules <doc>: the Bash(...) rules of the allow list under "Permissions the skills need".
 allow_rules() {
@@ -170,4 +143,36 @@ uncovered_commands() {
   sed 's/"Bash(cp \*)"/"Bash(cp)"/' "$SHIPIT_SRC/docs/claude-code.md" >"$BATS_TEST_TMPDIR/docs/claude-code.md"
   run uncovered_commands "$SKILLS" "$BATS_TEST_TMPDIR/docs/claude-code.md"
   [[ $output == *"no allow rule for: cp "* ]]
+}
+
+# forbidden_text <skills dir>: one line for each thing a skill must never say, in a code span or out
+# of one, with any whitespace between the words: a merge, a skipped hook, or a push that is not
+# exactly the slice push (the form, then the end of the span, a stop or the end of the line).
+forbidden_text() {
+  local dir=$1 pattern pushes slice_pushes file
+  for pattern in 'git[[:space:]]+merge' '--no-verify' 'gh[[:space:]]+pr[[:space:]]+merge'; do
+    grep -rnE -- "$pattern" "$dir" | sed "s/^/forbidden: /" || true
+  done
+  for file in "$dir"/*/SKILL.md; do
+    pushes=$(grep -oE 'git[[:space:]]+push' "$file" | wc -l)
+    slice_pushes=$(grep -oE 'git push -u origin slice/<goal>/<slice>([`,.;:)]|$)' "$file" | wc -l)
+    [[ $pushes -eq $slice_pushes ]] || echo "a push other than the slice push in $file"
+  done
+}
+
+@test "claude skills: no skill merges, skips a hook, or pushes anything but the slice branch" {
+  run forbidden_text "$SKILLS"
+  [ "$output" = "" ]
+  local text broken n=0
+  for text in 'git merge main' 'git   merge main' 'a --no-verify push' 'gh pr merge 1' 'gh  pr  merge 1' \
+    'git push origin main' 'git push -u origin main' 'git push -u origin slice/<goal>/<slice> --force' \
+    'git push -u origin slice/<goal>/<slice> main' 'git  push -u origin slice/<goal>/<slice>'; do
+    n=$((n + 1))
+    broken=$BATS_TEST_TMPDIR/broken-$n
+    mkdir -p "$broken"
+    cp -r "$SKILLS"/* "$broken"/
+    printf '\nOne more line: %s.\n' "$text" >>"$broken/shipit-review/SKILL.md"
+    run forbidden_text "$broken"
+    [ -n "$output" ] || { echo "not found: $text"; return 1; }
+  done
 }

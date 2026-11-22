@@ -546,26 +546,30 @@ check_short() {
   [[ $output == *"shipit: "*" lines, over 200"* ]]
 }
 
-# check_start_order: the build plan is reviewed before `shipit start`; the roadmap skill never runs it.
+
+# check_start_order: in shipit-slice, from "## Steps" to the end of the file, only a numbered step
+# names `shipit start`, and it comes after the line that records the build plan's review. The
+# roadmap skill never names it, on any line.
 check_start_order() {
-  local root=$1 file receipt start line bad=0
+  local root=$1 file body receipt line n bad=0
   five_skills "$root" || return 1
   file=$(skill_file "$root" shipit-slice)
-  receipt=$(grep -n '`shipit receipt plan-review' "$file" | head -1 | cut -d: -f1 || true)
-  start=$(grep -n '^[0-9]*\. .*`shipit start' "$file" | head -1 | cut -d: -f1 || true)
-  if [[ -z $receipt || -z $start ]]; then
-    echo "shipit-slice: no plan-review receipt line or no shipit start line"
-    return 1
+  body=$(awk '/^## Steps$/ { on = 1 } on' "$file")
+  receipt=$(grep -n '`shipit receipt plan-review' <<<"$body" | head -1 | cut -d: -f1 || true)
+  [[ -n $receipt ]] || { echo "shipit-slice: no line records the build plan's review"; return 1; }
+  while IFS=: read -r n line; do
+    [[ $line =~ ^[0-9]+\.\  ]] || { echo "shipit-slice: a line that is not a numbered step names shipit start: ${line:0:70}"; bad=1; continue; }
+    [[ $n -gt $receipt ]] || { echo "shipit-slice: shipit start comes before the build plan review"; bad=1; }
+  done < <(grep -n '`shipit start' <<<"$body" || true)
+  grep -q '`shipit start' <<<"$body" || { echo "shipit-slice: no step runs shipit start"; bad=1; }
+  if grep -nF '`shipit start' "$(skill_file "$root" shipit-roadmap)"; then
+    echo "shipit-roadmap: a line names shipit start"
+    bad=1
   fi
-  [[ $start -gt $receipt ]] || { echo "shipit-slice: shipit start comes before the build plan review"; bad=1; }
-  file=$(skill_file "$root" shipit-roadmap)
-  while IFS= read -r line; do
-    [[ $line == *'refuses'* || $line == Never:* ]] || { echo "shipit-roadmap: a line runs shipit start: ${line:0:70}"; bad=1; }
-  done < <({ section "$file" Outcomes; section "$file" Steps; } | grep -F '`shipit start' || true)
   return "$bad"
 }
 
-@test "skills: the build plan is reviewed before shipit start, and the roadmap skill never starts a slice" {
+@test "skills: the build plan is reviewed before shipit start, and the roadmap skill never names it" {
   run check_start_order "$SHIPIT_SRC"
   [ "$output" = "" ]
   [ "$status" -eq 0 ]
@@ -575,8 +579,18 @@ check_start_order() {
   [ "$status" -eq 1 ]
   [[ $output == *"shipit-slice: shipit start comes before the build plan review"* ]]
   copy_plugin "$BATS_TEST_TMPDIR/copy2"
-  sed -i '/^9\. /s/hands each slice/runs `shipit start` for each slice and hands each slice/' "$BATS_TEST_TMPDIR/copy2/skills/shipit-roadmap/SKILL.md"
+  sed -i 's/^- Its makers, reader/- The lead runs `shipit start <slice>` first. Its makers, reader/' "$BATS_TEST_TMPDIR/copy2/skills/shipit-slice/SKILL.md"
   run check_start_order "$BATS_TEST_TMPDIR/copy2"
   [ "$status" -eq 1 ]
-  [[ $output == *"shipit-roadmap: a line runs shipit start"* ]]
+  [[ $output == *"not a numbered step names shipit start"* ]]
+  copy_plugin "$BATS_TEST_TMPDIR/copy3"
+  sed -i 's/^Never: write code/Never: run `shipit start`, write code/' "$BATS_TEST_TMPDIR/copy3/skills/shipit-roadmap/SKILL.md"
+  run check_start_order "$BATS_TEST_TMPDIR/copy3"
+  [ "$status" -eq 1 ]
+  [[ $output == *"shipit-roadmap: a line names shipit start"* ]]
+  copy_plugin "$BATS_TEST_TMPDIR/copy4"
+  sed -i 's/^| one agent per slice | `shipit:slice`, started by the lead for each slice |/| one agent per slice | `shipit:slice`, started by the lead, which runs `shipit start` |/' "$BATS_TEST_TMPDIR/copy4/skills/shipit-roadmap/SKILL.md"
+  run check_start_order "$BATS_TEST_TMPDIR/copy4"
+  [ "$status" -eq 1 ]
+  [[ $output == *"shipit-roadmap: a line names shipit start"* ]]
 }
