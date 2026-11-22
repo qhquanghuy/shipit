@@ -174,6 +174,10 @@ mod tests {
 
     use super::*;
 
+    // 0000-01-01T00:00:00Z and 9999-12-31T23:59:59Z.
+    const FIRST: i64 = -62_167_219_200;
+    const LAST: i64 = 253_402_300_799;
+
     fn id() -> impl Strategy<Value = String> {
         "[a-z0-9_-]{1,8}"
     }
@@ -297,11 +301,69 @@ mod tests {
         }
 
         #[test]
-        fn seconds_round_trips(at in 0_i64..4_102_444_800) {
+        fn seconds_round_trips(at in FIRST..=LAST) {
             let text = utc_text(at);
             prop_assert_eq!(seconds(&text), Some(at));
             prop_assert_eq!(seconds(&format!("{text}\n")), None);
             prop_assert_eq!(parse_entry("a-x", &format!("{text}\n")), Some(Entry::Running { agent_id: "x".to_owned(), at }));
+        }
+
+        #[test]
+        fn a_time_reads_iff_its_date_exists(
+            year in 0_i64..10_000,
+            month in 0_i64..14,
+            day in 0_i64..33,
+            hour in 0_i64..26,
+            minute in 0_i64..62,
+            second in 0_i64..62,
+        ) {
+            let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+            let month_days = match month {
+                2 if leap => 29,
+                2 => 28,
+                4 | 6 | 9 | 11 => 30,
+                _ => 31,
+            };
+            let exists = (1..=12).contains(&month)
+                && (1..=month_days).contains(&day)
+                && hour < 24
+                && minute < 60
+                && second < 60;
+            let text = format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z");
+            prop_assert_eq!(seconds(&text).is_some(), exists);
+            prop_assert_eq!(seconds(&format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:60Z")), None);
+        }
+
+        #[test]
+        fn a_text_reads_only_if_it_is_the_text_of_its_second(at in FIRST..=LAST) {
+            let written = utc_text(at);
+            for cut in 0..written.len() {
+                let (head, tail) = written.split_at(cut);
+                let tail = tail.get(1..).unwrap_or("");
+                for put in ["", "+", "-", " ", "t", "z", ".", "0", ":", "T", "Z"] {
+                    let text = format!("{head}{put}{tail}");
+                    if let Some(read) = seconds(&text) {
+                        prop_assert_eq!(utc_text(read), text);
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn the_next_second_has_the_next_text(at in FIRST..LAST) {
+            prop_assert!(utc_text(at) < utc_text(at + 1));
+        }
+
+        #[test]
+        fn a_time_outside_the_years_0000_to_9999_has_no_text(
+            at in prop_oneof![
+                i64::MIN..FIRST,
+                (FIRST - 1_000_000_000_000)..FIRST,
+                (LAST + 1)..(LAST + 1_000_000_000_000),
+                (LAST + 1)..=i64::MAX,
+            ],
+        ) {
+            prop_assert_eq!(utc_text(at), "");
         }
 
         #[test]
@@ -353,5 +415,22 @@ mod tests {
             Err("ShipIt: 2 agents are already running in this session; the setup allows 2 ([agents.parallel] agents). Wait for one to finish, then start it again.".to_owned())
         );
         assert_eq!(admit(&entries, 5, 3), Ok(()));
+    }
+
+    // Ledger files written while the clock went through chrono still read, to the same second.
+    #[test]
+    fn files_written_with_chrono_still_read() {
+        for (text, at) in [
+            ("0000-01-01T00:00:00Z", -62_167_219_200),
+            ("1969-12-31T23:59:59Z", -1),
+            ("1970-01-01T00:00:00Z", 0),
+            ("2000-02-29T00:00:00Z", 951_782_400),
+            ("2026-11-22T16:13:17Z", 1_795_363_997),
+            ("2100-03-01T00:00:00Z", 4_107_542_400),
+            ("9999-12-31T23:59:59Z", 253_402_300_799),
+        ] {
+            assert_eq!(seconds(text), Some(at), "{text}");
+            assert_eq!(utc_text(at), text);
+        }
     }
 }
