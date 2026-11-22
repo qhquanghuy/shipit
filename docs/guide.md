@@ -22,7 +22,7 @@ In v1 every slice gets the full review: a reader, an informed review and a secon
 
 Each agent has a role. On the screen you see the role: `shipit:maker`, `shipit:scout`, `shipit:reader`, `shipit:work-reviewer`, `shipit:plan-reviewer`, `shipit:tester`, `shipit:model-scout` and `shipit:slice`.
 The goal text calls the model advice role the "researcher"; it is `shipit:model-scout`.
-A reviewer is always one tier above the one who made the work. The tool checks this when a receipt is recorded.
+A reviewer is always one tier above the one who made the work; if the author is at the top tier, the same tier at a higher effort. The tool checks this when a receipt is recorded.
 
 ## Decision points
 
