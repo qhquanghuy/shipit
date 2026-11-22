@@ -1850,7 +1850,6 @@ mod tests {
                 format!("cat {goals}/{goal}/{file} {root}/.git/config"),
                 format!("cat {root}/.git/config {goals}/{goal}/{file}"),
                 format!("cat {goals}x/{file}"),
-                format!("ls {goals}"),
                 format!("cp x {root}/.git/hooks/{other}"),
                 format!("cp x {root}/.g'it'/hooks/{other}"),
                 format!("cp x '{root}/.git'/shipit/goals/../hooks/{other}"),
@@ -1916,6 +1915,46 @@ mod tests {
                 format!("ls .git {other}"),
             ] {
                 prop_assert_eq!(reasons(&command), Vec::<String>::new(), "{}", command);
+            }
+        }
+
+        // The name ends at `goals`: a closing slash is not needed, and `diff` only reads.
+        #[test]
+        fn the_goals_folder_may_be_named_without_its_slash_and_read_with_diff(
+            root in "/?[a-z]{1,6}(/[a-z]{1,6}){0,2}",
+            goal in name(),
+            other in name(),
+            file in "[a-z]{1,6}[.]md",
+        ) {
+            let goals = format!("{root}/.git/shipit/goals");
+            for command in [
+                format!("ls {goals}"),
+                format!("ls -la {goals}"),
+                format!("ls '{goals}'"),
+                format!("cat {goals}/{goal}/{file}"),
+                format!("diff {file} {goals}/{goal}/{file}"),
+                format!("diff -u {goals}/{goal}/{file} {goals}/{other}/{file}"),
+                format!("cp a {goals}"),
+            ] {
+                prop_assert_eq!(reasons(&command), Vec::<String>::new(), "{}", command);
+            }
+            for command in [
+                format!("ls {goals}x"),
+                format!("ls {goals}-{other}/"),
+                format!("ls {goals}~"),
+                format!("cat {goals}:x"),
+                format!("ls {goals}*"),
+                format!("ls '{goals}'x"),
+                format!("cat {goals}/.."),
+                format!("ls {goals}$?"),
+            ] {
+                prop_assert!(reasons(&command).contains(&DOT_GIT.to_owned()), "{}", command);
+            }
+            for command in [
+                format!("ln -s ../hooks {goals}"),
+                format!("diff {file} {goals}/{goal}/{file} > {goals}/{goal}/x"),
+            ] {
+                prop_assert!(reasons(&command).contains(&GOALS_ONLY.to_owned()), "{}", command);
             }
         }
 
