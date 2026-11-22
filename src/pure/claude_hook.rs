@@ -52,6 +52,63 @@ pub(crate) fn answer_json(answer: &Answer) -> Option<String> {
     )
 }
 
+pub(crate) const WORK_REVIEWER: &str = "shipit:work-reviewer";
+pub(crate) const TESTER: &str = "shipit:tester";
+const BRANCH_LINE: &str = "shipit-branch:";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Target {
+    NotGated,
+    Gated {
+        role: String,
+        branch: Option<String>,
+    },
+    Bad(String),
+}
+
+// A reviewer of the work or a tester is started with the Agent tool; the branch it is to judge
+// is the one named by a line of the prompt. Two different names, or an empty one, cannot be
+// judged and are refused.
+pub(crate) fn review_target(input: &HookInput) -> Target {
+    let tool_input = input.tool_input.as_ref();
+    let text = |key: &str| {
+        tool_input
+            .and_then(|value| value.get(key))
+            .and_then(Value::as_str)
+    };
+    let agent_tool = matches!(input.tool_name.as_deref(), Some("Agent" | "Task"));
+    let Some(role) = text("subagent_type").filter(|role| [WORK_REVIEWER, TESTER].contains(role))
+    else {
+        return Target::NotGated;
+    };
+    if !agent_tool {
+        return Target::NotGated;
+    }
+    let mut named: Vec<&str> = Vec::new();
+    for line in text("prompt").unwrap_or_default().lines() {
+        let Some(rest) = line.trim().strip_prefix(BRANCH_LINE) else {
+            continue;
+        };
+        let Some(word) = rest.split_whitespace().next() else {
+            return Target::Bad("the shipit-branch line names no branch".to_owned());
+        };
+        if !named.contains(&word) {
+            named.push(word);
+        }
+    }
+    match named.as_slice() {
+        [] => Target::Gated {
+            role: role.to_owned(),
+            branch: None,
+        },
+        [branch] => Target::Gated {
+            role: role.to_owned(),
+            branch: Some((*branch).to_owned()),
+        },
+        [_, _, ..] => Target::Bad("the prompt names two branches".to_owned()),
+    }
+}
+
 pub(crate) fn resolve(cwd: &Path, dir: Option<&str>) -> PathBuf {
     dir.map_or_else(|| cwd.to_path_buf(), |dir| cwd.join(dir))
 }
@@ -117,6 +174,65 @@ mod tests {
             let broken = format!("x{junk}[");
             prop_assert!(parse_input(broken.as_bytes()).is_err());
             prop_assert!(parse_input(b"[1]").is_err());
+        }
+
+        #[test]
+        fn branch_line_rules(
+            first in "[a-z][a-z/0-9-]{0,10}",
+            second in "[a-z][a-z/0-9-]{0,10}",
+            before in "[a-zA-Z ]{0,10}",
+            role in prop_oneof![Just(WORK_REVIEWER), Just(TESTER)],
+        ) {
+            let call = |prompt: String| {
+                review_target(&HookInput {
+                    tool_name: Some("Agent".to_owned()),
+                    tool_input: Some(json!({"subagent_type": role, "prompt": prompt})),
+                    cwd: PathBuf::from("/r"),
+                    mode: Mode::Auto,
+                })
+            };
+            let gated = |branch: Option<&str>| Target::Gated {
+                role: role.to_owned(),
+                branch: branch.map(str::to_owned),
+            };
+            prop_assert_eq!(call(before.clone()), gated(None));
+            prop_assert_eq!(
+                call(format!("{before}\n  shipit-branch: {first}\nmore")),
+                gated(Some(&first))
+            );
+            prop_assert_eq!(
+                call(format!("shipit-branch: {first}\n{before}\nshipit-branch:   {first}")),
+                gated(Some(&first))
+            );
+            if first != second {
+                prop_assert_eq!(
+                    call(format!("shipit-branch: {first}\nshipit-branch: {second}")),
+                    Target::Bad("the prompt names two branches".to_owned())
+                );
+            }
+            prop_assert_eq!(
+                call("shipit-branch:  ".to_owned()),
+                Target::Bad("the shipit-branch line names no branch".to_owned())
+            );
+        }
+
+        #[test]
+        fn gated_iff_work_reviewer_or_tester(
+            tool in prop_oneof![Just("Agent"), Just("Task"), Just("Bash"), Just("Read")],
+            kind in prop_oneof![
+                Just(WORK_REVIEWER.to_owned()), Just(TESTER.to_owned()),
+                Just("shipit:plan-reviewer".to_owned()), Just("general-purpose".to_owned()),
+                "[a-z:-]{0,16}",
+            ],
+        ) {
+            let target = review_target(&HookInput {
+                tool_name: Some(tool.to_owned()),
+                tool_input: Some(json!({"subagent_type": kind, "prompt": "p"})),
+                cwd: PathBuf::from("/r"),
+                mode: Mode::Default,
+            });
+            let gated = matches!(tool, "Agent" | "Task") && (kind == WORK_REVIEWER || kind == TESTER);
+            prop_assert_eq!(target != Target::NotGated, gated);
         }
 
         #[test]

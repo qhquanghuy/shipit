@@ -48,3 +48,9 @@ decision() {
 reason() {
   jq -r '.hookSpecificOutput.permissionDecisionReason // empty' <<<"$output"
 }
+
+# agent_input <cwd> <subagent_type> <prompt>: the event of an Agent tool call.
+agent_input() {
+  hook_input "$(jq -cn --arg cwd "$1" --arg type "$2" --arg prompt "$3" \
+    '{cwd: $cwd, tool_name: "Agent", tool_input: {subagent_type: $type, prompt: $prompt, description: "d"}, permission_mode: "auto"}')"
+}
