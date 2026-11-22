@@ -648,7 +648,10 @@ mod tests {
     }
 
     fn name() -> impl Strategy<Value = String> {
-        "[a-z][a-z0-9-]{0,8}".prop_filter("a slice is not named roadmap", |name| name != "roadmap")
+        "[a-z][a-z0-9-]{0,8}".prop_filter(
+            "not roadmap, and no word the gate reads as a program",
+            |name| name != "roadmap" && !WRAPPERS.contains(&name.as_str()),
+        )
     }
 
     proptest! {
@@ -675,12 +678,18 @@ mod tests {
 
         #[test]
         fn text_without_git_or_gh_passes(text in "[a-z0-9 _/.;|&$()'\"~{}<>`\\\\-]{0,40}") {
+            // The words as the text has them, and with every quote taken out first.
             let squeezed: String = text.chars().filter(|c| !matches!(c, '\'' | '"' | '\\')).collect();
-            let words: Vec<&str> = squeezed
-                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-'))
-                .collect();
-            prop_assume!(!words.contains(&"git") && !words.contains(&"gh"));
-            prop_assume!(!(words.contains(&"complete") && words.contains(&"--confirm")));
+            let words_of = |text: &str| -> Vec<String> {
+                text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-'))
+                    .map(str::to_owned)
+                    .collect()
+            };
+            for words in [words_of(&text), words_of(&squeezed)] {
+                let has = |word: &str| words.iter().any(|have| have == word);
+                prop_assume!(!has("git") && !has("gh"));
+                prop_assume!(!(has("complete") && has("--confirm")));
+            }
             prop_assert!(reasons(&text).is_empty());
         }
 
