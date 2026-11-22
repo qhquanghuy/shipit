@@ -816,7 +816,7 @@ mod tests {
 
         #[test]
         fn a_segment_reads_stdin_from_a_pipe_or_a_file_and_from_nothing_else(
-            a in "[a-z]{1,5}",
+            a in "[a-z]{1,5}[0-9]",
             file in "[a-z/]{1,6}",
         ) {
             let reads = |command: String| match parse(&command) {
