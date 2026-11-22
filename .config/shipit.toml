@@ -4,12 +4,26 @@ version = 1
 base = "main"
 # A change this size is still reviewable in one sitting; a bigger one is split.
 max_files = 60
-# The gate CI runs: clippy, tests, docs, format, bats and the shell lint.
-check = ["nix flake check --print-build-logs"]
+# Cheap checks first, then the builds and tests, then the metrics, which record and never fail.
+# The tests run directly, not through `nix flake check`: Nix prints no log for a check it
+# already built (a rerun of the same tree, for example after an amended message), so coverage would
+# see no test. The variables of the check and of the build are unset for them: the bats tests run
+# shipit in repositories of their own, and an outer SHIPIT_BIN or CARGO_TARGET_DIR makes them test
+# another binary.
+check = [
+  "shipit lint",
+  "shipit measure clones",
+  "cargo deny check",
+  "base=\"$(shipit measure merge-base)\" && gitleaks git --redact --no-banner --log-opts=\"$base..HEAD\" .",
+  "nix flake check --print-build-logs",
+  "shipit coverage -- env -u SHIPIT_MERGE_BASE -u SHIPIT_CHECK -u SHIPIT_BRANCH -u SHIPIT_BIN -u CARGO_TARGET_DIR bash -c 'cargo build --locked && cargo test --locked && bats --tap tests'",
+  "shipit metric clone-ratio \"$(shipit measure clone-ratio)\"",
+  "shipit metric cognitive-complexity \"$(shipit measure cognitive-complexity)\"",
+]
 
-# Nix is the tool environment of this repository; the check command enters it itself.
+# Every check runs in the dev shell, which has pmd, lizard, cargo-deny and gitleaks.
 [gate.environment]
-prefix = []
+prefix = ["nix", "develop", "--command"]
 
 [agents]
 max_fix_rounds = 2
