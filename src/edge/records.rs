@@ -1,0 +1,374 @@
+#![expect(
+    clippy::disallowed_methods,
+    clippy::disallowed_types,
+    reason = "this is the module that reads and writes the goals, receipts and logbooks of the store"
+)]
+
+use std::fs::{self, OpenOptions};
+use std::io::{ErrorKind, Write as _};
+use std::path::{Path, PathBuf};
+
+use serde::Serialize;
+use serde_json::Value;
+
+use crate::edge::files::read_text;
+use crate::pure::block::toml_block;
+use crate::pure::failure::Failure;
+use crate::pure::goal::GoalName;
+use crate::pure::goal_pick::roadmap_version;
+use crate::pure::logbook::{Logged, read_entries};
+use crate::pure::messages::{FILE_PROBLEM, NO_BLOCK, NOT_TOML, say};
+use crate::pure::metric::{KeptMetrics, MetricName, parse_kept};
+use crate::pure::receipt::{Oid, json_values};
+use crate::pure::review::ReceiptKind;
+use crate::pure::roadmap::{Roadmap, SliceName, parse_roadmap};
+use crate::pure::rules::invalid;
+use crate::pure::setup::toml_table;
+
+const SLICES: &str = "## Slices";
+
+pub(crate) fn store_dir(common: &Path) -> PathBuf {
+    common.join("shipit")
+}
+
+pub(crate) fn goal_dir(store: &Path, goal: &GoalName) -> PathBuf {
+    store.join("goals").join(goal.to_string())
+}
+
+pub(crate) fn logbook_path(store: &Path, goal: &GoalName) -> PathBuf {
+    goal_dir(store, goal).join("logbook.jsonl")
+}
+
+pub(crate) fn coverage_record_path(store: &Path, tree: &Oid) -> PathBuf {
+    store
+        .join("receipts")
+        .join("coverage")
+        .join(format!("{tree}.json"))
+}
+
+pub(crate) fn metric_record_path(store: &Path, tree: &Oid, name: &MetricName) -> PathBuf {
+    store
+        .join("receipts")
+        .join("metric")
+        .join(tree.to_string())
+        .join(format!("{name}.json"))
+}
+
+// Every metric record of the store; one that cannot be read is skipped.
+pub(crate) fn metric_records(store: &Path) -> Vec<Value> {
+    let Ok(trees) = fs::read_dir(store.join("receipts").join("metric")) else {
+        return Vec::new();
+    };
+    trees
+        .filter_map(Result::ok)
+        .filter_map(|tree| fs::read_dir(tree.path()).ok())
+        .flatten()
+        .filter_map(Result::ok)
+        .filter_map(|file| json_values(&fs::read(file.path()).ok()?))
+        .filter_map(|docs| match <[Value; 1]>::try_from(docs) {
+            Ok([doc]) => Some(doc),
+            Err(_several) => None,
+        })
+        .collect()
+}
+
+// The kept metrics files: the goal each is named for, and its text when it can be read.
+pub(crate) fn kept_files(store: &Path) -> Vec<(GoalName, Option<String>)> {
+    let Ok(files) = fs::read_dir(store.join("metrics")) else {
+        return Vec::new();
+    };
+    let mut kept: Vec<(GoalName, Option<String>)> = files
+        .filter_map(Result::ok)
+        .filter_map(|file| {
+            let name = file.file_name().into_string().ok()?;
+            let goal = GoalName::parse(name.strip_suffix(".toml")?)?;
+            Some((goal, fs::read_to_string(file.path()).ok()))
+        })
+        .collect();
+    kept.sort_by(|a, b| a.0.cmp(&b.0));
+    kept
+}
+
+// The kept metrics of the completed goals, and the goals whose file is not a metrics file.
+pub(crate) fn kept_metrics(store: &Path) -> (Vec<KeptMetrics>, Vec<GoalName>) {
+    let mut kept = Vec::new();
+    let mut skipped = Vec::new();
+    for (goal, text) in kept_files(store) {
+        let parsed = text
+            .and_then(|text| toml_table(text.as_bytes()).ok())
+            .and_then(|table| parse_kept(goal.clone(), &table));
+        match parsed {
+            Some(found) => kept.push(found),
+            None => skipped.push(goal),
+        }
+    }
+    (kept, skipped)
+}
+
+// The receipt file of a kind and a key; None when it is missing or is not one document.
+pub(crate) fn receipt_doc(store: &Path, kind: &str, key: &str) -> Option<Value> {
+    let docs = json_values(
+        &fs::read(receipt_path(
+            store,
+            ReceiptKind::parse(kind)?,
+            &Oid::parse(key)?,
+        ))
+        .ok()?,
+    )?;
+    <[Value; 1]>::try_from(docs).ok().map(|[doc]| doc)
+}
+
+pub(crate) fn metrics_path(store: &Path, goal: &GoalName) -> PathBuf {
+    store.join("metrics").join(format!("{goal}.toml"))
+}
+
+pub(crate) fn exists(path: &Path) -> bool {
+    fs::metadata(path).is_ok()
+}
+
+pub(crate) fn build_plan_path(store: &Path, goal: &GoalName, slice: &SliceName) -> PathBuf {
+    goal_dir(store, goal)
+        .join("slices")
+        .join(slice.to_string())
+        .join("build-plan.md")
+}
+
+// Reviews of work are keyed by the patch id and kept apart by kind; the others by their own key.
+pub(crate) fn receipt_path(store: &Path, kind: ReceiptKind, key: &Oid) -> PathBuf {
+    let receipts = store.join("receipts");
+    match kind {
+        ReceiptKind::PlanReview | ReceiptKind::TestDrive => {
+            receipts.join(kind.name()).join(format!("{key}.json"))
+        }
+        ReceiptKind::InformedReview | ReceiptKind::SecondOpinion => receipts
+            .join("review")
+            .join(key.to_string())
+            .join(format!("{}.json", kind.name())),
+    }
+}
+
+// The folders of `goals/` that are goal names; a missing store has none.
+pub(crate) fn goal_names(store: &Path) -> Vec<GoalName> {
+    let Ok(entries) = fs::read_dir(store.join("goals")) else {
+        return Vec::new();
+    };
+    let mut names: Vec<GoalName> = entries
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .filter_map(|entry| GoalName::parse(entry.file_name().to_str()?))
+        .collect();
+    names.sort();
+    names
+}
+
+pub(crate) fn newest_roadmap(store: &Path, goal: &GoalName) -> Result<PathBuf, Failure> {
+    let dir = goal_dir(store, goal);
+    if fs::metadata(&dir).is_err() {
+        return Err(Failure::usage(format!(
+            "no goal named \"{goal}\" in the store"
+        )));
+    }
+    let newest = fs::read_dir(&dir)
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter_map(|entry| roadmap_version(entry.file_name().to_str()?))
+        .max();
+    newest
+        .map(|version| dir.join(format!("roadmap.v{version}.md")))
+        .ok_or_else(|| Failure::usage(format!("no roadmap in {}", dir.display())))
+}
+
+// The newest `roadmap.vN.md` of the goal, which must name the goal it is filed under.
+pub(crate) fn load_goal(common: &Path, goal: &GoalName) -> Result<Roadmap, Failure> {
+    let path = newest_roadmap(&store_dir(common), goal)?;
+    let label = path.display().to_string();
+    let text = read_text(&path)?;
+    let block = match toml_block(&text, SLICES) {
+        Ok(Some(block)) => block,
+        Ok(None) => {
+            return Err(Failure::usage(say(
+                NO_BLOCK,
+                &[("file", &label), ("heading", &SLICES)],
+            )));
+        }
+        Err(why) => {
+            return Err(Failure::usage(say(
+                FILE_PROBLEM,
+                &[("file", &label), ("why", &why)],
+            )));
+        }
+    };
+    let table = toml_table(block.as_bytes())
+        .map_err(|why| Failure::usage(say(NOT_TOML, &[("file", &label), ("why", &why)])))?;
+    let roadmap =
+        parse_roadmap(&table).map_err(|problems| Failure::usage(invalid(&label, &problems)))?;
+    if roadmap.goal != *goal {
+        return Err(Failure::usage(format!(
+            "{label}: goal \"{}\" does not match its folder \"{goal}\"",
+            roadmap.goal
+        )));
+    }
+    Ok(roadmap)
+}
+
+// Every goal of the store with its newest roadmap, by goal name.
+pub(crate) fn load_goals(common: &Path) -> Result<Vec<(GoalName, Roadmap)>, Failure> {
+    let names = goal_names(&store_dir(common));
+    if names.is_empty() {
+        return Err(Failure::usage("no goal in the store"));
+    }
+    names
+        .into_iter()
+        .map(|goal| load_goal(common, &goal).map(|roadmap| (goal, roadmap)))
+        .collect()
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum WriteNew {
+    Exists,
+    Cannot(Failure),
+}
+
+// A temporary file in the final folder is hard-linked to the final name, which fails when the
+// name is taken: the first receipt is never replaced.
+pub(crate) fn write_new(path: &Path, value: &impl Serialize) -> Result<(), WriteNew> {
+    let dir = path.parent().unwrap_or(Path::new("."));
+    let cannot = || WriteNew::Cannot(Failure::usage(format!("cannot write in {}", dir.display())));
+    let mut text = serde_json::to_vec_pretty(value).map_err(|_why| cannot())?;
+    text.push(b'\n');
+    let temporary = write_temporary(dir, &text).map_err(|_why| cannot())?;
+    let linked = fs::hard_link(&temporary, path);
+    fs::remove_file(&temporary).ok();
+    match linked {
+        Ok(()) => Ok(()),
+        Err(why) if why.kind() == ErrorKind::AlreadyExists => Err(WriteNew::Exists),
+        Err(_why) => Err(cannot()),
+    }
+}
+
+// The text under a name no other writer uses, in the folder it is meant for; a stale file of a
+// crashed run is skipped, never reused.
+fn write_temporary(dir: &Path, text: &[u8]) -> std::io::Result<PathBuf> {
+    fs::create_dir_all(dir)?;
+    let (temporary, mut file) = (0_u32..)
+        .find_map(|n| {
+            let temporary = dir.join(format!(".tmp.{}.{n}", std::process::id()));
+            match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary)
+            {
+                Ok(file) => Some(Ok((temporary, file))),
+                Err(why) if why.kind() == ErrorKind::AlreadyExists => None,
+                Err(why) => Some(Err(why)),
+            }
+        })
+        .ok_or_else(|| std::io::Error::from(ErrorKind::AlreadyExists))??;
+    let written = file.write_all(text).and_then(|()| file.flush());
+    drop(file);
+    if let Err(why) = written {
+        fs::remove_file(&temporary).ok();
+        return Err(why);
+    }
+    Ok(temporary)
+}
+
+// A reader sees the old text or the whole new text.
+pub(crate) fn write_text_atomic(path: &Path, text: &str) -> Result<(), Failure> {
+    let dir = path.parent().unwrap_or(Path::new("."));
+    let cannot = || Failure::usage(format!("cannot write in {}", dir.display()));
+    let temporary = write_temporary(dir, text.as_bytes()).map_err(|_why| cannot())?;
+    fs::rename(&temporary, path).map_err(|_why| {
+        fs::remove_file(&temporary).ok();
+        cannot()
+    })
+}
+
+pub(crate) fn remove_goal(store: &Path, goal: &GoalName) -> Result<(), Failure> {
+    let dir = goal_dir(store, goal);
+    fs::remove_dir_all(&dir)
+        .map_err(|_why| Failure::usage(format!("cannot delete {}", dir.display())))
+}
+
+// A goal without a logbook yet has no entries; a damaged line stops the reader, naming it.
+pub(crate) fn read_logbook(store: &Path, goal: &GoalName) -> Result<Vec<Logged>, Failure> {
+    let path = logbook_path(store, goal);
+    let shown = path.display();
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(why) if why.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(_why) => return Err(Failure::usage(format!("cannot read {shown}"))),
+    };
+    let text = String::from_utf8(bytes)
+        .map_err(|_why| Failure::usage(format!("logbook {shown} is not UTF-8 text")))?;
+    read_entries(&text)
+        .map_err(|why| Failure::usage(format!("logbook {shown} {why}; fix that line by hand")))
+}
+
+// One write of the whole line, so that lines of parallel writers never interleave.
+pub(crate) fn append_line(path: &Path, text: &str) -> Result<(), Failure> {
+    let cannot = || Failure::usage(format!("cannot append to {}", path.display()));
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).map_err(|_why| cannot())?;
+    }
+    let mut file = OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(path)
+        .map_err(|_why| cannot())?;
+    file.write_all(text.as_bytes()).map_err(|_why| cannot())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::edge::testing::scratch;
+
+    #[test]
+    fn write_new_never_replaces_a_file() {
+        let dir = scratch("write-new");
+        let path = dir.join("a").join("x.json");
+        assert_eq!(write_new(&path, &1), Ok(()));
+        assert_eq!(write_new(&path, &2), Err(WriteNew::Exists));
+        assert_eq!(fs::read_to_string(&path).expect("reads"), "1\n");
+        let left: Vec<_> = fs::read_dir(path.parent().expect("a folder"))
+            .expect("lists")
+            .map(|entry| entry.expect("an entry").file_name())
+            .collect();
+        assert_eq!(left, ["x.json"]);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn append_line_keeps_earlier_bytes() {
+        let dir = scratch("append");
+        let path = dir.join("goals").join("g").join("logbook.jsonl");
+        append_line(&path, "one\n").expect("appends");
+        append_line(&path, "two\n").expect("appends");
+        assert_eq!(fs::read_to_string(&path).expect("reads"), "one\ntwo\n");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_newest_roadmap_version_is_read_and_a_missing_goal_is_named() {
+        let store = scratch("newest");
+        let goal = GoalName::parse("demo").expect("a goal name");
+        assert_eq!(
+            newest_roadmap(&store, &goal),
+            Err(Failure::usage("no goal named \"demo\" in the store"))
+        );
+        let dir = goal_dir(&store, &goal);
+        fs::create_dir_all(&dir).expect("makes the goal");
+        assert_eq!(goal_names(&store), vec![goal.clone()]);
+        assert!(newest_roadmap(&store, &goal).is_err());
+        for name in ["roadmap.v2.md", "roadmap.v10.md", "roadmap.v3.txt"] {
+            fs::write(dir.join(name), "x").expect("writes");
+        }
+        assert_eq!(
+            newest_roadmap(&store, &goal),
+            Ok(dir.join("roadmap.v10.md"))
+        );
+        fs::remove_dir_all(&store).ok();
+    }
+}
