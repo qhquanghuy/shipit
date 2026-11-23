@@ -7,12 +7,12 @@ use crate::commands::verify::verify_at;
 use crate::edge::agent_store::Ledger;
 use crate::edge::clock::now_utc;
 use crate::edge::git::Git;
-use crate::edge::hook_process::{exists, home_dir, run_gate};
+use crate::edge::hook_process::{exists, run_gate};
 use crate::edge::slice_git::load_policy;
 use crate::pure::agent_ledger::{Change, Entry, admit, seconds};
 use crate::pure::base::BranchName;
 use crate::pure::branch::is_slice_branch;
-use crate::pure::claude_hook::{HookInput, Target, agent_call, resolve, review_target, safe_field};
+use crate::pure::claude_hook::{HookInput, Target, agent_call, review_target, safe_field};
 use crate::pure::failure::{Exit, Failure};
 use crate::pure::made_by::{NO_SLICE_FOLDER, maker_rank, maker_start};
 use crate::pure::setup::{HEAD, SETUP_PATH, Setup};
@@ -106,21 +106,19 @@ fn agent_cap(git: &Git) -> Result<u64, Failure> {
     Ok(u64::from(&policy_of(git)?.agents.parallel.agents))
 }
 
-// A maker starts at the setup's maker rank, in a working copy on a slice branch: the folder the
-// call names, else the session's.
+// A maker starts at the setup's maker rank, in a working copy on a slice branch: the session's
+// folder. The call's own `cwd` is not read: this Claude Code ignores it, and the agent works in the
+// session's folder.
 fn maker_gate(git: &Git, input: &HookInput) -> Option<Answer> {
     let tool_input = input.tool_input.as_ref()?;
     let started = maker_start(tool_input, || {
         let policy = policy_of(git).map_err(|failure| cannot_start(failure.message))?;
         maker_rank(&policy).ok_or_else(|| cannot_start("the setup has no tier for the maker"))
     })?;
-    let folder = match started {
-        Ok(folder) => folder,
-        Err(text) => return Some(deny(text)),
-    };
-    let home = home_dir();
-    let dir = resolve(&input.cwd, home.as_deref(), folder.as_deref());
-    on_slice_branch(&dir)
+    if let Err(text) = started {
+        return Some(deny(text));
+    }
+    on_slice_branch(&input.cwd)
         .is_none()
         .then(|| deny(NO_SLICE_FOLDER.to_owned()))
 }

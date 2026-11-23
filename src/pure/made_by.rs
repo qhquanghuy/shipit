@@ -348,13 +348,13 @@ fn not_at_rank(maker: &MakerRank) -> String {
     )
 }
 
-// None for an agent that is not the maker. For a maker: the folder the call names (`cwd`), when it
-// starts at the setup's maker rank or its stand-in, else the denial. The rank is read only for a
+// None for an agent that is not the maker. For a maker: Ok when it starts at the setup's maker rank
+// or its stand-in, else the denial. The call's `cwd` is not read. The rank is read only for a
 // maker, and a setup that cannot be read is that denial.
 pub(crate) fn maker_start(
     tool_input: &Value,
     maker: impl FnOnce() -> Result<MakerRank, String>,
-) -> Option<Result<Option<String>, String>> {
+) -> Option<Result<(), String>> {
     let text = |key: &str| tool_input.get(key).and_then(Value::as_str);
     if text("subagent_type") != Some(MAKER) {
         return None;
@@ -371,7 +371,7 @@ pub(crate) fn maker_start(
             .as_ref()
             .is_some_and(|(m, e)| model == Some(m.as_str()) && effort == Some(e.as_str()));
         if own || stand_in {
-            Ok(text("cwd").map(str::to_owned))
+            Ok(())
         } else {
             Err(not_at_rank(&rank))
         }
@@ -620,7 +620,6 @@ mod tests {
             kind in proptest::sample::select(vec![MAKER, "shipit:reader"]),
             model in proptest::option::of(proptest::sample::select(MODELS.to_vec())),
             effort in proptest::option::of(proptest::sample::select(EFFORTS.to_vec())),
-            folder in proptest::option::of("[a-z/]{1,8}"),
         ) {
             let mut call = serde_json::json!({ "subagent_type": kind });
             for (key, value) in [("model", model), ("effort", effort)] {
@@ -628,9 +627,7 @@ mod tests {
                     call[key] = serde_json::json!(value);
                 }
             }
-            if let Some(folder) = &folder {
-                call["cwd"] = serde_json::json!(folder);
-            }
+            call["cwd"] = serde_json::json!("/anywhere");
             let own = model == Some(rank.model.as_str())
                 && rank.effort.as_deref().is_none_or(|want| effort == Some(want));
             let stand_in = rank
@@ -640,7 +637,7 @@ mod tests {
             let wanted = if kind != MAKER {
                 None
             } else if own || stand_in {
-                Some(Ok(folder.clone()))
+                Some(Ok(()))
             } else {
                 Some(Err(not_at_rank(&rank)))
             };

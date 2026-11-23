@@ -229,8 +229,7 @@ These are the answers, copied by the hooks:
 
 The agent gate holds the start of the maker: `shipit:maker` starts only at the setup's maker rank
 (its model, and its effort when the setup gives one) or the stand-in of its tier, with the `model` and
-`effort` of the Agent call, and only in a working copy on a slice branch (the session's folder, as
-the Agent tool cannot name another). The rank is read from the base branch's setup, as the agent
+`effort` of the Agent call, and only in a working copy on a slice branch (the session's folder: a `cwd` in the call is not read, because this Claude Code ignores it). The rank is read from the base branch's setup, as the agent
 cap is.
 
 **The receipt.** For a slice started after this rule shipped, `shipit receipt` checks every commit
