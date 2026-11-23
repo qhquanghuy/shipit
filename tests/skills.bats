@@ -765,6 +765,7 @@ check_drafts_in_project() {
   grep -qF '`./test.sh`' "$maker"
   grep -qF 'No `;`, `&&`, `|`, `echo` or `$`' "$maker"
   grep -qF 'shipit store show build-plan' "$maker"
+  grep -qF "split a step's \`&&\` chain into separate calls" "$maker"
   grep -qF 'test-drive.md' "$drive"
   # Claude Code refuses an agent's Write of a file named report…, summary…, findings… or analysis….
   while read -r name; do

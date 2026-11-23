@@ -240,9 +240,10 @@ check_headless_list() {
   local part step
   part=$(awk '/^## Adopt ShipIt in a project$/ { on = 1; next } /^## / { on = 0 } on' "$SHIPIT_SRC/README.md")
   step=$(grep -m1 '^1\. ' <<<"$part")
+  [[ $step == *'shipit init'* ]]
+  step=$(grep -m1 'Pull request 1' <<<"$part")
   [[ $step == *'.claude/settings.json'* ]]
   [[ $step == *'adopt/settings'* ]]
-  [[ ${step,,} == *'pull request 1'* ]]
   step=$(grep -m1 'Pull request 2' <<<"$part")
   [[ $step == *'after pull request 1 merges'* ]]
   [[ $step == *'from the updated base'* ]]
@@ -250,21 +251,25 @@ check_headless_list() {
 }
 
 # user_settings_mentions <root>: the lines of the docs, skills and roles that name the user's own
-# Claude Code settings files; fails when there is one.
+# Claude Code settings files (as ~, $HOME or ${HOME}); fails when there is one.
 user_settings_mentions() {
-  ! grep -rnE '~/\.claude/settings(\.local)?\.json' "$1/README.md" "$1/docs" "$1/skills" "$1/agents"
+  ! grep -rnE '(~|\$HOME|\$\{HOME\})/\.claude/settings(\.local)?\.json' "$1/README.md" "$1/docs" "$1/skills" "$1/agents"
 }
 
 @test "docs: nobody is told to edit the user settings file" {
+  local form
   run user_settings_mentions "$SHIPIT_SRC"
   [ "$output" = "" ]
   [ "$status" -eq 0 ]
   copy_docs "$BATS_TEST_TMPDIR/docs"
   cp -r "$SHIPIT_SRC/agents" "$BATS_TEST_TMPDIR/docs/agents"
-  printf 'Add the list to ~/.claude/settings.json.\n' >>"$BATS_TEST_TMPDIR/docs/docs/guide.md"
-  run user_settings_mentions "$BATS_TEST_TMPDIR/docs"
-  [ "$status" -eq 1 ]
-  [[ $output == *"guide.md"* ]]
+  for form in '~/.claude/settings.json' '$HOME/.claude/settings.local.json' '${HOME}/.claude/settings.json'; do
+    cp "$SHIPIT_SRC/docs/guide.md" "$BATS_TEST_TMPDIR/docs/docs/guide.md"
+    printf 'Add the list to %s.\n' "$form" >>"$BATS_TEST_TMPDIR/docs/docs/guide.md"
+    run user_settings_mentions "$BATS_TEST_TMPDIR/docs"
+    [ "$status" -eq 1 ]
+    [[ $output == *"guide.md"* ]]
+  done
 }
 
 # check_newcomer_list <file>: prints a line and fails when the permission part lacks a right a

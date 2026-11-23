@@ -343,6 +343,22 @@ store_with_files() {
   [ "$status" -eq 2 ]
   [ "$stderr" = "shipit: $(store)/goals/demo/slices is a symbolic link; the store holds no links" ]
   [ -z "$output" ]
+  rm "$(store)/goals/demo/slices"
+  mv "$BATS_TEST_TMPDIR/kept" "$(store)/goals/demo/slices"
+  mv "$(store)/goals/demo/slices/alpha/build-plan.md" "$BATS_TEST_TMPDIR/plan-kept.md"
+  ln -s "$BATS_TEST_TMPDIR/plan-kept.md" "$(store)/goals/demo/slices/alpha/build-plan.md"
+  show build-plan --goal demo --slice alpha
+  [ "$status" -eq 2 ]
+  [ "$stderr" = "shipit: $(store)/goals/demo/slices/alpha/build-plan.md is a symbolic link; the store holds no links" ]
+  [ -z "$output" ]
+  rm "$(store)/goals/demo/slices/alpha/build-plan.md"
+  mv "$BATS_TEST_TMPDIR/plan-kept.md" "$(store)/goals/demo/slices/alpha/build-plan.md"
+  mkdir -p .shipit
+  ln -s "$BATS_TEST_TMPDIR/elsewhere" .shipit/td
+  show build-plan --goal demo --slice alpha --copy
+  [ "$status" -eq 2 ]
+  [ "$stderr" = "shipit: $PWD/.shipit/td is a symbolic link; the drafts folder holds no links" ]
+  [ ! -e "$BATS_TEST_TMPDIR/elsewhere/alpha/store" ]
 }
 
 @test "store show: a copy lands in the drafts folder, ignored by git" {
@@ -352,30 +368,36 @@ store_with_files() {
   dir="$(store)/goals/demo"
   wt=$(git -C .shipit/wt/alpha rev-parse --show-toplevel)
   cd "$wt"
+  mkdir -p .shipit/td/alpha
+  printf '*\n' >.shipit/td/alpha/.gitignore
+  printf 'my edit\n' >.shipit/td/alpha/build-plan.md
   show build-plan --goal demo --slice alpha --copy
   [ "$status" -eq 0 ]
-  [ "$output" = "copied $wt/.shipit/td/alpha/build-plan.md" ]
-  cmp "$repo/plan.md" .shipit/td/alpha/build-plan.md
-  [ "$(cat .shipit/td/alpha/.gitignore)" = '*' ]
-  [ "$(LC_ALL=C ls -A .shipit/td/alpha)" = $'.gitignore\nbuild-plan.md' ]
+  [ "$output" = "copied $wt/.shipit/td/alpha/store/build-plan.md" ]
+  cmp "$repo/plan.md" .shipit/td/alpha/store/build-plan.md
+  [ "$(cat .shipit/td/alpha/store/.gitignore)" = '*' ]
+  [ "$(LC_ALL=C ls -A .shipit/td/alpha/store)" = $'.gitignore\nbuild-plan.md' ]
+  [ "$(cat .shipit/td/alpha/build-plan.md)" = "my edit" ]
   [ -z "$(git status --porcelain)" ]
   draft_plan "$repo/two.md" Two.
   cp "$repo/two.md" "$dir/slices/alpha/build-plan.md"
   show build-plan --goal demo --slice alpha --copy
   [ "$status" -eq 0 ]
-  cmp "$repo/two.md" .shipit/td/alpha/build-plan.md
-  [ "$(LC_ALL=C ls -A .shipit/td/alpha)" = $'.gitignore\nbuild-plan.md' ]
+  cmp "$repo/two.md" .shipit/td/alpha/store/build-plan.md
+  [ "$(LC_ALL=C ls -A .shipit/td/alpha/store)" = $'.gitignore\nbuild-plan.md' ]
   show roadmap --goal demo --copy
   [ "$status" -eq 0 ]
-  [ "$output" = "copied $wt/.shipit/td/demo/roadmap.v2.md" ]
-  cmp "$dir/roadmap.v2.md" .shipit/td/demo/roadmap.v2.md
+  [ "$output" = "copied $wt/.shipit/td/demo/store/roadmap.v2.md" ]
+  cmp "$dir/roadmap.v2.md" .shipit/td/demo/store/roadmap.v2.md
+  [ "$(cat .shipit/td/demo/.gitignore)" = '*' ]
   show goal --goal demo --copy
   [ "$status" -eq 0 ]
-  [ "$output" = "copied $wt/.shipit/td/demo/goal.v2.md" ]
-  cmp "$dir/goal.v2.md" .shipit/td/demo/goal.v2.md
+  [ "$output" = "copied $wt/.shipit/td/demo/store/goal.v2.md" ]
+  cmp "$dir/goal.v2.md" .shipit/td/demo/store/goal.v2.md
   show informed-review --goal demo --slice alpha --round 1 --copy
   [ "$status" -eq 0 ]
-  [ "$output" = "copied $wt/.shipit/td/alpha/round-1-informed-review.md" ]
-  cmp "$repo/ir.md" .shipit/td/alpha/round-1-informed-review.md
+  [ "$output" = "copied $wt/.shipit/td/alpha/store/round-1-informed-review.md" ]
+  cmp "$repo/ir.md" .shipit/td/alpha/store/round-1-informed-review.md
+  [ "$(cat .shipit/td/alpha/build-plan.md)" = "my edit" ]
   [ -z "$(git status --porcelain)" ]
 }
