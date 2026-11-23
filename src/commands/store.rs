@@ -124,6 +124,7 @@ fn run_show(git: &Git, args: &[OsString], out: &mut dyn Write) -> Result<(), Fai
             ".shipit".to_owned(),
             "td".to_owned(),
             shown.folder_name(&goal),
+            "store".to_owned(),
             copy_name,
         ]
         .into();

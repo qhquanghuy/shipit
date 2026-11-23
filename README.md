@@ -157,11 +157,11 @@ and no file system monitor (`core.fsmonitor=false`); the counts and lists of cha
 
 Needs git 2.39 or newer. Adoption is one command and three small pull requests: the permission list, the setup, the CI job.
 
-1. Pull request 1 is the permission list alone: write the list under Start here to `.claude/settings.json`, commit it on `adopt/settings`; the owner pushes it, opens the pull request and merges it. Tracked from the start, it never leaves the tree dirty for `shipit check`. The owner pushes the adoption branches (`adopt/settings`, `adopt/setup`, `adopt/ci`): the ship gate lets an agent push only `slice/*` branches. Adoption branches are not named `slice/...`: a `slice/...` branch counts toward the cap of started slices.
-2. Run `shipit init` in the project. It writes the starting setup and adds the pre-push hook; it never overwrites a file.
-   Fill in `gate.check` with your check commands. A new repository needs a first commit on the base branch and a push of it.
+1. Run `shipit init` in the project, on the base branch. It writes the starting setup and adds the pre-push hook; it never overwrites a file, and its Next lines are steps 2 to 4 below.
+   A new repository needs a first commit on the base branch and a push of it.
    A branch with no commits beyond the base exits 2 in `shipit check`: commit first, or pass `--base <base>`.
-3. Pull request 2 is the setup file alone: after pull request 1 merges, make `adopt/setup` from the updated base and commit the setup file there, run `shipit check`, then the owner pushes it and opens the pull request.
+2. Pull request 1 is the permission list alone: write the list under Start here to `.claude/settings.json`, commit it on `adopt/settings`; the owner pushes it, opens the pull request and merges it. Tracked from the start, it never leaves the tree dirty for `shipit check`. The owner pushes the adoption branches (`adopt/settings`, `adopt/setup`, `adopt/ci`): the ship gate lets an agent push only `slice/*` branches. Adoption branches are not named `slice/...`: a `slice/...` branch counts toward the cap of started slices.
+3. Pull request 2 is the setup file alone: after pull request 1 merges, make `adopt/setup` from the updated base, fill in `gate.check` with your check commands and commit the setup file there, run `shipit check`, then the owner pushes it and opens the pull request.
 4. After it merges, on `adopt/ci` run `shipit init --ci-job`, set SHIPIT_COMMIT in the file it wrote to a ShipIt commit hash,
    and open pull request 3: the CI job alone, as a normal pull request (not the setup file, not a slice).
 5. Make the job a required check in the host's branch rules; otherwise a pull request that deletes the job is rechecked by nothing.
