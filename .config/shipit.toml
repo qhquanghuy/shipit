@@ -126,5 +126,5 @@ model = "claude"
 
 [owner]
 max_lines = 30
-status_update_max_lines = 10
+status_update_max_lines = 11
 # proof: setup-only change
