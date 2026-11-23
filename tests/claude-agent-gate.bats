@@ -140,7 +140,11 @@ receipt() {
   denied='ShipIt: shipit:maker works in the slice'"'"'s worktree, and this Claude Code cannot start an agent in another folder: run the slice in a session opened in its worktree (docs/claude-code.md, Sessions).'
   git checkout -q main
   git worktree add -q -b slice/v1/w "$wt"
+  # the call's own cwd is not trusted: this Claude Code ignores it, so only the session's folder counts
   run_hook claude-agent-gate "$(agent_input "$REPO" shipit:maker "Make it." "{$rank, \"cwd\": \"$wt\"}")"
+  [ "$(decision)" = deny ]
+  [ "$(reason)" = "$denied" ]
+  run_hook claude-agent-gate "$(agent_input "$wt" shipit:maker "Make it." "{$rank, \"cwd\": \"$REPO\"}")"
   [ -z "$output" ]
   run_hook claude-agent-gate "$(agent_input "$REPO" shipit:maker "Make it." "{$rank}")"
   [ "$(decision)" = deny ]
