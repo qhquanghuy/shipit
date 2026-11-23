@@ -785,7 +785,7 @@ check_drafts_in_project() {
 
 @test "skills: one session per slice is the way to run slices, and the text says how that session reaches the worktree" {
   cd "$SHIPIT_SRC"
-  run grep -rniE 'one agent per slice|lead fan-out|start your makers' README.md docs/claude-code.md docs/guide.md skills agents
+  run grep -rniE 'one agent per slice|lead fan-out|start your makers|Workflow. tool' README.md docs/claude-code.md docs/guide.md skills agents
   [ "$status" -eq 1 ]
   [ "$output" = "" ]
   grep -qF 'the owner opens a new session in the worktree' skills/shipit-slice/SKILL.md

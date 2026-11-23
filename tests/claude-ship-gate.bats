@@ -568,3 +568,52 @@ edits() {
   [ "$(decision)" = ask ]
   [[ $(reason) == *"pushes to the base branch main"* ]]
 }
+
+@test "ship gate: a commit made on another branch cannot be moved onto a slice branch, however its message is given" {
+  local msg='ShipIt-Made-By: shipit:maker' command
+  git checkout -q -b tmp
+  printf 'subject\n\n%s\n' "$msg" >"$BATS_TEST_TMPDIR/msg.txt"
+  # the maker's trailer as message text, or a message that is not read
+  for command in "git commit -am lead -m '$msg'" "git commit -am lead --message='$msg'" "git commit -F $BATS_TEST_TMPDIR/msg.txt" \
+    "git commit -t $BATS_TEST_TMPDIR/msg.txt" "git commit --file $BATS_TEST_TMPDIR/msg.txt" "git commit -C HEAD" "git commit --reuse-message=HEAD"; do
+    by shipit:slice "$command"
+    [ "$(decision)" = deny ]
+    gate "$command" default
+    [ -n "$output" ]
+    [[ $(reason) == *"ShipIt: "* ]]
+    gate "$command" bypassPermissions
+    [ "$(decision)" = deny ]
+  done
+  gate "git commit -m x -m 'ShipIt-Made-By: owner'" default
+  [ -z "$output" ]
+  # a branch pointed at, created or reset as a slice branch is a move of that slice's work, from any branch
+  for command in 'git checkout -B slice/v1/x tmp' 'git checkout -fB slice/v1/x tmp' 'git checkout -b slice/v1/new' \
+    'git switch -C slice/v1/x tmp' 'git switch -c slice/v1/new' 'git switch --force-create slice/v1/x tmp' \
+    'git branch -f slice/v1/x tmp' 'git branch -M slice/v1/x' 'git branch slice/v1/new tmp' \
+    "git worktree add -B slice/v1/x $BATS_TEST_TMPDIR/w tmp" "git worktree add -b slice/v1/new $BATS_TEST_TMPDIR/w" \
+    'git update-ref refs/heads/slice/v1/x HEAD' 'env git checkout -B slice/v1/x tmp'; do
+    by shipit:slice "$command"
+    [ "$(decision)" = deny ]
+    [[ $(reason) == "ShipIt: on a slice branch only shipit:maker commits or moves the work"* ]]
+    gate "$command" default
+    [ "$(decision)" = ask ]
+    [[ $(reason) == "ShipIt: only shipit:maker changes a slice's work"* ]]
+  done
+  by shipit:maker 'git checkout -B slice/v1/x tmp'
+  [ -z "$output" ]
+  # what only reads, switches to or deletes a slice branch, or starts from it, is not a move
+  for command in 'git checkout slice/v1/x' 'git switch slice/v1/x' 'git checkout -b other slice/v1/x' 'git switch -c other slice/v1/x' \
+    'git branch --list slice/v1/x' 'git branch -d slice/v1/x' "git worktree add $BATS_TEST_TMPDIR/w slice/v1/x" 'git branch other slice/v1/x'; do
+    by shipit:slice "$command"
+    [[ $output != *"only shipit:maker"* ]]
+  done
+}
+
+@test "ship gate: a path with .. is judged where it leads" {
+  edits shipit:slice Write "$REPO/.shipit/drive/../../greet.sh"
+  [ "$(decision)" = deny ]
+  edits shipit:slice Write "$REPO/.shipit/td/../drive/../x.md"
+  [ "$(decision)" = deny ]
+  edits shipit:slice Write "$REPO/src/../.shipit/td/a/draft.md"
+  [ -z "$output" ]
+}
