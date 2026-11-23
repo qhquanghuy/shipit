@@ -179,3 +179,168 @@ put() {
   [ "$stderr" = "shipit: $(store)/goals/demo/slices is a symbolic link; the store holds no links" ]
   [ -z "$(ls -A "$BATS_TEST_TMPDIR/elsewhere")" ]
 }
+
+# draft_plan_review <file>: a valid plan review of the build plan of slice alpha.
+draft_plan_review() {
+  cat >"$1" <<'REVIEW'
+## Form
+
+```toml
+kind = "plan-review"
+outcome = "approve"
+input = "the build plan of slice alpha of goal demo"
+```
+
+## Summary
+It holds.
+
+## Done-when
+- [covered] DW1: slice alpha
+
+## Findings
+- nitpick: a name
+
+## Verified
+- none
+
+## Inferred
+- none
+
+## Unverifiable
+- none
+REVIEW
+}
+
+# draft_informed_review <file>: a valid informed review of slice alpha.
+draft_informed_review() {
+  cat >"$1" <<'REVIEW'
+## Form
+
+```toml
+kind = "informed-review"
+outcome = "approve"
+input = "the change, the goal, the build plan and the reader's explanation"
+```
+
+## Summary
+It holds.
+
+## Teach-back
+- [matches] a.txt: adds a line
+
+## Reading path
+- none
+
+## Other files
+- none
+
+## Look here
+- a.txt:1: the only line
+
+## Simple code
+- Easy to review.
+
+## Security
+- none found: no input
+
+## Performance
+- none found: no loop
+
+## Findings
+- nitpick: a name
+
+## Verified
+- none
+
+## Inferred
+- none
+
+## Unverifiable
+- none
+REVIEW
+}
+
+# show <args>: run shipit store show, stdout in $output, stderr in $stderr.
+show() {
+  run --separate-stderr "$SHIPIT_BIN" store show "$@"
+}
+
+# shown_equals <folder> <file> <args>: shipit store show <args> run in <folder> prints <file> byte
+# for byte, and nothing on stderr.
+shown_equals() {
+  local folder=$1 file=$2
+  shift 2
+  (cd "$folder" && "$SHIPIT_BIN" store show "$@" >"$BATS_TEST_TMPDIR/got" 2>"$BATS_TEST_TMPDIR/err")
+  cmp "$file" "$BATS_TEST_TMPDIR/got"
+  [ ! -s "$BATS_TEST_TMPDIR/err" ]
+}
+
+# store_with_files: the goal demo, slice alpha: a build plan, a plan review and a round 1 informed
+# review put with store put, two versions of the goal and of the roadmap, and a worktree of
+# slice/demo/alpha at .shipit/wt/alpha.
+store_with_files() {
+  local dir
+  make_slice_repo
+  dir="$(store)/goals/demo"
+  draft_plan plan.md
+  draft_plan_review pr.md
+  draft_informed_review ir.md
+  put build-plan plan.md --goal demo --slice alpha
+  [ "$status" -eq 0 ]
+  put plan-review pr.md --goal demo --slice alpha
+  [ "$status" -eq 0 ]
+  put informed-review ir.md --goal demo --slice alpha --round 1
+  [ "$status" -eq 0 ]
+  printf 'goal one\n' >"$dir/goal.v1.md"
+  printf 'goal two\n' >"$dir/goal.v2.md"
+  cp "$dir/roadmap.v1.md" "$dir/roadmap.v2.md"
+  printf '\nversion two\n' >>"$dir/roadmap.v2.md"
+  git branch slice/demo/alpha
+  git worktree add -q .shipit/wt/alpha slice/demo/alpha
+}
+
+@test "store show: prints each kind from any working copy, byte for byte" {
+  store_with_files
+  local dir
+  dir="$(store)/goals/demo"
+  for folder in . .shipit/wt/alpha; do
+    shown_equals "$folder" plan.md build-plan --goal demo --slice alpha
+    shown_equals "$folder" pr.md plan-review --goal demo --slice alpha
+    shown_equals "$folder" ir.md informed-review --goal demo --slice alpha --round 1
+    shown_equals "$folder" "$dir/goal.v2.md" goal --goal demo
+    shown_equals "$folder" "$dir/roadmap.v2.md" roadmap --goal demo
+  done
+}
+
+@test "store show: a missing file, a link or a wrong flag is refused" {
+  store_with_files
+  local before
+  before=$(find "$(store)" | sort)
+  show build-plan --goal demo --slice beta
+  [ "$status" -eq 1 ]
+  [ "$stderr" = "shipit: $(store)/goals/demo/slices/beta/build-plan.md is not in the store" ]
+  show informed-review --goal demo --slice alpha --round 2
+  [ "$status" -eq 1 ]
+  [ "$stderr" = "shipit: $(store)/goals/demo/slices/alpha/reviews/round-2/informed-review.md is not in the store" ]
+  show goal --goal demo --slice alpha
+  [ "$status" -eq 2 ]
+  [ "$stderr" = "shipit: goal takes no --slice or --round" ]
+  show roadmap --goal demo --round 1
+  [ "$status" -eq 2 ]
+  [ "$stderr" = "shipit: roadmap takes no --slice or --round" ]
+  show nope --goal demo
+  [ "$status" -eq 2 ]
+  [ "$stderr" = "shipit: shipit store show takes goal, roadmap, build-plan, plan-review, explanation, informed-review, second-opinion or review, not nope" ]
+  show informed-review --goal demo --slice alpha
+  [ "$status" -eq 2 ]
+  [ "$stderr" = "shipit: informed-review needs --round <n>" ]
+  [ "$(find "$(store)" | sort)" = "$before" ]
+  mkdir -p "$BATS_TEST_TMPDIR/elsewhere/alpha"
+  cp plan.md "$BATS_TEST_TMPDIR/elsewhere/alpha/build-plan.md"
+  mv "$(store)/goals/demo/slices" "$BATS_TEST_TMPDIR/kept"
+  ln -s "$BATS_TEST_TMPDIR/elsewhere" "$(store)/goals/demo/slices"
+  show build-plan --goal demo --slice alpha
+  [ "$status" -eq 2 ]
+  [ "$stderr" = "shipit: $(store)/goals/demo/slices is a symbolic link; the store holds no links" ]
+  [ -z "$output" ]
+}
