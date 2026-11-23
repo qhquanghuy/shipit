@@ -209,18 +209,27 @@ permission_part() {
   awk '/^### Permissions the skills need$/ { on = 1; next } /^##/ { on = 0 } on' "$1"
 }
 
-# check_headless_list <file>: prints a line and fails when the permission part does not say how a
-# headless run gets the list.
+# check_headless_list <file>: prints a line and fails when the permission part does not make the list
+# the first adoption pull request and say the folder is trusted once, or tells anyone to pass --settings.
 check_headless_list() {
   local part bad=0
   part=$(permission_part "$1")
-  [[ $part == *'--settings .claude/settings.json'* ]] || { echo "${1##*/}: no --settings .claude/settings.json in the permission part"; bad=1; }
-  [[ $part == *trusted* ]] || { echo "${1##*/}: the permission part does not say the folder must be trusted"; bad=1; }
+  [[ $part == *'first adoption pull request'* ]] || { echo "${1##*/}: the permission part does not make the list the first adoption pull request"; bad=1; }
+  [[ $part == *'Trust the folder once in an interactive session'* ]] || { echo "${1##*/}: the permission part does not say: Trust the folder once in an interactive session"; bad=1; }
+  [[ $part != *'--settings'* ]] || { echo "${1##*/}: the permission part holds --settings"; bad=1; }
   return "$bad"
 }
 
-@test "docs: the permission part says how a headless run gets the list" {
-  local file
+@test "docs: adoption starts with the permission list, trusted once" {
+  local file part step
+  part=$(awk '/^## Adopt ShipIt in a project$/ { on = 1; next } /^## / { on = 0 } on' "$SHIPIT_SRC/README.md")
+  step=$(grep -m1 '^1\. ' <<<"$part")
+  [[ $step == *'.claude/settings.json'* ]]
+  [[ $step == *'adopt/settings'* ]]
+  [[ $step == *'pull request 1'* ]]
+  step=$(grep -m1 'Pull request 2' <<<"$part")
+  [[ $step == *'after pull request 1 merges'* ]]
+  [[ $step == *'from the updated base'* ]]
   for file in README.md docs/claude-code.md; do
     run check_headless_list "$SHIPIT_SRC/$file"
     [ "$output" = "" ]
@@ -231,8 +240,26 @@ check_headless_list() {
     grep -v '^\*\*Trust and headless runs\.\*\*' "$SHIPIT_SRC/$file" >"$BATS_TEST_TMPDIR/docs/$file"
     run check_headless_list "$BATS_TEST_TMPDIR/docs/$file"
     [ "$status" -eq 1 ]
-    [[ $output == *"--settings"* ]]
+    [[ $output == *"Trust the folder once in an interactive session"* ]]
   done
+}
+
+# user_settings_mentions <root>: the lines of the docs, skills and roles that name the user's own
+# Claude Code settings files; fails when there is one.
+user_settings_mentions() {
+  ! grep -rnE '~/\.claude/settings(\.local)?\.json' "$1/README.md" "$1/docs" "$1/skills" "$1/agents"
+}
+
+@test "docs: nobody is told to edit the user settings file" {
+  run user_settings_mentions "$SHIPIT_SRC"
+  [ "$output" = "" ]
+  [ "$status" -eq 0 ]
+  copy_docs "$BATS_TEST_TMPDIR/docs"
+  cp -r "$SHIPIT_SRC/agents" "$BATS_TEST_TMPDIR/docs/agents"
+  printf 'Add the list to ~/.claude/settings.json.\n' >>"$BATS_TEST_TMPDIR/docs/docs/guide.md"
+  run user_settings_mentions "$BATS_TEST_TMPDIR/docs"
+  [ "$status" -eq 1 ]
+  [[ $output == *"guide.md"* ]]
 }
 
 # check_newcomer_list <file>: prints a line and fails when the permission part lacks a right a

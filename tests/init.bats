@@ -89,14 +89,28 @@ foreign_hook() {
   [ "$status" -eq 0 ]
 }
 
-@test "the Next lines name pull request 1 and pull request 2" {
+@test "init: the three adoption pull requests can be followed in order" {
   new_project
   run "$SHIPIT_BIN" init
   [ "$status" -eq 0 ]
-  [[ $output == *"open pull request 1 (the setup file only)"* ]]
-  [[ $output == *"(pull request 2)"* ]]
+  [[ $output == *"Next: commit .claude/settings.json"*"opens pull request 1."*"After it merges: on adopt/setup, made from the updated main"*"pull request 2 (the setup file only)."*"After it merges: on adopt/ci"*"pull request 3 (the CI job only)."* ]]
   [[ $output != *"No commits yet"* ]]
   [[ $output != *"No origin/"* ]]
+  git switch -q -c adopt/settings
+  mkdir .claude
+  printf '{}\n' >.claude/settings.json
+  git add .claude/settings.json
+  git commit -q -m "the permission list"
+  git switch -q main
+  git merge -q --no-ff -m "merge adopt/settings" adopt/settings
+  git push -q origin main
+  git switch -q -c adopt/setup
+  sed -i 's/^check = \[\].*/check = ["true"]/' .config/shipit.toml
+  git add .config/shipit.toml
+  git commit -q -m "the setup"
+  [ -z "$(git status --porcelain)" ]
+  run_shipit check
+  [ "$status" -eq 0 ]
 }
 
 @test "an unpushed base is named in the output" {
