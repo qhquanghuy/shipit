@@ -625,3 +625,39 @@ check_start_order() {
   [ "$status" -eq 1 ]
   [[ $output == *"shipit-roadmap: a line names shipit start"* ]]
 }
+
+# check_store_writes: a build plan, a plan review and a review reach the store through
+# `shipit store put`; only a goal or roadmap version, the owner's, is copied with `cp`.
+check_store_writes() {
+  local root=$1 slice review file span target bad=0
+  five_skills "$root" || return 1
+  slice=$(skill_file "$root" shipit-slice)
+  review=$(skill_file "$root" shipit-review)
+  grep -qF '`shipit store put build-plan' "$slice" || { echo "shipit-slice: no shipit store put of the build plan"; bad=1; }
+  grep -qF '`shipit store put plan-review' "$slice" || { echo "shipit-slice: no shipit store put of the plan review"; bad=1; }
+  grep -F '`shipit store put <kind>' "$review" | grep -qF -- '--round' || { echo "shipit-review: no shipit store put of a review with --round"; bad=1; }
+  for file in "$root"/skills/*/SKILL.md; do
+    if grep -nE 'shipit store put (roadmap|goal)' "$file"; then
+      echo "${file#"$root"/}: a goal or roadmap version is put with shipit store put"
+      bad=1
+    fi
+    while IFS= read -r span; do
+      [[ $span == *'<git common dir>/shipit/goals/'* ]] || continue
+      target=${span##*/}
+      target=${target%'`'}
+      [[ $target =~ ^(goal|roadmap)\.v\<N\>\.md$ ]] || { echo "${file#"$root"/}: cp into the store of $target, which is not a goal or roadmap version"; bad=1; }
+    done < <(grep -oE '`[^`]*cp [^`]*`' "$file" || true)
+  done
+  return "$bad"
+}
+
+@test "skills: every store write but a goal or roadmap version is a shipit store put" {
+  run check_store_writes "$SHIPIT_SRC"
+  [ "$output" = "" ]
+  [ "$status" -eq 0 ]
+  copy_plugin "$BATS_TEST_TMPDIR/copy"
+  printf '\n`cp x <git common dir>/shipit/goals/<goal>/slices/<slice>/build-plan.md`\n' >>"$BATS_TEST_TMPDIR/copy/skills/shipit-slice/SKILL.md"
+  run check_store_writes "$BATS_TEST_TMPDIR/copy"
+  [ "$status" -eq 1 ]
+  [[ $output == *"build-plan.md"* ]]
+}
