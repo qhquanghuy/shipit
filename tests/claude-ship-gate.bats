@@ -225,7 +225,6 @@ gate() {
 }
 
 @test "twenty thousand messages are judged in time" {
-  git checkout -q main
   local input="$BATS_TEST_TMPDIR/big.json"
   {
     printf '{"cwd":"%s","tool_name":"Bash","permission_mode":"auto","tool_input":{"command":"git commit' "$REPO"
@@ -234,7 +233,8 @@ gate() {
   } >"$input"
   run --separate-stderr timeout 10 "$SHIPIT_BIN" claude-ship-gate <"$input"
   [ "$status" -eq 0 ]
-  [ -z "$output" ]
+  [ "$(decision)" = ask ]
+  [[ $(reason) == "ShipIt: only shipit:maker changes a slice's work"* ]]
 }
 
 # push.default=upstream sends a branch to the branch it tracks: main, for a slice cut from it.
@@ -256,15 +256,19 @@ gate() {
 
 @test "git commands that are not on the list ask, and the ones on it pass" {
   local command
-  git checkout -q main
   for command in "git -c core.fsmonitor='g\"\"it push origin main #' status" "git rebase --exec 'g\"\"it push origin main' HEAD~1" "git submodule foreach 'g\"\"it push origin main'" "git psuh origin main"; do
     gate "$command" bypassPermissions
     [ "$(decision)" = deny ]
   done
-  for command in "git status" "git add -A && git commit -m 'x' && git push -u origin slice/v1/x" "git add config" "git log -- config" "git fetch"; do
+  for command in "git status" "git add config" "git log -- config" "git fetch"; do
     gate "$command" bypassPermissions
     [ -z "$output" ]
   done
+  # on a slice branch the author rule answers a commit; the push itself still passes
+  gate "git add -A && git commit -m 'x' && git push -u origin slice/v1/x" default
+  [ "$(decision)" = ask ]
+  [[ $(reason) == "ShipIt: only shipit:maker changes a slice's work"* ]]
+  [[ $(reason) != *"only the owner ships"* ]]
 }
 
 @test "a cd to a folder under the home folder is read and judged there" {
@@ -394,14 +398,14 @@ edits() {
     "sh -c 'git commit -m x $maker'" "git commit -m \"\$(cat m)\" $maker"; do
     by shipit:maker "$command"
     [ "$(decision)" = deny ]
-    [[ $(reason) == 'ShipIt: a maker commits with one plain command that carries its trailer: git commit -m "<message>" --trailer "ShipIt-Made-By: shipit:maker".' ]]
+    [[ $(reason) == 'ShipIt: a maker commits with one plain command that carries its trailer: git commit -m "<message>" --trailer "ShipIt-Made-By: shipit:maker".'* ]]
   done
   for who in shipit:slice shipit:work-reviewer; do
     for command in "git commit -m x $maker" 'git cherry-pick X' 'git reset --hard X' 'git revert X' \
       'git merge X' 'git rebase main' 'git am p.patch' 'git pull'; do
       by "$who" "$command"
       [ "$(decision)" = deny ]
-      [[ $(reason) == "ShipIt: on a slice branch only shipit:maker commits or moves the work, so that a receipt names who made it. Start shipit:maker for this change." ]]
+      [[ $(reason) == "ShipIt: on a slice branch only shipit:maker commits or moves the work, so that a receipt names who made it. Start shipit:maker for this change."* ]]
     done
   done
   by shipit:slice 'git log --grep commit'
@@ -546,4 +550,21 @@ edits() {
   [[ $(reason) == "ShipIt: a maker commits with one plain command"* ]]
   by shipit:maker "git commit -m x --trailer \"ShipIt-Made-By: owner\" $maker"
   [ "$(decision)" = deny ]
+}
+
+@test "ship gate: when the author rule and the ship gate both answer, the answer carries both texts" {
+  local owner='--trailer "ShipIt-Made-By: owner"' push='git push origin HEAD:main'
+  gate "git commit -m x $owner && $push" default
+  [ "$(decision)" = ask ]
+  [[ $(reason) == *"only shipit:maker changes a slice's work"* ]]
+  [[ $(reason) == *"only the owner ships. This command "*"pushes to the base branch main"* ]]
+  gate "git commit -m x $owner && $push" bypassPermissions
+  [ "$(decision)" = deny ]
+  [[ $(reason) == *"only shipit:maker changes a slice's work"*"pushes to the base branch main"* ]]
+  by shipit:slice "git commit -m x && $push"
+  [ "$(decision)" = deny ]
+  [[ $(reason) == *"only shipit:maker commits or moves the work"*"pushes to the base branch main"* ]]
+  by shipit:maker "$push"
+  [ "$(decision)" = ask ]
+  [[ $(reason) == *"pushes to the base branch main"* ]]
 }
