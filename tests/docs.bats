@@ -20,7 +20,7 @@ load helpers
 # prefix, receipt fields, store paths and default values.
 
 # Flags of git, gh, nix, cargo and claude (--allowed reads the start of --allowedTools; --add-dir) that the docs mention; any other flag must be one of shipit's.
-EXTERNAL_FLAGS=(--all-targets --branch --check --command --ignore-submodules --print-build-logs --release --pager --pre --short --template --numstat --separate-git-dir --stat --target-directory --body-file --allowed --add-dir --title --git-common-dir --name-status --comments --detach --format --git-dir --work-tree --settings)
+EXTERNAL_FLAGS=(--all-targets --branch --check --command --ignore-submodules --print-build-logs --release --pager --pre --short --template --numstat --separate-git-dir --stat --target-directory --body-file --allowed --add-dir --title --git-common-dir --name-status --comments --detach --format --git-dir --work-tree --settings --permission-mode)
 
 # files_in <root>: README.md, every file in docs/ and every skill under <root>.
 files_in() {
@@ -257,7 +257,7 @@ check_newcomer_list() {
     [ "$status" -eq 0 ]
   done
   copy_docs "$BATS_TEST_TMPDIR/docs"
-  sed -i 's/acceptEdits/acceptNothing/' "$BATS_TEST_TMPDIR/docs/README.md"
+  sed -i 's/acceptEdits/acceptNothing/g' "$BATS_TEST_TMPDIR/docs/README.md"
   run check_newcomer_list "$BATS_TEST_TMPDIR/docs/README.md"
   [ "$status" -eq 1 ]
   [[ $output == *"lacks acceptEdits"* ]]

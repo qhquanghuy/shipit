@@ -11,7 +11,7 @@ Shows the owner where the project stands and routes to the skill to run next. Th
 ## Output
 One `decision-point`: `shipit template decision-point`. What: what can happen next. Context: the status lines. Recommendation: the skill to run and its input.
 ## Effects
-Reads only: `shipit status`, `shipit help`, `shipit doctor`, `git show` and `git grep`. Starts `shipit:model-scout` for model advice. Drafts its own decision point, or the model advice, in a temporary folder that it makes itself with `mktemp -d /tmp/shipit.XXXXXX` (it never asks the owner for one), to validate it there.
+Reads only: `shipit status`, `shipit help`, `shipit doctor`, `git show` and `git grep`. Starts `shipit:model-scout` for model advice. Drafts its own decision point, or the model advice, in a drafts folder that it makes itself with `mkdir -p .shipit/td/lead` and the one line `*` in its `.gitignore`, so that git ignores it (it never asks the owner for one), to validate it there.
 Questions to the owner use the words of the [guide](../../docs/guide.md) and its glossary, and ask only what changes what is built.
 Never: change a project file.
 ## Outcomes
