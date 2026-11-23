@@ -23,7 +23,7 @@ sh_start() {
   plan_ready alpha
   sh_start alpha
   [ "$status" -eq 0 ]
-  [ "$output" = "started alpha on slice/demo/alpha; make it in its own working copy: git worktree add .shipit/wt/alpha slice/demo/alpha" ]
+  [ "$output" = "started alpha on slice/demo/alpha; make it in its own working copy: git worktree add $(git rev-parse --show-toplevel)/.shipit/wt/alpha slice/demo/alpha" ]
   [ "$(git rev-parse slice/demo/alpha)" = "$(git rev-parse main)" ]
   [ -z "$(git config --get branch.slice/demo/alpha.remote || true)" ]
   [ "$(jq -r 'select(.event == "started") | [.slice, .branch] | join(" ")' "$(store)/goals/demo/logbook.jsonl")" = "alpha slice/demo/alpha" ]
@@ -163,4 +163,20 @@ sh_start() {
   touch .shipit/coverage/demo/alpha.toml
   run git check-ignore -q .shipit/coverage/demo/alpha.toml
   [ "$status" -eq 1 ]
+}
+
+@test "start: names the worktree under the top of the main working copy, from a subfolder or another worktree" {
+  make_slice_repo
+  an_open_gamma
+  plan_ready alpha
+  plan_ready gamma
+  top=$(git rev-parse --show-toplevel)
+  mkdir -p sub/deeper
+  run --separate-stderr bash -c 'cd sub/deeper && "$SHIPIT_BIN" start alpha'
+  [ "$status" -eq 0 ]
+  [ "$output" = "started alpha on slice/demo/alpha; make it in its own working copy: git worktree add $top/.shipit/wt/alpha slice/demo/alpha" ]
+  git worktree add -q "$top/.shipit/wt/alpha" slice/demo/alpha
+  run --separate-stderr bash -c 'cd .shipit/wt/alpha && "$SHIPIT_BIN" start gamma'
+  [ "$status" -eq 0 ]
+  [ "$output" = "started gamma on slice/demo/gamma; make it in its own working copy: git worktree add $top/.shipit/wt/gamma slice/demo/gamma" ]
 }
