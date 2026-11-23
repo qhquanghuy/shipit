@@ -240,7 +240,7 @@ check_headless_list() {
 check_newcomer_list() {
   local part need bad=0
   part=$(permission_part "$1")
-  for need in 'acceptEdits' '"Bash(git switch -c *)"' '"Bash(git checkout -b *)"' '"Bash(mkdir -p .shipit/td/*)"' '.shipit/td/'; do
+  for need in 'acceptEdits' '"Bash(git switch -c *)"' '"Bash(git checkout -b *)"' '"Bash(mkdir -p .shipit/td/*)"' '"Bash(mkdir -p .shipit/drive/*)"' '.shipit/td/' '.shipit/drive/'; do
     [[ $part == *"$need"* ]] || { echo "${1##*/}: the permission part lacks $need"; bad=1; }
   done
   for need in '"Edit(//tmp' '"Bash(*)"' '"Edit(*)"' 'mktemp'; do

@@ -2,6 +2,7 @@
 
 bats_require_minimum_version 1.5.0
 load helpers
+load slice-helpers
 
 # These tests read skills/ and what a skill says about itself. A skill is prose, so they check its
 # shape (the function parts), what each part must name, and that what it names exists. Whether an
@@ -714,4 +715,33 @@ check_drafts_in_project() {
   [[ $line == *'--by <model>:<effort>'* ]]
   [[ $line == *'--text'* ]]
   [[ $line == *'`--by owner` is refused'* ]]
+}
+
+@test "skills: the test drive has its own folder, apart from the drafts folder of the slice" {
+  local slice drive drafts
+  slice=$SHIPIT_SRC/skills/shipit-slice/SKILL.md
+  drive=$(grep -oE '\.shipit/[a-z]+/<slice>' "$SHIPIT_SRC/skills/shipit-test-drive/SKILL.md" | sort -u)
+  drafts=$(grep -oE '\.shipit/[a-z]+/<slice>' "$slice" | sort -u)
+  [ "$drive" = ".shipit/drive/<slice>" ]
+  [ "$drafts" = ".shipit/td/<slice>" ]
+  [ "$drive" != "$drafts" ]
+}
+
+@test "skills: the owner-answer command of shipit-slice runs against the binary" {
+  local span cmd
+  make_slice_repo
+  make_work "slice/demo/beta" 1
+  check_here
+  rec second-opinion beta --author sonnet:high --by opus:high --result approve \
+    --finding "question: F2 text"
+  [ "$status" -eq 0 ]
+  span=$(step_line "$SHIPIT_SRC/skills/shipit-slice/SKILL.md" 6 | grep -oE '`shipit log <slice> answer[^`]*`' | tr -d '`')
+  [ -n "$span" ]
+  cmd=$(sed -e 's/<slice>/beta/' -e 's/<Fn>/F2/' -e 's/<model>:<effort>/sonnet:high/' \
+    -e 's/<kind>/second-opinion/' -e 's/<answer>/because/' <<<"$span")
+  [[ $cmd != *"<"* ]]
+  read -ra words <<<"$cmd"
+  run --separate-stderr "$SHIPIT_BIN" "${words[@]:1}"
+  [ "$status" -eq 0 ]
+  [ "$output" = "logged answer for beta" ]
 }
