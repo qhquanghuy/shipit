@@ -580,7 +580,7 @@ check_start_order() {
   [ "$status" -eq 1 ]
   [[ $output == *"shipit-slice: shipit start comes before the build plan review"* ]]
   copy_plugin "$BATS_TEST_TMPDIR/copy2"
-  sed -i 's/^- Its makers, reader/- The lead runs `shipit start <slice>` first. Its makers, reader/' "$BATS_TEST_TMPDIR/copy2/skills/shipit-slice/SKILL.md"
+  sed -i 's/^- Its scout and the reviewer/- The lead runs `shipit start <slice>` first. Its scout and the reviewer/' "$BATS_TEST_TMPDIR/copy2/skills/shipit-slice/SKILL.md"
   run check_start_order "$BATS_TEST_TMPDIR/copy2"
   [ "$status" -eq 1 ]
   [[ $output == *"not a numbered step names shipit start"* ]]
@@ -590,7 +590,7 @@ check_start_order() {
   [ "$status" -eq 1 ]
   [[ $output == *"shipit-roadmap: a line names shipit start"* ]]
   copy_plugin "$BATS_TEST_TMPDIR/copy4"
-  sed -i 's/^| one session per slice | a slice session the owner opens |/| one session per slice | a slice session the owner opens, which runs `shipit start` |/' "$BATS_TEST_TMPDIR/copy4/skills/shipit-roadmap/SKILL.md"
+  sed -i 's/^| one session per slice | a slice session the owner opens in the slice'"'"'s worktree |/| one session per slice | a slice session the owner opens, which runs `shipit start` |/' "$BATS_TEST_TMPDIR/copy4/skills/shipit-roadmap/SKILL.md"
   run check_start_order "$BATS_TEST_TMPDIR/copy4"
   [ "$status" -eq 1 ]
   [[ $output == *"shipit-roadmap: a line names shipit start"* ]]

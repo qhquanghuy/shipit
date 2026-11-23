@@ -32,7 +32,7 @@ In v1 every slice gets the full review: a reader, an informed review and a secon
 
 ## Who does the work
 
-Each agent has a role. On the screen you see the role: `shipit:maker`, `shipit:scout`, `shipit:reader`, `shipit:work-reviewer`, `shipit:plan-reviewer`, `shipit:tester`, `shipit:model-scout` and `shipit:slice`.
+Each agent has a role. On the screen you see the role: `shipit:maker`, `shipit:scout`, `shipit:reader`, `shipit:work-reviewer`, `shipit:plan-reviewer`, `shipit:tester`, `shipit:model-scout` and `shipit:slice` (it writes and reviews a build plan).
 The goal text calls the model advice role the "researcher"; it is `shipit:model-scout`.
 A reviewer is always one tier above the one who made the work; if the author is at the top tier, the same tier at a higher effort. The tool checks this when a receipt is recorded.
 
@@ -69,12 +69,10 @@ At adoption, at the start of each goal, and whenever you ask, a `shipit:model-sc
 
 ## Sessions and how slices run
 
-The lead session is named by `shipit session-name <goal>`; a slice session by `shipit session-name <goal> <slice>`. At the end of the roadmap you pick one of four ways:
+The lead session is named by `shipit session-name <goal>`; a slice session by `shipit session-name <goal> <slice>`. At the end of the roadmap you pick how slices run:
 
-1. one session per slice: you open a session for each, in the slice's worktree; it is the only way for a headless run;
-2. lead fan-out: the lead runs the slices one after the other (not for a headless run: the maker cannot be started in another folder);
-3. one agent per slice: `shipit:slice` runs a whole slice; it cannot ask you, so a question ends it as blocked and the lead asks you (not for a headless run, for the same reason);
-4. the `Workflow` tool: a script runs the slices; only if you ask for it.
+1. one session per slice. The lead (or you) writes the build plan and starts the slice in the main working copy; that prints the slice's worktree, and the owner opens a new session in the worktree: `cd <path> && claude -n "$(shipit session-name <goal> <slice>)"`. The maker works only there, so no session in the main working copy can make a slice. It is the only way for a headless run too;
+2. the `Workflow` tool: a script runs the slices; only if you ask for it.
 
 ## Words you may meet
 
