@@ -292,6 +292,9 @@ doc_lines() {
   done < <({ grep -ohE 'tool_name: "[^"]+"' "$PLUGIN/tests/claude-ship-gate.bats" "$PLUGIN/tests/claude-helpers.bash" | cut -d'"' -f2 | grep -v '^Agent$'; echo Bash; echo Monitor; } | sort -u)
   matched Bash claude-install-gate
   matched Monitor claude-install-gate
+  matched Edit claude-ship-gate
+  matched Write claude-ship-gate
+  matched NotebookEdit claude-ship-gate
   matched Agent claude-agent-gate
   matched Task claude-agent-gate
   run ! matched Read claude-ship-gate

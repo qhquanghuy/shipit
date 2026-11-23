@@ -56,3 +56,16 @@ agent_input() {
   hook_input "$(jq -cn --arg cwd "$1" --arg type "$2" --arg prompt "$3" \
     '{cwd: $cwd, tool_name: "Agent", tool_input: {subagent_type: $type, prompt: $prompt, description: "d"}, permission_mode: "auto"}')"
 }
+
+# as_agent <type> <input>: the event as a subagent of that type sends it.
+as_agent() {
+  jq -c --arg type "$1" '. + {agent_id: "a1", agent_type: $type}' <<<"$2"
+}
+
+# edit_input <cwd> <tool> <path>: the event of an Edit, Write or NotebookEdit call.
+edit_input() {
+  local key=file_path
+  [[ $2 == NotebookEdit ]] && key=notebook_path
+  hook_input "$(jq -cn --arg cwd "$1" --arg tool "$2" --arg path "$3" --arg key "$key" \
+    '{cwd: $cwd, tool_name: $tool, tool_input: {($key): $path}}')"
+}
