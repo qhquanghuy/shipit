@@ -1,6 +1,6 @@
 # ShipIt vocabulary (locked 2026-11-21)
 
-Framework name: **ShipIt**. Skills: `shipit`, `shipit-roadmap`, `shipit-slice`, `shipit-test-drive`.
+Framework name: **ShipIt**. Skills: `shipit`, `shipit-roadmap`, `shipit-slice`, `shipit-test-drive`, `shipit-review`.
 
 Flow: goal → roadmap → build plan → make → check → informed review + second opinion + test drive* → fix rounds → recheck → ship
 (* only slices the roadmap marks)

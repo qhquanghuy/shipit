@@ -12,6 +12,58 @@ goal → roadmap → build plan → make → check → informed review + second 
 
 Status: early. `shipit help` lists the commands, and `shipit help <command>` gives a command's usage and exit codes.
 
+## Start here
+
+1. Install the ShipIt plugin and the skill pack's plugin (`packs.skill`, Superpowers today): the commands are in `docs/claude-code.md`.
+2. Adopt ShipIt in your project with `shipit init` (see "Adopt ShipIt in a project" below).
+3. Run the `shipit` skill. It shows where the project stands and names the skill to run next.
+
+The owner's guide is `docs/guide.md`: the three jobs of the owner, the skills, the roles and the decision points.
+
+### Permissions the skills need
+
+The skills run commands and write files. In a headless run (`claude -p`) every question becomes a refusal, so give the permissions first. Put this in `.claude/settings.json` at the root of the project (commit it in its own pull request after adoption, not with the setup), or give the same rules with `--allowedTools`. Replace `./test.sh` with your project's own test command. The skills read and search with the Read and Grep tools, so the list has no `cat`, `grep` or `ls` rule. An installed plugin is read from its cache folder, as the last rule shows; a plugin loaded from a folder of your own needs `Read(//<plugin folder>/**)` instead (`//` starts an absolute path).
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "Bash(shipit *)",
+      "Bash(git status *)",
+      "Bash(git log *)",
+      "Bash(git diff *)",
+      "Bash(git show *)",
+      "Bash(git rev-parse *)",
+      "Bash(git fetch *)",
+      "Bash(git grep *)",
+      "Bash(git worktree add *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git push -u origin slice/*)",
+      "Bash(gh pr create *)",
+      "Bash(gh pr view *)",
+      "Bash(gh pr diff *)",
+      "Bash(mktemp -d /tmp/shipit.XXXXXX)",
+      "Bash(sha256sum *)",
+      "Bash(./test.sh *)",
+      "Edit(//tmp/shipit.*/**)",
+      "Read(~/.claude/plugins/cache/shipit/**)"
+    ]
+  }
+}
+```
+
+A skill makes its own drafts folder with `mktemp -d /tmp/shipit.XXXXXX`, so `Edit(//tmp/shipit.*/**)` lets it write drafts there and nowhere else under `/tmp`.
+
+**The worktree.** The slice's worktree is made at `../wt/<slice>`, outside the folder of the session. Start the session with `--add-dir ../wt`, or the owner approves the prompt for it. This is a known gap until a follow-up slice.
+
+**The store.** The harness treats files under the git folder as sensitive: it asks for each write into the store, and a headless run refuses. The rules above do not change that. In a headless run the skills stop and hand the owner the exact `mkdir -p` and `cp` commands to run. This is a known gap until a follow-up slice.
+
+These commands are not in the list; they ask:
+
+- Asks: the store copy (`mkdir -p` and `cp`): the skills hand the owner the exact commands. A follow-up slice adds a command of ShipIt for the store copy.
+- Asks: the review's link hash, once per link: its `printf`, piped to the hash.
+
 ## Run it
 
 With Nix, without cloning:
@@ -95,26 +147,28 @@ and no file system monitor (`core.fsmonitor=false`); the counts and lists of cha
 
 ## Adopt ShipIt in a project
 
-Needs git 2.39 or newer. Adoption is one command and two small pull requests.
+Needs git 2.39 or newer. Adoption is one command and two small pull requests, then a third for the permission list.
 
 1. Run `shipit init` in the project. It writes the starting setup and adds the pre-push hook; it never overwrites a file.
    Fill in `gate.check` with your check commands. A new repository needs a first commit on the base branch and a push of it.
    A branch with no commits beyond the base exits 2 in `shipit check`: commit first, or pass `--base <base>`.
-2. Pull request 1 is the setup file alone: commit it on a new branch, run `shipit check`, push and open the pull request.
+2. Pull request 1 is the setup file alone: commit it on a new branch, run `shipit check`, push and open the pull request. Adoption branches are not named `slice/...` (use `adopt/setup` and `adopt/ci`): a `slice/...` branch counts toward the cap of started slices.
 3. After it merges, on a new branch run `shipit init --ci-job`, set SHIPIT_COMMIT in the file it wrote to a ShipIt commit hash,
-   and ship that as a normal slice (pull request 2).
+   and open pull request 2: the CI job alone, as a normal pull request (not the setup file, not a slice).
 4. Make the job a required check in the host's branch rules; otherwise a pull request that deletes the job is rechecked by nothing.
    In a new clone, `shipit init --hook-only` adds the hook again.
+5. Last, commit `.claude/settings.json` (the permission list under Start here) in its own pull request, never with the setup.
 
 **The hook.** `shipit pre-push` asks for a check receipt only on a `slice/*` branch, that is `slice/<goal>/<slice>` (any name
 starting `slice/` counts). Every other branch passes with a notice such as
 `shipit: <branch> is not a slice/* branch; not checked`, and a commit with no setup file passes with a notice too.
 A tag or a delete passes silently: it prints nothing.
 
-**Mixed teams.** The hook line `if command -v shipit >/dev/null 2>&1; then exec shipit pre-push "$@"; fi` does nothing
+**Mixed teams.** ShipIt's rules apply only to `slice/*` branches: the pre-push hook asks for a receipt there, and CI holds the size cap, the setup comparison and the coverage map there. Every other branch runs only the base's checks. The hook line `if command -v shipit >/dev/null 2>&1; then exec shipit pre-push "$@"; fi` does nothing
 where ShipIt is not installed, so a teammate without it pushes as before. `shipit init` adds it to a plain `.git/hooks/pre-push`,
 to a husky or `core.hooksPath` hook inside the project, or to lefthook (`lefthook-local.yml` or `.lefthook-local.yml`, then
 `lefthook install`), and only when that is safe. Otherwise it prints the line with the reason, and for pre-commit it always prints.
+The v1 limit, plainly: coverage proves that a mapped test exists and ran, not what it asserts. A teammate's pull request on a branch that is not `slice/*` is not checked against the coverage maps, so renaming, removing or weakening a mapped test there is caught only later, by the next slice whose map names it (a CI notice for this comes after v1).
 
 **CI.** `shipit recheck --base <base> --branch <branch>` is what the action runs, and it trusts no receipt. On a `slice/*` branch it
 runs the full `shipit check`: the size cap, the comparison of the setup with the base's, and the checks. On any other branch it runs only

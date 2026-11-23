@@ -1,0 +1,16 @@
+DW11 = [
+  "skills: the five skills exist, each named by its folder",
+  "skills: each skill states its inputs, output, effects and outcomes",
+  "skills: each output is a form the tool prints, and each of its outcomes has a line",
+  "skills: every outcome says what follows",
+  "skills: every tool step of shipit-review says what to do without the tool",
+  "skills: model advice and machine facts have their steps",
+  "skills: every report and review splits verified, inferred and unverifiable claims",
+  "skills: the review puts changed tests first in Look here",
+  "skills: the informed reviewer tests the build plan's key claims",
+  "skills: outside a slice the informed reviewer gathers context and the second opinion stays blind",
+  "skills: a bug fix starts with a failing test committed before the fix",
+  "an agent file holds a description, no model and no effort, and only the slice agent may start agents",
+  "everything the reference docs name exists in the code",
+  "claude skills: every git and gh command a skill shows passes the ship gate",
+]

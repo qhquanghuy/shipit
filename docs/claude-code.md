@@ -170,6 +170,81 @@ from a session that is (and the other way round) until the owner approves it, an
 five minutes. So the lead confirms with `shipit status`, which is the source of truth; a message is
 only a nudge. Names with a middle dot must be quoted in a typed `@` mention.
 
+## Skills
+
+The plugin has five skills. The owner types them as `/shipit:shipit`, `/shipit:shipit-roadmap`, `/shipit:shipit-slice`, `/shipit:shipit-test-drive` and `/shipit:shipit-review` (the bare name works unless another command has it). Agents load them by themselves through the `Skill` tool. No skill sets `disable-model-invocation`, because an agent starts each of them at some point. The owner's view is `docs/guide.md`.
+
+**Roles.** Every agent a skill starts is a named role of the plugin, so the screen shows `shipit:maker` and not a general agent. The `tools` line of each role file is checked by `tests/claude-plugin.bats`:
+
+| Role | `tools` |
+|---|---|
+| `shipit:maker`, `shipit:tester` | `Read, Grep, Glob, Bash, Write, Edit, Skill` |
+| `shipit:scout`, `shipit:reader`, `shipit:plan-reviewer`, `shipit:work-reviewer` | `Read, Grep, Glob, Bash` |
+| `shipit:model-scout` | `Read, Grep, Glob, Bash, WebSearch, WebFetch` |
+| `shipit:slice` | all tools |
+
+Only `shipit:slice` may start agents: leaving `Agent` out of `tools` is what stops the others. Every start passes the `model` and `effort` of its rank; role files hold neither.
+
+**Known gaps.**
+- A review of a change that is not a slice, in a ShipIt project, starts two plain agents given the text of the `shipit:work-reviewer` role file, and they show as general agents. The review gate denies `shipit:work-reviewer` there, because the change has no slice branch for the `shipit-branch:` line to name.
+- Outside a ShipIt session (no plugin loaded) the lead's own agents show as general ones.
+
+**Sessions and messages.** Name a session with `claude -n "$(shipit session-name <goal> <slice>)"` as under Sessions; a slice session ends with one message to the lead, which confirms with `shipit status`.
+
+**How slices run.** The last decision point of `shipit-roadmap` offers four ways: one session per slice; lead fan-out (the lead runs the slices in each slice's worktree); the `Workflow` tool, which only the owner's explicit opt-in chooses; and one agent per slice (`shipit:slice`, started by the lead in the main working copy; it makes the slice's worktree itself).
+
+**One agent per slice.** The slice agent is one layer below the lead; its makers, reader, reviewers and tester are one layer deeper. Measured with the plugin loaded:
+- The agent cap counts nested agents. One slice agent needs room for itself and its widest moment, two reviewers: 3 agents. With `agents.parallel.agents = 4` one slice agent runs at a time; for n at once the lead proposes `agents.parallel.agents = 3 × n` as a setup-only pull request.
+- The review gate fires for an agent started by an agent, so the slice agent starts the gated roles with the `shipit-branch:` line as the lead does.
+- By default Claude Code allows three layers of agents. Only `shipit:slice` has the `Agent` tool; setting `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH` to 2 closes the third layer for every other agent too.
+- A slice agent cannot ask the owner. A decision point ends it as blocked, its final message carries the decision point, and the lead asks the owner and starts a new slice agent.
+
+**Pushes, pull requests and the store.** A skill pushes only `git push -u origin slice/<goal>/<slice>`, alone in its Bash call. It opens the pull request with `gh pr create --title <title> --body-file <file>`. `gh pr create`, `gh pr edit` and `gh pr comment` pass the gate in every mode, so no gate stops a gh write: the skills' rule, to post to a pull request only when the owner says yes, is prose. Store files are copied in with one plain `mkdir -p … && cp …` through Bash, because the harness protects the git folder: a file-tool write there asks in default mode, goes to the classifier in auto mode, and is refused in dontAsk mode, and an allow rule does not change that.
+
+### Permissions the skills need
+
+The skills run commands and write files. In a headless run (`claude -p`) every question becomes a refusal, so give the permissions first. Put this in `.claude/settings.json` at the root of the project (commit it in its own pull request after adoption, not with the setup), or give the same rules with `--allowedTools`. Replace `./test.sh` with your project's own test command. The skills read and search with the Read and Grep tools, so the list has no `cat`, `grep` or `ls` rule. An installed plugin is read from its cache folder, as the last rule shows; a plugin loaded from a folder of your own needs `Read(//<plugin folder>/**)` instead (`//` starts an absolute path).
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "Bash(shipit *)",
+      "Bash(git status *)",
+      "Bash(git log *)",
+      "Bash(git diff *)",
+      "Bash(git show *)",
+      "Bash(git rev-parse *)",
+      "Bash(git fetch *)",
+      "Bash(git grep *)",
+      "Bash(git worktree add *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git push -u origin slice/*)",
+      "Bash(gh pr create *)",
+      "Bash(gh pr view *)",
+      "Bash(gh pr diff *)",
+      "Bash(mktemp -d /tmp/shipit.XXXXXX)",
+      "Bash(sha256sum *)",
+      "Bash(./test.sh *)",
+      "Edit(//tmp/shipit.*/**)",
+      "Read(~/.claude/plugins/cache/shipit/**)"
+    ]
+  }
+}
+```
+
+A skill makes its own drafts folder with `mktemp -d /tmp/shipit.XXXXXX`, so `Edit(//tmp/shipit.*/**)` lets it write drafts there and nowhere else under `/tmp`.
+
+**The worktree.** The slice's worktree is made at `../wt/<slice>`, outside the folder of the session. Start the session with `--add-dir ../wt`, or the owner approves the prompt for it. This is a known gap until a follow-up slice.
+
+**The store.** The harness treats files under the git folder as sensitive: it asks for each write into the store, and a headless run refuses. The rules above do not change that. In a headless run the skills stop and hand the owner the exact `mkdir -p` and `cp` commands to run. This is a known gap until a follow-up slice.
+
+These commands are not in the list; they ask:
+
+- Asks: the store copy (`mkdir -p` and `cp`): the skills hand the owner the exact commands. A follow-up slice adds a command of ShipIt for the store copy.
+- Asks: the review's link hash, once per link: its `printf`, piped to the hash.
+
 ## Limits
 
 Known, and not caught:
