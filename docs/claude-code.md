@@ -204,8 +204,8 @@ branch (`slice/<goal>/<slice>`). The hook that judges Bash and Monitor reads eac
 its `cd` and its `-C`; a command that names git and one of these moves but is not all plain git
 commands (`env`, `nix develop -c`, `sh -c`, `git -c`, a substitution) is judged as a commit with
 no trailer. The same hook judges the file tools `Edit`, `Write` and `NotebookEdit`: a path that git
-ignores and does not track (drafts in `.shipit/td/`, `.shipit/drive/`, `notes/`, build output) is
-not the work and passes; a tracked file, a new file and a file in a new folder are the work.
+ignores and does not track (`notes/`, build output) is not the work and passes, and so is
+everything under `.shipit/td/` and `.shipit/drive/`, by path, before its `.gitignore` exists; a tracked file, a new file and a file in a new folder are the work.
 
 These are the answers, copied by the hooks:
 

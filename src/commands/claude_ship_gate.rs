@@ -284,6 +284,13 @@ fn judge_moves(input: &HookInput, command: &str) -> Answer {
     Answer::Pass
 }
 
+// The drafts and test-drive folders are never the work, by path: a skill writes their `.gitignore`
+// first, and that write must not wait for it.
+fn is_draft(path: &Path, top: &Path) -> bool {
+    path.strip_prefix(top)
+        .is_ok_and(|rest| rest.starts_with(".shipit/td") || rest.starts_with(".shipit/drive"))
+}
+
 // What git ignores and does not track is not the work: build output, drafts and notes pass.
 fn judge_edit(input: &HookInput, path: &str) -> Answer {
     let home = home_dir();
@@ -304,7 +311,7 @@ fn judge_edit(input: &HookInput, path: &str) -> Answer {
             path.as_os_str(),
         ])
         .is_ok();
-    if !path.starts_with(git.top()) || ignored {
+    if !path.starts_with(git.top()) || ignored || is_draft(&path, git.top()) {
         return Answer::Pass;
     }
     answer(input.mode, author_verdict(&caller(input), &Change::Edit))
