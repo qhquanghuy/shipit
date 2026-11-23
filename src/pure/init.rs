@@ -124,11 +124,15 @@ pub(crate) fn next_lines(base: &BranchName, start: Start) -> Vec<String> {
         )),
         Start::Pushed => {}
     }
+    lines.push(
+        "Next: commit .claude/settings.json (the permission list of the README) alone on adopt/settings: the owner pushes it and opens pull request 1."
+            .to_owned(),
+    );
     lines.push(format!(
-        "Next: fill in check in {SETUP_PATH}; commit that file alone on a new branch; shipit check; push; open pull request 1 (the setup file only)."
+        "After it merges: on adopt/setup, made from the updated {base}, fill in check in {SETUP_PATH} and commit that file alone; shipit check; the owner pushes it and opens pull request 2 (the setup file only)."
     ));
     lines.push(
-        "After it merges: on a new branch, shipit init --ci-job, set SHIPIT_COMMIT to a ShipIt commit hash, and ship it as a normal slice (pull request 2)."
+        "After it merges: on adopt/ci, shipit init --ci-job, set SHIPIT_COMMIT to a ShipIt commit hash; the owner pushes it and opens pull request 3 (the CI job only)."
             .to_owned(),
     );
     lines.push(format!(

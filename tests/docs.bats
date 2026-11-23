@@ -226,7 +226,7 @@ check_headless_list() {
   step=$(grep -m1 '^1\. ' <<<"$part")
   [[ $step == *'.claude/settings.json'* ]]
   [[ $step == *'adopt/settings'* ]]
-  [[ $step == *'pull request 1'* ]]
+  [[ ${step,,} == *'pull request 1'* ]]
   step=$(grep -m1 'Pull request 2' <<<"$part")
   [[ $step == *'after pull request 1 merges'* ]]
   [[ $step == *'from the updated base'* ]]

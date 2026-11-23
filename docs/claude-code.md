@@ -224,7 +224,7 @@ Only `shipit:slice` may start agents: leaving `Agent` out of `tools` is what sto
 
 ### Permissions the skills need
 
-The skills run commands and write files. In a headless run (`claude -p`) every question becomes a refusal, so give the permissions first. Put this in `.claude/settings.json` at the root of the project (commit it in its own pull request after adoption, not with the setup), or give the same rules with `--allowedTools`. Replace `./test.sh` with your project's own test command. The skills read and search with the Read and Grep tools, so the list has no `cat`, `grep` or `ls` rule. An installed plugin is read from its cache folder, as the last rule shows; a plugin loaded from a folder of your own needs `Read(//<plugin folder>/**)` instead (`//` starts an absolute path).
+The skills run commands and write files. In a headless run (`claude -p`) every question becomes a refusal, so give the permissions first. Put this in `.claude/settings.json` at the root of the project and commit it alone as the first adoption pull request (Adopt ShipIt in a project); or give the same rules with `--allowedTools`. Replace `./test.sh` with your project's own test command. The skills read and search with the Read and Grep tools, so the list has no `cat`, `grep` or `ls` rule. An installed plugin is read from its cache folder, as the last rule shows; a plugin loaded from a folder of your own needs `Read(//<plugin folder>/**)` instead (`//` starts an absolute path).
 
 ```json
 {
@@ -267,7 +267,7 @@ A skill makes its drafts folder inside the project, `.shipit/td/<name>` (`<name>
 
 **The store.** The harness asks for a write under the git folder and a headless run refuses it, whatever the allow rules say; `shipit store put` writes build plans, plan reviews and reviews instead, and `Bash(shipit *)` allows it. A goal or roadmap version is the owner's decision: its copy asks.
 
-**Trust and headless runs.** Claude Code reads the project's `.claude/settings.json` only in a folder that was trusted, and a headless run never shows the trust question, so there the list above is not read. Trust the folder once in an interactive session (`claude` in the project folder), or pass the list to each headless run: `claude -p --settings .claude/settings.json "<prompt>"`.
+**Trust and headless runs.** Claude Code reads the project's `.claude/settings.json` only in a folder that was trusted, and a headless run never shows the trust question, so there the list above is not read. Trust the folder once in an interactive session (`claude` in the project folder) before the first headless run.
 
 These commands are not in the list; they ask:
 
