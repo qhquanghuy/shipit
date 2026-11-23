@@ -10,10 +10,11 @@ use crate::edge::git::Git;
 use crate::edge::hook_process::{exists, home_dir, make_folder, project_dir, run_gate};
 use crate::edge::records::store_dir;
 use crate::pure::branch::is_slice_branch;
-use crate::pure::claude_hook::{HookInput, mcp_ship, resolve};
+use crate::pure::claude_hook::{HookInput, mcp_ship, normalize, resolve};
 use crate::pure::failure::Failure;
 use crate::pure::made_by::{
-    Caller, Change, Moves, answer, author_verdict, both, forged_trailer, moves,
+    Caller, Change, Move, Moves, Verdict, answer, author_verdict, both, forged_trailer,
+    message_from_elsewhere, moves, unreadable_names_slice,
 };
 use crate::pure::setup::{HEAD, SETUP_PATH};
 use crate::pure::ship_gate::{
@@ -256,7 +257,7 @@ fn judge_moves(input: &HookInput, command: &str) -> Answer {
     let home = home_dir();
     let home = home.as_deref();
     let who = caller(input);
-    let targets: Vec<(PathBuf, String, Vec<String>)> = match moves(command) {
+    let targets: Vec<(PathBuf, Move)> = match moves(command) {
         Moves::Plain(found) => found
             .into_iter()
             .map(|one| {
@@ -265,28 +266,44 @@ fn judge_moves(input: &HookInput, command: &str) -> Answer {
                     None,
                     one.folder.as_deref(),
                 );
-                (folder, one.sub, one.trailers)
+                (folder, one)
             })
             .collect(),
-        Moves::Unreadable => judged_folders(input, home, command)
-            .into_iter()
-            .map(|folder| (folder, "commit".to_owned(), Vec::new()))
-            .collect(),
+        Moves::Unreadable => {
+            let slice = unreadable_names_slice(command);
+            judged_folders(input, home, command)
+                .into_iter()
+                .map(|folder| {
+                    let one = Move {
+                        sub: "commit".to_owned(),
+                        dir: None,
+                        folder: None,
+                        trailers: Vec::new(),
+                        slice,
+                        elsewhere: false,
+                    };
+                    (folder, one)
+                })
+                .collect()
+        }
     };
-    for (folder, sub, trailers) in &targets {
+    for (folder, one) in &targets {
         let Some(git) = Git::at(folder).ok().filter(shipit_project) else {
             continue;
         };
-        let trailers: Vec<&str> = trailers.iter().map(String::as_str).collect();
+        let trailers: Vec<&str> = one.trailers.iter().map(String::as_str).collect();
         let change = Change::Move {
-            sub,
+            sub: &one.sub,
             trailers: &trailers,
         };
-        let verdict = if is_slice_working_copy(&git) {
+        let mut verdict = if is_slice_working_copy(&git) || one.slice {
             author_verdict(&who, &change)
         } else {
             forged_trailer(&who, &change)
         };
+        if verdict == Verdict::Pass && one.elsewhere {
+            verdict = message_from_elsewhere(&who);
+        }
         let answered = answer(input.mode, verdict);
         if answered != Answer::Pass {
             return answered;
@@ -305,7 +322,7 @@ fn is_draft(path: &Path, top: &Path) -> bool {
 // What git ignores and does not track is not the work: build output, drafts and notes pass.
 fn judge_edit(input: &HookInput, path: &str) -> Answer {
     let home = home_dir();
-    let path = resolve(&input.cwd, home.as_deref(), Some(path));
+    let path = normalize(&resolve(&input.cwd, home.as_deref(), Some(path)));
     let Some(git) = path
         .ancestors()
         .skip(1)

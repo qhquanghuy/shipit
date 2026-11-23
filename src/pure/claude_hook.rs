@@ -1,7 +1,7 @@
 // What the hooks of Claude Code hand in and expect back: the part of a hook event the gates
 // read, and the one decision object they may print. Only the fields an event needs are read.
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use serde_json::{Value, json};
 
@@ -149,6 +149,22 @@ pub(crate) fn agent_call(input: &HookInput) -> bool {
     matches!(input.tool_name.as_deref(), Some("Agent" | "Task"))
 }
 
+// The path with its `.` and `..` parts taken out, as written: where the path leads, whatever the
+// folders hold.
+pub(crate) fn normalize(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for part in path.components() {
+        match part {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => out.push(part),
+        }
+    }
+    out
+}
+
 // A folder the reader gives as `~/x` is the home folder's; with no home it stays under the working
 // folder, where it names nothing and so no project.
 pub(crate) fn resolve(cwd: &Path, home: Option<&Path>, dir: Option<&str>) -> PathBuf {
@@ -220,6 +236,21 @@ mod tests {
             failure_persistence: None,
             ..ProptestConfig::default()
         })]
+
+        #[test]
+        fn a_path_is_normalized_to_where_it_leads(
+            parts in proptest::collection::vec("[a-z]{1,4}", 1..5),
+            detours in proptest::collection::vec(("[a-z]{1,4}", 0..5_usize), 0..4),
+        ) {
+            let clean: PathBuf = std::iter::once("/".to_owned()).chain(parts.iter().cloned()).collect();
+            let mut text = parts.clone();
+            for (name, at) in &detours {
+                let at = at % (text.len() + 1);
+                text.splice(at..at, [name.clone(), "..".to_owned(), ".".to_owned()]);
+            }
+            let written: PathBuf = std::iter::once("/".to_owned()).chain(text).collect();
+            prop_assert_eq!(normalize(&written), clean);
+        }
 
         #[test]
         fn a_folder_is_read_from_the_cwd_and_joined_with_a_relative_dir(

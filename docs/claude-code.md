@@ -206,6 +206,15 @@ in every working copy of a ShipIt project, on any branch: a commit that carries 
 else, is refused (answer A for an agent, G for the main session), so that it cannot be moved onto a
 slice branch later.
 
+The trailer is read in `--trailer` and in every line of an `-m` value. A commit whose
+message comes from a file or from another commit (`-F`, `-t`, `-C`, `-c`) cannot be read: for any
+agent but the maker it is refused, and for the main session it is asked, on any branch of a project.
+A command that creates, resets, renames or points a slice branch (`checkout -b` or `-B`, `switch -c`
+or `-C`, `branch -f`, `-m` or `-M` or a new name with a start point, `worktree add -b` or `-B`,
+`update-ref refs/heads/slice/...`) is a move of that slice's work, from whatever branch the folder is
+on: only the maker may run it. Starting from a slice branch, switching to it, listing it or
+deleting it is not a move.
+
 When the author rule and the ship gate both answer one command (a commit joined to a push to the
 base branch, say), the answer is the stronger of the two and carries both texts.
 
@@ -262,11 +271,14 @@ after the fact.
 - A child slice whose parent was squash-merged and whose parent branch is gone sees the parent's
   commits as its own, with no trailer: after the parent merges, rebase the child onto the base
   (the stacking rule).
+- What the hooks cannot see: a message in a file (it is refused, not read), a commit made outside
+  Claude Code, and anything a program writes. The trailer check of the receipt reads the commit
+  messages as they are: it is a claim the committer made, not proof of who made the work.
 - A command the reader cannot parse (a substitution, a `cd` it does not follow) is judged in the
   session's folder only: from a main copy that is not on a slice branch, `cd <worktree> && git
   commit -m "$(cat m)"` is asked by the ship gate and not refused as a move of the work.
-- An Edit through a symbolic link into a worktree is not judged: the path is compared with the
-  working copy's top as written.
+- An Edit through a symbolic link into a worktree is not judged: the path is cleaned of `.` and `..`
+  parts as written, and then compared with the working copy's top.
 - A merge commit is not checked for a trailer, so content added while resolving a merge is not
   attributed.
 - The maker runs at the setup's maker rank or its stand-in; a hard step at a higher rank needs a
@@ -302,7 +314,7 @@ Only `shipit:slice` may start agents: leaving `Agent` out of `tools` is what sto
 
 **Sessions and messages.** Name a session with `claude -n "$(shipit session-name <goal> <slice>)"` as under Sessions; a slice session ends with one message to the lead, which confirms with `shipit status`.
 
-**How slices run.** The last decision point of `shipit-roadmap` offers one session per slice, and the `Workflow` tool, which only the owner's explicit opt-in chooses.
+**How slices run.** The last decision point of `shipit-roadmap` offers one way: one session per slice.
 
 The maker works only in a working copy on a slice branch, and the Agent tool of Claude Code 2.1.327 has no `cwd`: an agent it starts works in the folder of the session (measured). So no session in the main working copy can make a slice, and a headless run has one way too. The lead (or the owner) writes the build plan and starts the slice in the main working copy; `shipit start` prints the worktree's path; then the owner opens a new session in the worktree (`cd <path> && claude -n "$(shipit session-name <goal> <slice>)"`), which runs the rest of `shipit-slice`. `shipit:slice` writes and reviews a build plan, and ends.
 

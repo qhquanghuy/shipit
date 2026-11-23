@@ -1,5 +1,6 @@
 use serde_json::Value;
 
+use crate::pure::branch::is_slice_branch;
 use crate::pure::rank::effort_name;
 use crate::pure::setup::Setup;
 use crate::pure::shell_words::{
@@ -48,6 +49,10 @@ pub(crate) struct Move {
     pub(crate) dir: Option<String>,
     pub(crate) folder: Option<String>,
     pub(crate) trailers: Vec<String>,
+    // The command creates, resets or points a slice branch, from whatever branch it runs.
+    pub(crate) slice: bool,
+    // A commit whose message comes from a file or another commit: its trailers are not read.
+    pub(crate) elsewhere: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -80,30 +85,38 @@ fn names_move(text: &str) -> bool {
             || (has(&["branch"]) && flag('f', "--force")))
 }
 
+// An unreadable command that names git, a command that makes branches and a slice branch.
+pub(crate) fn unreadable_names_slice(command: &str) -> bool {
+    let words = raw_words_unquoted(command);
+    let has = |names: &[&str]| words.iter().any(|word| names.contains(&word.as_str()));
+    has(&["git"])
+        && has(&["checkout", "switch", "branch", "worktree", "update-ref"])
+        && has(&["slice"])
+}
+
 fn runs_commands(word: &str) -> bool {
     runs_as(word, &WRAPPERS) || runs_as(word, &INTERPRETERS) || runs_as(word, &RUNNERS)
 }
 
-// The value of every ShipIt-Made-By trailer the command gives; any other trailer is not one.
-fn trailers_of(args: &[String], data: &[bool]) -> Vec<String> {
-    let mut found = Vec::new();
-    for (at, word) in args.iter().enumerate() {
-        if data.get(at) == Some(&true) {
-            continue;
-        }
-        let value = match word.strip_prefix("--trailer=") {
-            Some(glued) => Some(glued),
-            None if word == "--trailer" => args.get(at + 1).map(String::as_str),
-            None => None,
-        };
-        let Some((key, text)) = value.and_then(|value| value.split_once([':', '='])) else {
-            continue;
-        };
-        if key.trim().eq_ignore_ascii_case(TRAILER_KEY) {
-            found.push(text.trim().to_owned());
-        }
-    }
-    found
+// The value of every ShipIt-Made-By trailer the command gives, in `--trailer` or as a line of a
+// message (`-m`, `--message`); any other trailer is not one.
+fn trailers_of(args: &[String]) -> Vec<String> {
+    args.iter()
+        .flat_map(|word| {
+            let text = word
+                .strip_prefix("--trailer=")
+                .or_else(|| word.strip_prefix("--message="))
+                .unwrap_or(word);
+            text.lines()
+                .filter_map(|line| {
+                    let (key, value) = line.split_once([':', '='])?;
+                    key.trim()
+                        .eq_ignore_ascii_case(TRAILER_KEY)
+                        .then(|| value.trim().to_owned())
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }
 
 // A short flag cluster holds the letter.
@@ -112,10 +125,100 @@ fn short_has(word: &str, letter: char) -> bool {
         .is_some_and(|rest| !rest.starts_with('-') && rest.contains(letter))
 }
 
+// The words before `--` that are not message text.
+fn plain_words<'a>(args: &'a [String], data: &[bool]) -> Vec<&'a str> {
+    args.iter()
+        .enumerate()
+        .take_while(|(_, word)| *word != "--")
+        .filter(|(at, _)| data.get(*at) != Some(&true))
+        .map(|(_, word)| word.as_str())
+        .collect()
+}
+
+fn names_slice(word: &str) -> bool {
+    is_slice_branch(word.strip_prefix("refs/heads/").unwrap_or(word))
+}
+
+// A flag that makes a branch, and the name it makes: the word after it.
+fn makes_slice(words: &[&str], flag: impl Fn(&str) -> bool) -> bool {
+    words
+        .iter()
+        .zip(words.iter().skip(1))
+        .any(|(first, name)| flag(first) && names_slice(name))
+}
+
+// The command creates, resets, renames or points a slice branch (the one it names), whatever branch
+// it runs on: it moves that slice's work. Starting from a slice branch, switching to it, listing or
+// deleting it is not a move.
+fn slice_move(sub: &str, args: &[String], data: &[bool]) -> bool {
+    let words = plain_words(args, data);
+    let flags = || words.iter().filter(|word| word.starts_with('-'));
+    let names: Vec<&str> = words
+        .iter()
+        .copied()
+        .filter(|word| !word.starts_with('-'))
+        .collect();
+    match sub {
+        "checkout" => makes_slice(&words, |flag| short_has(flag, 'b') || short_has(flag, 'B')),
+        "switch" => makes_slice(&words, |flag| {
+            short_has(flag, 'c')
+                || short_has(flag, 'C')
+                || flag == "--create"
+                || flag == "--force-create"
+        }),
+        "worktree" => {
+            names.first() == Some(&"add")
+                && makes_slice(&words, |flag| short_has(flag, 'b') || short_has(flag, 'B'))
+        }
+        "update-ref" => names
+            .iter()
+            .any(|name| name.starts_with("refs/heads/slice/")),
+        "branch" => {
+            let only_reads = flags().any(|flag| {
+                "dDlar".chars().any(|letter| short_has(flag, letter))
+                    || *flag == "--delete"
+                    || *flag == "--list"
+            });
+            let rewrites = flags().any(|flag| {
+                "fMmCc".chars().any(|letter| short_has(flag, letter))
+                    || ["--force", "--move", "--copy"].contains(flag)
+            });
+            if only_reads {
+                false
+            } else if rewrites {
+                names.iter().any(|name| names_slice(name))
+            } else {
+                names.len() >= 2 && names.first().is_some_and(|name| names_slice(name))
+            }
+        }
+        _ => false,
+    }
+}
+
+// A commit whose message comes from a file or from another commit.
+fn message_elsewhere(args: &[String], data: &[bool]) -> bool {
+    plain_words(args, data).iter().any(|word| {
+        "FtCc".chars().any(|letter| short_has(word, letter))
+            || [
+                "--file",
+                "--template",
+                "--reuse-message",
+                "--reedit-message",
+            ]
+            .iter()
+            .any(|long| {
+                word == long
+                    || word
+                        .strip_prefix(long)
+                        .is_some_and(|rest| rest.starts_with('='))
+            })
+    })
+}
+
 // A git subcommand that moves the work: a commit, a history move, or a branch pointed at another
 // commit (`checkout -B`, `switch -C`, `branch -f`, `update-ref`).
 fn is_move(sub: &str, args: &[String], data: &[bool]) -> bool {
-    if MOVES.contains(&sub) || sub == "update-ref" {
+    if MOVES.contains(&sub) || sub == "update-ref" || slice_move(sub, args, data) {
         return true;
     }
     let flags = args
@@ -175,8 +278,9 @@ fn seen(segment: &Segment, command: &str, heredocs: bool) -> Seen {
     if !is_move(sub, args, args_data) {
         return Seen::Nothing;
     }
-    let trailers = if sub == "commit" {
-        trailers_of(args, args_data)
+    let is_commit = sub == "commit";
+    let trailers = if is_commit {
+        trailers_of(args)
     } else {
         Vec::new()
     };
@@ -185,6 +289,8 @@ fn seen(segment: &Segment, command: &str, heredocs: bool) -> Seen {
         dir: segment.dir.clone(),
         folder: folders_of(words.get(..=lead + at).unwrap_or_default()).pop(),
         trailers,
+        slice: slice_move(sub, args, args_data),
+        elsewhere: is_commit && message_elsewhere(args, args_data),
     })
 }
 
@@ -280,6 +386,17 @@ pub(crate) fn forged_trailer(caller: &Caller<'_>, change: &Change<'_>) -> Verdic
             Verdict::Deny(NOT_MAKER.to_owned())
         }
         (Caller::Main | Caller::Agent(_), Change::Move { .. }) => Verdict::Pass,
+    }
+}
+
+const NOT_READ: &str = "ShipIt: ShipIt cannot read a commit message that comes from a file or from another commit (-F, -t, -C, -c), so it cannot see the maker's trailer in it. Only shipit:maker commits that way: use -m.";
+
+// A message ShipIt cannot read is the maker's to give, on any branch of a project.
+pub(crate) fn message_from_elsewhere(caller: &Caller<'_>) -> Verdict {
+    match caller {
+        Caller::Agent(MAKER) => Verdict::Pass,
+        Caller::Agent(_) => Verdict::Deny(NOT_READ.to_owned()),
+        Caller::Main => Verdict::Ask(NOT_READ.to_owned()),
     }
 }
 
@@ -516,6 +633,8 @@ mod tests {
             dir: shape.dir.clone(),
             folder: shape.folder.clone(),
             trailers,
+            slice: false,
+            elsewhere: false,
         }]
     }
 
@@ -653,6 +772,62 @@ mod tests {
             prop_assert_eq!(maker_start(&call, move || Ok(loaded)), wanted);
             let unread = maker_start(&call, || Err("no setup".to_owned()));
             prop_assert_eq!(unread, (kind == MAKER).then(|| Err("no setup".to_owned())));
+        }
+
+        #[test]
+        fn a_slice_branch_a_command_makes_or_points_is_a_move_and_one_it_starts_from_is_not(
+            name in "[a-z]{1,5}",
+            other in "[a-z]{1,5}",
+        ) {
+            let slice = format!("slice/v1/{name}");
+            let moving = [
+                format!("git checkout -B {slice} tmp"),
+                format!("git checkout -fb {slice}"),
+                format!("git switch -C {slice} tmp"),
+                format!("git switch --create {slice}"),
+                format!("git branch -f {slice} tmp"),
+                format!("git branch -M {slice}"),
+                format!("git branch {slice} tmp"),
+                format!("git worktree add -B {slice} ../w tmp"),
+                format!("git update-ref refs/heads/{slice} HEAD"),
+            ];
+            for command in &moving {
+                let found = match moves(command) {
+                    Moves::Plain(found) => found,
+                    Moves::Unreadable => Vec::new(),
+                };
+                prop_assert!(found.iter().all(|one| one.slice) && found.len() == 1, "{}", command);
+            }
+            let calm = [
+                format!("git checkout {slice}"),
+                format!("git switch {slice}"),
+                format!("git checkout -b {other} {slice}"),
+                format!("git switch -c {other} {slice}"),
+                format!("git branch {other} {slice}"),
+                format!("git branch -d {slice}"),
+                format!("git branch --list {slice}"),
+                format!("git worktree add ../w {slice}"),
+            ];
+            for command in &calm {
+                prop_assert_eq!(moves(command), Moves::Plain(Vec::new()), "{}", command);
+            }
+        }
+
+        #[test]
+        fn the_makers_trailer_in_a_message_counts_and_a_message_from_a_file_is_marked(
+            value in "[a-z:]{1,8}",
+            flag in proptest::sample::select(vec!["-F", "-t", "-C", "-c", "--file", "--template", "--reuse-message"]),
+        ) {
+            let found = |command: &str| match moves(command) {
+                Moves::Plain(found) => found,
+                Moves::Unreadable => Vec::new(),
+            };
+            let said = found(&format!("git commit -am x -m '{TRAILER_KEY}: {value}'"));
+            prop_assert_eq!(said.iter().flat_map(|one| one.trailers.clone()).collect::<Vec<_>>(), vec![value.clone()]);
+            prop_assert!(said.iter().all(|one| !one.elsewhere));
+            let filed = found(&format!("git commit {flag} msg"));
+            prop_assert!(filed.len() == 1 && filed.iter().all(|one| one.elsewhere));
+            prop_assert!(found("git commit -m x").iter().all(|one| !one.elsewhere));
         }
 
         #[test]

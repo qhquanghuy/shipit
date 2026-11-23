@@ -69,10 +69,7 @@ At adoption, at the start of each goal, and whenever you ask, a `shipit:model-sc
 
 ## Sessions and how slices run
 
-The lead session is named by `shipit session-name <goal>`; a slice session by `shipit session-name <goal> <slice>`. At the end of the roadmap you pick how slices run:
-
-1. one session per slice. The lead (or you) writes the build plan and starts the slice in the main working copy; that prints the slice's worktree, and the owner opens a new session in the worktree: `cd <path> && claude -n "$(shipit session-name <goal> <slice>)"`. The maker works only there, so no session in the main working copy can make a slice. It is the only way for a headless run too;
-2. the `Workflow` tool: a script runs the slices; only if you ask for it.
+The lead session is named by `shipit session-name <goal>`; a slice session by `shipit session-name <goal> <slice>`. Slices run one way: one session per slice. The lead (or you) writes the build plan and starts the slice in the main working copy; that prints the slice's worktree, and the owner opens a new session in the worktree: `cd <path> && claude -n "$(shipit session-name <goal> <slice>)"`. The maker works only there, so no session in the main working copy can make a slice. It is the only way for a headless run too.
 
 ## Words you may meet
 
