@@ -64,7 +64,7 @@ Written by the informed reviewer, who knows the build plan; checked in step 7.
 ## Store files
 - The store is `<git common dir>/shipit`. Find it with `git rev-parse --git-common-dir`, run alone, and type the printed path into the next command. A skill never spells the git folder itself.
 - Write: draft with the file tools in a drafts folder made with `mkdir -p .shipit/td/<slice>`, validate the draft there, then put each in with `shipit store put <kind> <draft> --goal <goal> --slice <slice> --round <k>` (kind: `explanation`, `informed-review`, `second-opinion` or `review`; k: the fix round, from 1). It never replaces a file. A store file is never edited in place.
-- Read: with the file tools.
+- Read: `shipit store show <kind> --goal <goal> [--slice <slice>] [--round <k>] --copy`, from any working copy, then the Read tool on the path it prints.
 - If `shipit store put` refuses, report its message and stop.
 ## Claims
 Every agent report and every review ends with three lists, each of which may be the single item `none`. **Verified:** checked by running something; each item names the command or test that ran. **Inferred:** reasoned from the code or the docs, not run; this is the list the owner must check. **Unverifiable:** could not be checked here, and why.
