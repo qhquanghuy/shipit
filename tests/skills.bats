@@ -775,3 +775,10 @@ check_drafts_in_project() {
     [[ ${name##*/} != [Aa][Nn][Aa][Ll][Yy][Ss][Ii][Ss]* ]]
   done < <(grep -oE '[A-Za-z0-9_./-]+\.md' "$drive")
 }
+
+@test "skills: the maker's commit form is the one the gate wants" {
+  grep -qF -- '--trailer "ShipIt-Made-By: shipit:maker"' "$SHIPIT_SRC/agents/maker.md"
+  grep -qF 'ShipIt-Made-By' "$SHIPIT_SRC/src/pure/made_by.rs"
+  grep -qF 'shipit:maker' "$SHIPIT_SRC/src/pure/made_by.rs"
+  grep -qF 'ShipIt-Made-By: owner' "$SHIPIT_SRC/skills/shipit-slice/SKILL.md"
+}
