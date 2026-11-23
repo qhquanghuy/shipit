@@ -47,7 +47,7 @@ pub(crate) struct Move {
     pub(crate) sub: String,
     pub(crate) dir: Option<String>,
     pub(crate) folder: Option<String>,
-    pub(crate) trailer: Option<String>,
+    pub(crate) trailers: Vec<String>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -62,20 +62,31 @@ enum Seen {
     Unreadable,
 }
 
-// The command line names git and one of its moves, whatever runs it.
+// The command line names git and one of its moves, whatever runs it: a branch move is a flag of
+// checkout, switch or branch, so the flag letter counts there.
 fn names_move(text: &str) -> bool {
     let words = raw_words_unquoted(text);
-    words.iter().any(|word| word == "git")
-        && words.iter().any(|word| MOVES.contains(&word.as_str()))
+    let has = |names: &[&str]| words.iter().any(|word| names.contains(&word.as_str()));
+    let flag = |letter: char, long: &str| {
+        words
+            .iter()
+            .any(|word| short_has(word, letter) || word.starts_with(long))
+    };
+    has(&["git"])
+        && (has(&MOVES)
+            || has(&["update-ref"])
+            || (has(&["checkout"]) && flag('B', "-B"))
+            || (has(&["switch"]) && flag('C', "--force-create"))
+            || (has(&["branch"]) && flag('f', "--force")))
 }
 
 fn runs_commands(word: &str) -> bool {
     runs_as(word, &WRAPPERS) || runs_as(word, &INTERPRETERS) || runs_as(word, &RUNNERS)
 }
 
-// The value of the last ShipIt-Made-By trailer the command gives; any other trailer is not one.
-fn trailer_of(args: &[String], data: &[bool]) -> Option<String> {
-    let mut found = None;
+// The value of every ShipIt-Made-By trailer the command gives; any other trailer is not one.
+fn trailers_of(args: &[String], data: &[bool]) -> Vec<String> {
+    let mut found = Vec::new();
     for (at, word) in args.iter().enumerate() {
         if data.get(at) == Some(&true) {
             continue;
@@ -89,10 +100,38 @@ fn trailer_of(args: &[String], data: &[bool]) -> Option<String> {
             continue;
         };
         if key.trim().eq_ignore_ascii_case(TRAILER_KEY) {
-            found = Some(text.trim().to_owned());
+            found.push(text.trim().to_owned());
         }
     }
     found
+}
+
+// A short flag cluster holds the letter.
+fn short_has(word: &str, letter: char) -> bool {
+    word.strip_prefix('-')
+        .is_some_and(|rest| !rest.starts_with('-') && rest.contains(letter))
+}
+
+// A git subcommand that moves the work: a commit, a history move, or a branch pointed at another
+// commit (`checkout -B`, `switch -C`, `branch -f`, `update-ref`).
+fn is_move(sub: &str, args: &[String], data: &[bool]) -> bool {
+    if MOVES.contains(&sub) || sub == "update-ref" {
+        return true;
+    }
+    let flags = args
+        .iter()
+        .enumerate()
+        .take_while(|(_, word)| *word != "--")
+        .filter(|(at, _)| data.get(*at) != Some(&true))
+        .map(|(_, word)| word.as_str());
+    flags.into_iter().any(|word| match sub {
+        "checkout" => short_has(word, 'B'),
+        "switch" => {
+            short_has(word, 'C') || word == "--force-create" || word.starts_with("--force-create=")
+        }
+        "branch" => short_has(word, 'f') || word == "--force",
+        _ => false,
+    })
 }
 
 fn seen(segment: &Segment, command: &str, heredocs: bool) -> Seen {
@@ -127,22 +166,25 @@ fn seen(segment: &Segment, command: &str, heredocs: bool) -> Seen {
         Global::Plain { sub: None, .. } => return Seen::Nothing,
         Global::Plain { sub: Some(at), .. } => at,
     };
-    let Some(sub) = rest.get(at).filter(|sub| MOVES.contains(&sub.as_str())) else {
+    let Some(sub) = rest.get(at) else {
         return Seen::Nothing;
     };
-    let before = words.get(..=lead + at).unwrap_or_default();
-    let trailer = (sub == "commit")
-        .then(|| {
-            let args = rest.get(at + 1..).unwrap_or_default();
-            let data = message_values(words);
-            trailer_of(args, data.get(lead + at + 2..).unwrap_or_default())
-        })
-        .flatten();
+    let args = rest.get(at + 1..).unwrap_or_default();
+    let data = message_values(words);
+    let args_data = data.get(lead + at + 2..).unwrap_or_default();
+    if !is_move(sub, args, args_data) {
+        return Seen::Nothing;
+    }
+    let trailers = if sub == "commit" {
+        trailers_of(args, args_data)
+    } else {
+        Vec::new()
+    };
     Seen::One(Move {
         sub: sub.clone(),
         dir: segment.dir.clone(),
-        folder: folders_of(before).pop(),
-        trailer,
+        folder: folders_of(words.get(..=lead + at).unwrap_or_default()).pop(),
+        trailers,
     })
 }
 
@@ -183,7 +225,7 @@ pub(crate) enum Caller<'a> {
 pub(crate) enum Change<'a> {
     Move {
         sub: &'a str,
-        trailer: Option<&'a str>,
+        trailers: &'a [&'a str],
     },
     Edit,
 }
@@ -203,10 +245,10 @@ pub(crate) fn author_verdict(caller: &Caller<'_>, change: &Change<'_>) -> Verdic
             Caller::Agent(MAKER),
             Change::Move {
                 sub: "commit",
-                trailer,
+                trailers,
             },
         ) => {
-            if *trailer == Some(MAKER) {
+            if !trailers.is_empty() && trailers.iter().all(|trailer| *trailer == MAKER) {
                 Verdict::Pass
             } else {
                 Verdict::Deny(NO_TRAILER.to_owned())
@@ -219,10 +261,25 @@ pub(crate) fn author_verdict(caller: &Caller<'_>, change: &Change<'_>) -> Verdic
             Caller::Main,
             Change::Move {
                 sub: "commit",
-                trailer: Some(MAKER),
+                trailers,
             },
-        ) => Verdict::Deny(MAIN_IS_NOT_MAKER.to_owned()),
+        ) if trailers.contains(&MAKER) => Verdict::Deny(MAIN_IS_NOT_MAKER.to_owned()),
         (Caller::Main, Change::Move { .. } | Change::Edit) => Verdict::Ask(OWNER_ONLY.to_owned()),
+    }
+}
+
+// Off a slice branch, in a project, the maker's trailer is still the maker's alone: a commit
+// carrying it, made by anyone else, could be moved onto a slice branch later.
+pub(crate) fn forged_trailer(caller: &Caller<'_>, change: &Change<'_>) -> Verdict {
+    match (caller, change) {
+        (Caller::Agent(MAKER), _) | (_, Change::Edit) => Verdict::Pass,
+        (Caller::Main, Change::Move { trailers, .. }) if trailers.contains(&MAKER) => {
+            Verdict::Deny(MAIN_IS_NOT_MAKER.to_owned())
+        }
+        (Caller::Agent(_), Change::Move { trailers, .. }) if trailers.contains(&MAKER) => {
+            Verdict::Deny(NOT_MAKER.to_owned())
+        }
+        (Caller::Main | Caller::Agent(_), Change::Move { .. }) => Verdict::Pass,
     }
 }
 
@@ -340,7 +397,24 @@ mod tests {
         Mode::Bypass,
         Mode::Unknown,
     ];
-    const READS: [&str; 4] = ["log", "status", "diff", "show"];
+    const READS: [&str; 9] = [
+        "log",
+        "status",
+        "diff",
+        "show",
+        "checkout",
+        "checkout -b",
+        "switch -c",
+        "branch",
+        "branch -d",
+    ];
+    const BRANCH_MOVES: [&str; 5] = [
+        "checkout -B",
+        "switch -C",
+        "switch --force-create",
+        "branch -f",
+        "update-ref",
+    ];
 
     fn values() -> impl Strategy<Value = Vec<&'static str>> {
         proptest::collection::vec(
@@ -369,6 +443,7 @@ mod tests {
         (
             prop_oneof![
                 proptest::sample::select(MOVES.to_vec()),
+                proptest::sample::select(BRANCH_MOVES.to_vec()),
                 proptest::sample::select(READS.to_vec())
             ],
             proptest::option::of("[a-z]{1,4}"),
@@ -406,20 +481,30 @@ mod tests {
         text
     }
 
+    fn is_move_shape(shape: &Shape) -> bool {
+        MOVES.contains(&shape.sub.as_str()) || BRANCH_MOVES.contains(&shape.sub.as_str())
+    }
+
     fn expected(shape: &Shape) -> Vec<Move> {
-        if !MOVES.contains(&shape.sub.as_str()) {
+        if !is_move_shape(shape) {
             return Vec::new();
         }
-        let trailer = shape
+        let trailers = shape
             .trailer
-            .as_ref()
+            .iter()
             .filter(|_| shape.sub == "commit")
-            .map(|(_, value)| value.trim().to_owned());
+            .map(|(_, value)| value.trim().to_owned())
+            .collect();
         vec![Move {
-            sub: shape.sub.clone(),
+            sub: shape
+                .sub
+                .split_whitespace()
+                .next()
+                .unwrap_or_default()
+                .to_owned(),
             dir: shape.dir.clone(),
             folder: shape.folder.clone(),
-            trailer,
+            trailers,
         }]
     }
 
@@ -429,10 +514,10 @@ mod tests {
                 Caller::Agent(MAKER),
                 Change::Move {
                     sub: "commit",
-                    trailer,
+                    trailers,
                 },
             ) => {
-                if *trailer == Some(MAKER) {
+                if !trailers.is_empty() && trailers.iter().all(|trailer| *trailer == MAKER) {
                     Verdict::Pass
                 } else {
                     Verdict::Deny(NO_TRAILER.to_owned())
@@ -445,9 +530,9 @@ mod tests {
                 Caller::Main,
                 Change::Move {
                     sub: "commit",
-                    trailer: Some(MAKER),
+                    trailers,
                 },
-            ) => Verdict::Deny(MAIN_IS_NOT_MAKER.to_owned()),
+            ) if trailers.contains(&MAKER) => Verdict::Deny(MAIN_IS_NOT_MAKER.to_owned()),
             (Caller::Main, _) => Verdict::Ask(OWNER_ONLY.to_owned()),
         }
     }
@@ -507,7 +592,7 @@ mod tests {
             all.extend(expected(&Shape { dir: None, ..second.clone() }));
             prop_assert_eq!(moves(&both), Moves::Plain(all));
             let plain = text_of(&Shape { dir: None, ..first.clone() });
-            if MOVES.contains(&first.sub.as_str()) {
+            if is_move_shape(&first) {
                 let wrapped = match wrapper {
                     0 => format!("env {plain}"),
                     1 => format!("nix develop -c {plain}"),
@@ -563,11 +648,11 @@ mod tests {
                 Just(Caller::Agent("")),
             ],
             sub in proptest::sample::select(MOVES.to_vec()),
-            trailer in proptest::option::of(prop_oneof![Just(MAKER), Just(OWNER), Just("x")]),
+            trailers in proptest::collection::vec(prop_oneof![Just(MAKER), Just(OWNER), Just("x")], 0..3),
             edit in any::<bool>(),
             mode in proptest::sample::select(MODES.to_vec()),
         ) {
-            let change = if edit { Change::Edit } else { Change::Move { sub, trailer } };
+            let change = if edit { Change::Edit } else { Change::Move { sub, trailers: &trailers } };
             let verdict = author_verdict(&caller, &change);
             prop_assert_eq!(&verdict, &table(&caller, &change));
             let denied = matches!(mode, Mode::Bypass | Mode::Unknown);
@@ -579,5 +664,22 @@ mod tests {
             };
             prop_assert_eq!(answer(mode, verdict), expected);
         }
+
+        #[test]
+        fn a_non_maker_never_writes_the_makers_trailer_on_any_branch(
+            caller in prop_oneof![Just(Caller::Main), Just(Caller::Agent(MAKER)), Just(Caller::Agent("shipit:slice"))],
+            trailers in proptest::collection::vec(prop_oneof![Just(MAKER), Just(OWNER)], 0..3),
+            edit in any::<bool>(),
+        ) {
+            let change = if edit { Change::Edit } else { Change::Move { sub: "commit", trailers: &trailers } };
+            let maker_trailer = !edit && trailers.contains(&MAKER);
+            let wanted = match (caller, maker_trailer) {
+                (Caller::Agent(MAKER), _) | (_, false) => Verdict::Pass,
+                (Caller::Main, true) => Verdict::Deny(MAIN_IS_NOT_MAKER.to_owned()),
+                (Caller::Agent(_), true) => Verdict::Deny(NOT_MAKER.to_owned()),
+            };
+            prop_assert_eq!(forged_trailer(&caller, &change), wanted);
+        }
+
     }
 }

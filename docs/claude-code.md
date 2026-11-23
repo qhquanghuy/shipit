@@ -189,8 +189,9 @@ A receipt names who made the work, and a lead agent cannot make the work by mist
 two halves: hooks that stop a mistake inside Claude Code, and a check in the receipt.
 
 **The hooks (inside Claude Code).** On a slice branch an agent that is not `shipit:maker` cannot
-commit, cherry-pick, revert, merge, rebase, apply (`am`), pull or reset, and cannot edit a file
-git would commit. The owner's own main session gets a question instead of a refusal: the rule
+commit, cherry-pick, revert, merge, rebase, apply (`am`), pull or reset, cannot point a branch at
+another commit (`checkout -B`, `switch -C`, `branch -f`, `update-ref`), and cannot edit a file git
+would commit. The owner's own main session gets a question instead of a refusal: the rule
 binds agents, not the owner's interactive session. In bypass mode and in a mode ShipIt does not
 know the owner cannot be asked, so the question is a refusal. A maker commits with one plain
 command that carries its trailer:
@@ -198,6 +199,12 @@ command that carries its trailer:
 ```sh
 git commit -m "<message>" --trailer "ShipIt-Made-By: shipit:maker"
 ```
+
+Every `ShipIt-Made-By` trailer of a command counts: a maker that adds another value, or a main
+session that adds the maker's next to its own, is refused. The maker's trailer is the maker's alone
+in every working copy of a ShipIt project, on any branch: a commit that carries it, made by anyone
+else, is refused (answer A for an agent, G for the main session), so that it cannot be moved onto a
+slice branch later.
 
 A folder counts when it is a working copy of a ShipIt project whose current branch is a slice
 branch (`slice/<goal>/<slice>`). The hook that judges Bash and Monitor reads each git command with
@@ -253,6 +260,13 @@ after the fact.
 - A child slice whose parent was squash-merged and whose parent branch is gone sees the parent's
   commits as its own, with no trailer: after the parent merges, rebase the child onto the base
   (the stacking rule).
+- A command the reader cannot parse (a substitution, a `cd` it does not follow) is judged in the
+  session's folder only: from a main copy that is not on a slice branch, `cd <worktree> && git
+  commit -m "$(cat m)"` is asked by the ship gate and not refused as a move of the work.
+- An Edit through a symbolic link into a worktree is not judged: the path is compared with the
+  working copy's top as written.
+- A merge commit is not checked for a trailer, so content added while resolving a merge is not
+  attributed.
 - The maker runs at the setup's maker rank or its stand-in; a hard step at a higher rank needs a
   setup change by the owner, as a setup-only pull request.
 

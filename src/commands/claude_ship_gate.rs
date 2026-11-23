@@ -12,7 +12,7 @@ use crate::edge::records::store_dir;
 use crate::pure::branch::is_slice_branch;
 use crate::pure::claude_hook::{HookInput, mcp_ship, resolve};
 use crate::pure::failure::Failure;
-use crate::pure::made_by::{Caller, Change, Moves, answer, author_verdict, moves};
+use crate::pure::made_by::{Caller, Change, Moves, answer, author_verdict, forged_trailer, moves};
 use crate::pure::setup::{HEAD, SETUP_PATH};
 use crate::pure::ship_gate::{
     Answer, Facts, judged_dirs, named_folders, rewires_push, ship_answer, ship_reasons, triggered,
@@ -238,11 +238,14 @@ fn caller(input: &HookInput) -> Caller<'_> {
 }
 
 // The folder when it is a working copy of a ShipIt project on a slice branch: the work of a slice.
-pub(crate) fn on_slice_branch(dir: &Path) -> Option<Git> {
-    let git = Git::at(dir).ok().filter(shipit_project)?;
+fn is_slice_working_copy(git: &Git) -> bool {
     git.current_branch()
         .is_some_and(|branch| is_slice_branch(&branch))
-        .then_some(git)
+}
+
+pub(crate) fn on_slice_branch(dir: &Path) -> Option<Git> {
+    let git = Git::at(dir).ok().filter(shipit_project)?;
+    is_slice_working_copy(&git).then_some(git)
 }
 
 // A commit or move in a working copy on a slice branch is the maker's. A command that names git
@@ -251,7 +254,7 @@ fn judge_moves(input: &HookInput, command: &str) -> Answer {
     let home = home_dir();
     let home = home.as_deref();
     let who = caller(input);
-    let targets: Vec<(PathBuf, String, Option<String>)> = match moves(command) {
+    let targets: Vec<(PathBuf, String, Vec<String>)> = match moves(command) {
         Moves::Plain(found) => found
             .into_iter()
             .map(|one| {
@@ -260,23 +263,29 @@ fn judge_moves(input: &HookInput, command: &str) -> Answer {
                     None,
                     one.folder.as_deref(),
                 );
-                (folder, one.sub, one.trailer)
+                (folder, one.sub, one.trailers)
             })
             .collect(),
         Moves::Unreadable => judged_folders(input, home, command)
             .into_iter()
-            .map(|folder| (folder, "commit".to_owned(), None))
+            .map(|folder| (folder, "commit".to_owned(), Vec::new()))
             .collect(),
     };
-    for (folder, sub, trailer) in &targets {
-        if on_slice_branch(folder).is_none() {
+    for (folder, sub, trailers) in &targets {
+        let Some(git) = Git::at(folder).ok().filter(shipit_project) else {
             continue;
-        }
+        };
+        let trailers: Vec<&str> = trailers.iter().map(String::as_str).collect();
         let change = Change::Move {
             sub,
-            trailer: trailer.as_deref(),
+            trailers: &trailers,
         };
-        let answered = answer(input.mode, author_verdict(&who, &change));
+        let verdict = if is_slice_working_copy(&git) {
+            author_verdict(&who, &change)
+        } else {
+            forged_trailer(&who, &change)
+        };
+        let answered = answer(input.mode, verdict);
         if answered != Answer::Pass {
             return answered;
         }
