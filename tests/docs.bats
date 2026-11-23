@@ -220,16 +220,8 @@ check_headless_list() {
   return "$bad"
 }
 
-@test "docs: adoption starts with the permission list, trusted once" {
-  local file part step
-  part=$(awk '/^## Adopt ShipIt in a project$/ { on = 1; next } /^## / { on = 0 } on' "$SHIPIT_SRC/README.md")
-  step=$(grep -m1 '^1\. ' <<<"$part")
-  [[ $step == *'.claude/settings.json'* ]]
-  [[ $step == *'adopt/settings'* ]]
-  [[ ${step,,} == *'pull request 1'* ]]
-  step=$(grep -m1 'Pull request 2' <<<"$part")
-  [[ $step == *'after pull request 1 merges'* ]]
-  [[ $step == *'from the updated base'* ]]
+@test "docs: the permission part says how a headless run gets the list" {
+  local file
   for file in README.md docs/claude-code.md; do
     run check_headless_list "$SHIPIT_SRC/$file"
     [ "$output" = "" ]
@@ -242,6 +234,19 @@ check_headless_list() {
     [ "$status" -eq 1 ]
     [[ $output == *"Trust the folder once in an interactive session"* ]]
   done
+}
+
+@test "docs: adoption starts with the permission list, trusted once" {
+  local part step
+  part=$(awk '/^## Adopt ShipIt in a project$/ { on = 1; next } /^## / { on = 0 } on' "$SHIPIT_SRC/README.md")
+  step=$(grep -m1 '^1\. ' <<<"$part")
+  [[ $step == *'.claude/settings.json'* ]]
+  [[ $step == *'adopt/settings'* ]]
+  [[ ${step,,} == *'pull request 1'* ]]
+  step=$(grep -m1 'Pull request 2' <<<"$part")
+  [[ $step == *'after pull request 1 merges'* ]]
+  [[ $step == *'from the updated base'* ]]
+  [[ $part == *'Adoption is one command and three small pull requests'* ]]
 }
 
 # user_settings_mentions <root>: the lines of the docs, skills and roles that name the user's own
