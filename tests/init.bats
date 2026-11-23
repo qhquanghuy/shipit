@@ -93,7 +93,7 @@ foreign_hook() {
   new_project
   run "$SHIPIT_BIN" init
   [ "$status" -eq 0 ]
-  [[ $output == *"Next: commit .claude/settings.json"*"opens pull request 1."*"After it merges: on adopt/setup, made from the updated main"*"pull request 2 (the setup file only)."*"After it merges: on adopt/ci"*"pull request 3 (the CI job only)."* ]]
+  [[ $output == *"Next: the owner creates .claude/settings.json"*"(an agent cannot write that file)"*"opens pull request 1."*"After it merges: on adopt/setup, made from the updated main"*"pull request 2 (the setup file only)."*"After it merges: on adopt/ci"*"pull request 3 (the CI job only)."* ]]
   [[ $output != *"No commits yet"* ]]
   [[ $output != *"No origin/"* ]]
   git switch -q -c adopt/settings

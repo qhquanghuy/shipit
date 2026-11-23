@@ -339,7 +339,7 @@ The maker works only in a working copy on a slice branch, and the Agent tool of 
 
 ### Permissions the skills need
 
-The skills run commands and write files. In a headless run (`claude -p`) every question becomes a refusal, so give the permissions first. Put this in `.claude/settings.json` at the root of the project and commit it alone as the first adoption pull request (Adopt ShipIt in a project); or give the same rules with `--allowedTools`. Replace `./test.sh` with your project's own test command. The skills read and search with the Read and Grep tools, so the list has no `cat`, `grep` or `ls` rule. An installed plugin is read from its cache folder, as the last rule shows; a plugin loaded from a folder of your own needs `Read(//<plugin folder>/**)` instead (`//` starts an absolute path).
+The skills run commands and write files. In a headless run (`claude -p`) every question becomes a refusal, so give the permissions first. Put this in `.claude/settings.json` at the root of the project and commit it alone as the first adoption pull request (Adopt ShipIt in a project); or give the same rules with `--allowedTools`. An agent cannot write that file (Claude Code protects it, also with `--permission-mode acceptEdits`): the agent prints this content, the owner creates `.claude/settings.json` with it, and then the agent commits it. Replace `./test.sh` with your project's own test command. The skills read and search with the Read and Grep tools, so the list has no `cat`, `grep` or `ls` rule. An installed plugin is read from its cache folder, as the last rule shows; a plugin loaded from a folder of your own needs `Read(//<plugin folder>/**)` instead (`//` starts an absolute path).
 
 ```json
 {
