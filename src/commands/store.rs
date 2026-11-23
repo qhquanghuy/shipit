@@ -8,7 +8,8 @@ use crate::commands::validate::{Goal, valid_text};
 use crate::edge::git::Git;
 use crate::edge::goal_file::newest_goal;
 use crate::edge::records::{
-    Put, Written, exists, load_goal, newest_roadmap, put_text, read_store_text, store_dir,
+    Put, Written, copy_text, exists, load_goal, newest_roadmap, put_text, read_store_text,
+    store_dir,
 };
 use crate::edge::slice_git::load_policy;
 use crate::pure::failure::Failure;
@@ -22,10 +23,10 @@ use crate::pure::store_path::{Shown, place, shown};
 
 pub(crate) const HIDDEN: bool = false;
 pub(crate) const NEEDS_SETUP: bool = true;
-pub(crate) const USAGE: &str = "usage: shipit store put <kind> <draft> --goal <name> --slice <name> [--round <n>] | shipit store show <kind> --goal <name> [--slice <name>] [--round <n>]";
-pub(crate) const SUMMARY: &str = "Puts a checked build plan, plan review or review into the store at the place docs/store.md names. A build plan and its plan review are replaced only while the slice is not started; a review is never replaced; a link on the way is refused. A goal or roadmap version is the owner's and is copied in by hand; shipit store show prints a goal, roadmap, build plan, plan review or review from the store, from any working copy.";
+pub(crate) const USAGE: &str = "usage: shipit store put <kind> <draft> --goal <name> --slice <name> [--round <n>] | shipit store show <kind> --goal <name> [--slice <name>] [--round <n>] [--copy]";
+pub(crate) const SUMMARY: &str = "Puts a checked build plan, plan review or review into the store at the place docs/store.md names. A build plan and its plan review are replaced only while the slice is not started; a review is never replaced; a link on the way is refused. A goal or roadmap version is the owner's and is copied in by hand; shipit store show prints a goal, roadmap, build plan, plan review or review from the store, or with --copy puts a copy in the drafts folder, from any working copy.";
 pub(crate) const EXITS: [&str; 4] = [
-    "stored or shown",
+    "stored, shown or copied",
     "refused: the draft is not valid, its place in the store is taken, or the file to show is not in the store",
     "usage, setup, goal, roadmap or slice error, a link on the way into the store, or a write that failed",
     "",
@@ -35,21 +36,32 @@ struct Flags {
     goal: GoalName,
     slice: Option<String>,
     round: Option<String>,
+    copy: bool,
 }
 
-fn parse_flags(flags: &[OsString]) -> Result<Flags, Failure> {
-    let (mut goal, mut slice, mut round) = (None, None, None);
+fn parse_flags(flags: &[OsString], with_copy: bool) -> Result<Flags, Failure> {
+    let (mut goal, mut slice, mut round, mut copy) = (None, None, None, false);
     let mut rest = flags.iter();
     while let Some(flag) = rest.next() {
         match flag.to_str() {
             Some("--goal") => goal_flag(&mut goal, rest.next(), USAGE)?,
             Some("--slice") => once(&mut slice, "--slice", rest.next(), USAGE)?,
             Some("--round") => once(&mut round, "--round", rest.next(), USAGE)?,
+            Some("--copy") if with_copy => {
+                if std::mem::replace(&mut copy, true) {
+                    return Err(Failure::usage(format!("--copy given twice; {USAGE}")));
+                }
+            }
             Some(_) | None => return Err(unknown_argument(flag, USAGE)),
         }
     }
     let goal = goal.ok_or_else(|| Failure::usage(USAGE))?;
-    Ok(Flags { goal, slice, round })
+    Ok(Flags {
+        goal,
+        slice,
+        round,
+        copy,
+    })
 }
 
 fn parse_put(args: &[OsString]) -> Result<(&OsString, &OsString, Flags), Failure> {
@@ -59,7 +71,7 @@ fn parse_put(args: &[OsString]) -> Result<(&OsString, &OsString, Flags), Failure
     if verb != OsStr::new("put") {
         return Err(Failure::usage(USAGE));
     }
-    Ok((kind, draft, parse_flags(flags)?))
+    Ok((kind, draft, parse_flags(flags, false)?))
 }
 
 pub(crate) fn run(
@@ -78,7 +90,7 @@ fn run_show(git: &Git, args: &[OsString], out: &mut dyn Write) -> Result<(), Fai
     let [_verb, kind, flags @ ..] = args else {
         return Err(Failure::usage(USAGE));
     };
-    let given = parse_flags(flags)?;
+    let given = parse_flags(flags, true)?;
     let kind = kind.to_string_lossy();
     let shown =
         shown(&kind, given.slice.as_deref(), given.round.as_deref()).map_err(Failure::usage)?;
@@ -91,17 +103,35 @@ fn run_show(git: &Git, args: &[OsString], out: &mut dyn Write) -> Result<(), Fai
             .map(str::to_owned)
             .ok_or_else(|| Failure::usage(format!("{} has no file name", path.display())))
     };
-    let below_goal = match &shown {
-        Shown::Goal => vec![named(newest_goal(&common, &goal)?)?],
-        Shown::Roadmap => vec![named(newest_roadmap(&store, &goal)?)?],
-        Shown::Placed(place) => place.parts(),
+    let (below_goal, copy_name) = match &shown {
+        Shown::Goal => {
+            let name = named(newest_goal(&common, &goal)?)?;
+            (vec![name.clone()], name)
+        }
+        Shown::Roadmap => {
+            let name = named(newest_roadmap(&store, &goal)?)?;
+            (vec![name.clone()], name)
+        }
+        Shown::Placed(place) => (place.parts(), place.copy_name()),
     };
     let parts: Vec<String> = ["goals".to_owned(), goal.to_string()]
         .into_iter()
         .chain(below_goal)
         .collect();
     let text = read_store_text(&store, &parts)?;
-    write!(out, "{text}").ok();
+    if given.copy {
+        let at: Vec<String> = [
+            ".shipit".to_owned(),
+            "td".to_owned(),
+            shown.folder_name(&goal),
+            copy_name,
+        ]
+        .into();
+        let path = copy_text(git.top(), &at, &text)?;
+        writeln!(out, "copied {}", path.display()).ok();
+    } else {
+        write!(out, "{text}").ok();
+    }
     Ok(())
 }
 

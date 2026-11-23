@@ -86,7 +86,7 @@ The refusals, each after `shipit: `:
 
 ## Store show
 
-`shipit store show <kind> --goal <name> [--slice <name>] [--round <n>]` prints a store file on stdout,
+`shipit store show <kind> --goal <name> [--slice <name>] [--round <n>] [--copy]` prints a store file on stdout,
 byte for byte, from any working copy of the project, because Claude Code refuses to read a file under the git
 folder, and ShipIt reads it itself. The kinds are the six of Store put at the same places and with the same
 flags, and two more:
@@ -100,8 +100,9 @@ Rules:
 
 - It reads the one file and judges nothing: no roadmap is read, and the slice need not be one of the goal's.
 - Every level from `<git common dir>/shipit` down to the file is a real folder, and the file is a regular file, never a link; nothing is made.
+- `--copy` prints nothing of the file. It writes a copy into the drafts folder of the current working copy, `<top of the working copy>/.shipit/td/<folder>/<file>`, and prints `copied <path>`. The folder is the slice, or the goal for `goal` and `roadmap`; it is made with a `.gitignore` of the one line `*` when missing, so that git ignores it. The file is `build-plan.md`, `plan-review.md`, `round-<n>-<kind>.md`, `goal.vN.md` or `roadmap.vN.md`, and an earlier copy is replaced with an atomic rename. The copy is a draft: ShipIt never reads it back. Claude Code cuts a long file printed in a Bash result to a preview, and reads a file inside the project whole with its Read tool.
 
-Exit 0 shown, 1 the file is not in the store, 2 usage, goal or store error, or a link on the way.
+Exit 0 shown or copied, 1 the file is not in the store, 2 usage, goal or store error, or a link on the way.
 
 The refusals, each after `shipit: `:
 

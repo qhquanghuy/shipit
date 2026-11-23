@@ -1,5 +1,6 @@
 use std::fmt;
 
+use crate::pure::goal::GoalName;
 use crate::pure::messages::SLICE_NAME;
 use crate::pure::roadmap::SliceName;
 
@@ -109,6 +110,17 @@ pub(crate) fn shown(kind: &str, slice: Option<&str>, round: Option<&str>) -> Res
     }
 }
 
+impl Shown {
+    // The folder of a copy in the drafts folder: the slice, or the goal for the two that
+    // belong to no slice.
+    pub(crate) fn folder_name(&self, goal: &GoalName) -> String {
+        match self {
+            Self::Goal | Self::Roadmap => goal.to_string(),
+            Self::Placed(place) => place.slice().to_string(),
+        }
+    }
+}
+
 impl Place {
     pub(crate) const fn slice(&self) -> &SliceName {
         match self {
@@ -139,6 +151,15 @@ impl Place {
             }
         };
         slice.into_iter().chain(rest).collect()
+    }
+
+    // The name of a copy: the rounds of one slice share its folder, so the round comes first.
+    pub(crate) fn copy_name(&self) -> String {
+        match self {
+            Self::BuildPlan(_) => "build-plan.md".to_owned(),
+            Self::PlanReview(_) => "plan-review.md".to_owned(),
+            Self::Review { round, kind, .. } => format!("round-{round}-{kind}.md"),
+        }
     }
 }
 
@@ -187,6 +208,28 @@ mod tests {
             prop_assert_eq!(found.parts(), expected);
             prop_assert_eq!(found.slice().to_string(), slice);
             prop_assert_eq!(found.replaceable(), !is_review);
+        }
+
+        #[test]
+        fn a_copy_is_filed_by_its_slice_or_goal_and_named_by_its_round(
+            kind in prop::sample::select(KINDS.to_vec()),
+            slice in "[a-z][a-z0-9-]{0,8}",
+            round in 1_u32..,
+        ) {
+            prop_assume!(slice != "roadmap");
+            let is_review = REVIEW_KINDS.contains(&kind);
+            let found = place(kind, Some(&slice), is_review.then(|| round.to_string()).as_deref())
+                .expect("a place");
+            let expected = if is_review {
+                format!("round-{round}-{kind}.md")
+            } else {
+                format!("{kind}.md")
+            };
+            prop_assert_eq!(found.copy_name(), expected);
+            let goal = GoalName::parse("demo").expect("a goal name");
+            prop_assert_eq!(Shown::Placed(found).folder_name(&goal), slice);
+            prop_assert_eq!(Shown::Goal.folder_name(&goal), "demo".to_owned());
+            prop_assert_eq!(Shown::Roadmap.folder_name(&goal), "demo".to_owned());
         }
 
         #[test]

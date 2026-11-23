@@ -366,6 +366,19 @@ pub(crate) fn read_store_text(store: &Path, parts: &[String]) -> Result<String, 
     }
 }
 
+// A copy for a reader goes at `parts` below `top`, every level a real folder and made when
+// missing. Its folder gets a `.gitignore` of one line `*` when it has none, and an earlier copy is
+// replaced whole with a rename. Returns the path of the copy.
+pub(crate) fn copy_text(top: &Path, parts: &[String], text: &str) -> Result<PathBuf, Failure> {
+    let (dir, path) = walk(top, parts, true)?;
+    match link_new(&dir.join(".gitignore"), b"*\n") {
+        Ok(()) | Err(WriteNew::Exists) => {}
+        Err(WriteNew::Cannot(failure)) => return Err(failure),
+    }
+    write_text_atomic(&path, text)?;
+    Ok(path)
+}
+
 // The text under a name no other writer uses, in the folder it is meant for; a stale file of a
 // crashed run is skipped, never reused.
 fn write_temporary(dir: &Path, text: &[u8]) -> std::io::Result<PathBuf> {

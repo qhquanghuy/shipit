@@ -357,14 +357,14 @@ store_with_files() {
   [ "$output" = "copied $wt/.shipit/td/alpha/build-plan.md" ]
   cmp "$repo/plan.md" .shipit/td/alpha/build-plan.md
   [ "$(cat .shipit/td/alpha/.gitignore)" = '*' ]
-  [ "$(ls -A .shipit/td/alpha)" = $'.gitignore\nbuild-plan.md' ]
+  [ "$(LC_ALL=C ls -A .shipit/td/alpha)" = $'.gitignore\nbuild-plan.md' ]
   [ -z "$(git status --porcelain)" ]
   draft_plan "$repo/two.md" Two.
   cp "$repo/two.md" "$dir/slices/alpha/build-plan.md"
   show build-plan --goal demo --slice alpha --copy
   [ "$status" -eq 0 ]
   cmp "$repo/two.md" .shipit/td/alpha/build-plan.md
-  [ "$(ls -A .shipit/td/alpha)" = $'.gitignore\nbuild-plan.md' ]
+  [ "$(LC_ALL=C ls -A .shipit/td/alpha)" = $'.gitignore\nbuild-plan.md' ]
   show roadmap --goal demo --copy
   [ "$status" -eq 0 ]
   [ "$output" = "copied $wt/.shipit/td/demo/roadmap.v2.md" ]
