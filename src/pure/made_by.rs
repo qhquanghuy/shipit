@@ -519,32 +519,40 @@ mod tests {
         }]
     }
 
+    // The table as the plan states it, by who asks and what the change is.
     fn table(caller: &Caller<'_>, change: &Change<'_>) -> Verdict {
-        match (caller, change) {
-            (
-                Caller::Agent(MAKER),
-                Change::Move {
-                    sub: "commit",
-                    trailers,
-                },
-            ) => {
-                if !trailers.is_empty() && trailers.iter().all(|trailer| *trailer == MAKER) {
-                    Verdict::Pass
-                } else {
+        let commit = match change {
+            Change::Move {
+                sub: "commit",
+                trailers,
+            } => Some(*trailers),
+            Change::Move { .. } | Change::Edit => None,
+        };
+        match caller {
+            Caller::Agent(name) if *name == MAKER => {
+                let bad =
+                    commit.is_some_and(|all| all.is_empty() || all.iter().any(|one| *one != MAKER));
+                if bad {
                     Verdict::Deny(NO_TRAILER.to_owned())
+                } else {
+                    Verdict::Pass
                 }
             }
-            (Caller::Agent(MAKER), _) => Verdict::Pass,
-            (Caller::Agent(_), Change::Move { .. }) => Verdict::Deny(NOT_MAKER.to_owned()),
-            (Caller::Agent(_), Change::Edit) => Verdict::Deny(NOT_MAKER_EDIT.to_owned()),
-            (
-                Caller::Main,
-                Change::Move {
-                    sub: "commit",
-                    trailers,
-                },
-            ) if trailers.contains(&MAKER) => Verdict::Deny(MAIN_IS_NOT_MAKER.to_owned()),
-            (Caller::Main, _) => Verdict::Ask(OWNER_ONLY.to_owned()),
+            Caller::Agent(_) => {
+                let text = if *change == Change::Edit {
+                    NOT_MAKER_EDIT
+                } else {
+                    NOT_MAKER
+                };
+                Verdict::Deny(text.to_owned())
+            }
+            Caller::Main => {
+                if commit.is_some_and(|all| all.contains(&MAKER)) {
+                    Verdict::Deny(MAIN_IS_NOT_MAKER.to_owned())
+                } else {
+                    Verdict::Ask(OWNER_ONLY.to_owned())
+                }
+            }
         }
     }
 
