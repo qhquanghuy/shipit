@@ -19,6 +19,7 @@ pub(crate) struct HookInput {
     pub(crate) session_id: Option<String>,
     pub(crate) tool_use_id: Option<String>,
     pub(crate) agent_id: Option<String>,
+    pub(crate) agent_type: Option<String>,
     pub(crate) source: Option<String>,
     pub(crate) background_subagents: Option<usize>,
 }
@@ -43,6 +44,7 @@ pub(crate) fn parse_input(bytes: &[u8]) -> Result<HookInput, String> {
         session_id: text("session_id"),
         tool_use_id: text("tool_use_id"),
         agent_id: text("agent_id"),
+        agent_type: text("agent_type"),
         source: text("source"),
         background_subagents: object
             .get("background_tasks")
@@ -207,6 +209,7 @@ mod tests {
             session_id: None,
             tool_use_id: None,
             agent_id: None,
+            agent_type: None,
             source: None,
             background_subagents: None,
         }

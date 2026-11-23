@@ -225,6 +225,7 @@ gate() {
 }
 
 @test "twenty thousand messages are judged in time" {
+  git checkout -q main
   local input="$BATS_TEST_TMPDIR/big.json"
   {
     printf '{"cwd":"%s","tool_name":"Bash","permission_mode":"auto","tool_input":{"command":"git commit' "$REPO"
@@ -255,6 +256,7 @@ gate() {
 
 @test "git commands that are not on the list ask, and the ones on it pass" {
   local command
+  git checkout -q main
   for command in "git -c core.fsmonitor='g\"\"it push origin main #' status" "git rebase --exec 'g\"\"it push origin main' HEAD~1" "git submodule foreach 'g\"\"it push origin main'" "git psuh origin main"; do
     gate "$command" bypassPermissions
     [ "$(decision)" = deny ]

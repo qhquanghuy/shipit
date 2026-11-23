@@ -28,7 +28,7 @@ use crate::pure::setup::{HEAD, Role};
 pub(crate) const HIDDEN: bool = false;
 pub(crate) const NEEDS_SETUP: bool = true;
 pub(crate) const USAGE: &str = "usage: shipit receipt <plan-review|informed-review|second-opinion|test-drive> <slice|roadmap> --author <w> --by <w> --result <r> [--finding <t>]… [--fresh] [--commit <c>] [--goal <name>]";
-pub(crate) const SUMMARY: &str = "Records a review or test-drive receipt for the current version of a plan or of the work, after checking that the reviewer ranks above the author under the base branch's setup.";
+pub(crate) const SUMMARY: &str = "Records a review or test-drive receipt for the current version of a plan or of the work, after checking that the reviewer ranks above the author under the base branch's setup. For the work the author must be the setup's maker, and in a slice started under the author rule each commit of the work must carry a ShipIt-Made-By trailer of shipit:maker or owner (git commit --trailer, docs/claude-code.md).";
 pub(crate) const EXITS: [&str; 4] = [
     "receipt written",
     "refused: rank rule, a receipt for this version exists, no check receipt for this content, no changes against the base, the author is not the setup's maker, or a commit of the work has no maker's or owner's trailer",

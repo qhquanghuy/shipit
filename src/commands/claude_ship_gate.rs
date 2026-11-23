@@ -9,8 +9,10 @@ use crate::commands::setup::load_setup_table;
 use crate::edge::git::Git;
 use crate::edge::hook_process::{exists, home_dir, make_folder, project_dir, run_gate};
 use crate::edge::records::store_dir;
+use crate::pure::branch::is_slice_branch;
 use crate::pure::claude_hook::{HookInput, mcp_ship, resolve};
 use crate::pure::failure::Failure;
+use crate::pure::made_by::{Caller, Change, Moves, answer, author_verdict, moves};
 use crate::pure::setup::{HEAD, SETUP_PATH};
 use crate::pure::ship_gate::{
     Answer, Facts, judged_dirs, named_folders, rewires_push, ship_answer, ship_reasons, triggered,
@@ -196,32 +198,116 @@ fn unreadable(input: &HookInput, why: &str) -> Answer {
     }
 }
 
+// Every folder the command works in: the working folder, each `cd`, and a folder it names for git
+// itself (`-C`, `--git-dir`, GIT_DIR).
+fn judged_folders(input: &HookInput, home: Option<&Path>, command: &str) -> Vec<PathBuf> {
+    let named = named_folders(command).into_iter().map(|(dir, folder)| {
+        resolve(
+            &resolve(&input.cwd, home, dir.as_deref()),
+            None,
+            Some(folder.as_str()),
+        )
+    });
+    let dirs = judged_dirs(command)
+        .into_iter()
+        .map(|dir| resolve(&input.cwd, home, dir.as_deref()));
+    named.chain(dirs).collect()
+}
+
 fn judge_command(input: &HookInput, command: &str) -> Answer {
     if !triggered(command) {
         return Answer::Pass;
     }
     let home = home_dir();
     let home = home.as_deref();
-    // A folder the command names for git itself (`-C`, `--git-dir`, GIT_DIR) is judged too.
-    let named: Vec<PathBuf> = named_folders(command)
-        .into_iter()
-        .map(|(dir, folder)| {
-            resolve(
-                &resolve(&input.cwd, home, dir.as_deref()),
-                None,
-                Some(folder.as_str()),
-            )
-        })
-        .collect();
-    let anywhere = named.iter().any(|folder| in_project(folder))
-        || judged_dirs(command)
-            .iter()
-            .any(|dir| in_project(&resolve(&input.cwd, home, dir.as_deref())));
+    let anywhere = judged_folders(input, home, command)
+        .iter()
+        .any(|folder| in_project(folder));
     if !anywhere {
         return Answer::Pass;
     }
     let reasons = ship_reasons(command, &|dir| facts_at(&resolve(&input.cwd, home, dir)));
     ship_answer(input.mode, &reasons)
+}
+
+fn caller(input: &HookInput) -> Caller<'_> {
+    match &input.agent_id {
+        Some(_) => Caller::Agent(input.agent_type.as_deref().unwrap_or("")),
+        None => Caller::Main,
+    }
+}
+
+// The folder when it is a working copy of a ShipIt project on a slice branch: the work of a slice.
+fn on_slice_branch(dir: &Path) -> Option<Git> {
+    let git = Git::at(dir).ok().filter(shipit_project)?;
+    git.current_branch()
+        .is_some_and(|branch| is_slice_branch(&branch))
+        .then_some(git)
+}
+
+// A commit or move in a working copy on a slice branch is the maker's. A command that names git
+// and a move but cannot be read is judged as a commit with no trailer, in every folder it passes.
+fn judge_moves(input: &HookInput, command: &str) -> Answer {
+    let home = home_dir();
+    let home = home.as_deref();
+    let who = caller(input);
+    let targets: Vec<(PathBuf, String, Option<String>)> = match moves(command) {
+        Moves::Plain(found) => found
+            .into_iter()
+            .map(|one| {
+                let folder = resolve(
+                    &resolve(&input.cwd, home, one.dir.as_deref()),
+                    None,
+                    one.folder.as_deref(),
+                );
+                (folder, one.sub, one.trailer)
+            })
+            .collect(),
+        Moves::Unreadable => judged_folders(input, home, command)
+            .into_iter()
+            .map(|folder| (folder, "commit".to_owned(), None))
+            .collect(),
+    };
+    for (folder, sub, trailer) in &targets {
+        if on_slice_branch(folder).is_none() {
+            continue;
+        }
+        let change = Change::Move {
+            sub,
+            trailer: trailer.as_deref(),
+        };
+        let answered = answer(input.mode, author_verdict(&who, &change));
+        if answered != Answer::Pass {
+            return answered;
+        }
+    }
+    Answer::Pass
+}
+
+// What git ignores and does not track is not the work: build output, drafts and notes pass.
+fn judge_edit(input: &HookInput, path: &str) -> Answer {
+    let home = home_dir();
+    let path = resolve(&input.cwd, home.as_deref(), Some(path));
+    let Some(git) = path
+        .ancestors()
+        .skip(1)
+        .find(|dir| exists(dir))
+        .and_then(on_slice_branch)
+    else {
+        return Answer::Pass;
+    };
+    let ignored = git
+        .output(&[
+            OsStr::new("check-ignore"),
+            OsStr::new("-q"),
+            OsStr::new("--"),
+            path.as_os_str(),
+        ])
+        .is_ok();
+    if !path.starts_with(git.top()) || ignored {
+        return Answer::Pass;
+    }
+    answer(input.mode, author_verdict(&caller(input), &Change::Edit))
 }
 
 fn judge(input: &HookInput) -> Answer {
@@ -234,13 +320,23 @@ fn judge(input: &HookInput) -> Answer {
             Some(_) | None => Answer::Pass,
         };
     }
-    let command = input
-        .tool_input
-        .as_ref()
-        .and_then(|tool_input| tool_input.get("command"))
-        .and_then(Value::as_str);
-    match command {
-        Some(command) => judge_command(input, command),
+    let text = |key: &str| {
+        input
+            .tool_input
+            .as_ref()
+            .and_then(|tool_input| tool_input.get(key))
+            .and_then(Value::as_str)
+    };
+    if matches!(name, "Edit" | "Write" | "NotebookEdit") {
+        return text("file_path")
+            .or_else(|| text("notebook_path"))
+            .map_or(Answer::Pass, |path| judge_edit(input, path));
+    }
+    match text("command") {
+        Some(command) => match judge_moves(input, command) {
+            Answer::Pass => judge_command(input, command),
+            decided @ (Answer::Ask(_) | Answer::Deny(_)) => decided,
+        },
         None => unreadable(input, "the hook input has no tool_input.command"),
     }
 }

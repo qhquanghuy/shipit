@@ -35,6 +35,7 @@ as `shipit`. claude.ai and Cowork do not install a plugin that has a `bin/` fold
   release each stop for the owner's answer, also in auto mode. In bypass mode the owner cannot be
   asked, so they are refused. `shipit complete <goal> --confirm` is an owner action too; the dry run
   `shipit complete <goal>` passes.
+  The same gate holds the author rule (The author rule).
 - **Install gate.** A global install is refused, and the agent gets the recipe of the machine notes
   (`docs/machine-notes.md`).
 - **Agent cap.** At most `agents.parallel.agents` agents run at once in a session, read from the
@@ -181,6 +182,71 @@ to run (`sh -c …`, `bash f.sh`, `sh < f.sh`), `source` or `.` reading a pipe o
 `python`, `perl`, `ruby`, `node` or `script`, a comment, and an MCP tool that writes to a branch
 that is not a slice branch. A line `shipit-branch: slice/v1/x.` may end in a full stop: a branch
 name cannot.
+
+## The author rule
+
+A receipt names who made the work, and a lead agent cannot make the work by mistake. The rule has
+two halves: hooks that stop a mistake inside Claude Code, and a check in the receipt.
+
+**The hooks (inside Claude Code).** On a slice branch an agent that is not `shipit:maker` cannot
+commit, cherry-pick, revert, merge, rebase, apply (`am`), pull or reset, and cannot edit a file
+git would commit. The owner's own main session gets a question instead of a refusal: the rule
+binds agents, not the owner's interactive session. In bypass mode and in a mode ShipIt does not
+know the owner cannot be asked, so the question is a refusal. A maker commits with one plain
+command that carries its trailer:
+
+```sh
+git commit -m "<message>" --trailer "ShipIt-Made-By: shipit:maker"
+```
+
+A folder counts when it is a working copy of a ShipIt project whose current branch is a slice
+branch (`slice/<goal>/<slice>`). The hook that judges Bash and Monitor reads each git command with
+its `cd` and its `-C`; a command that names git and one of these moves but is not all plain git
+commands (`env`, `nix develop -c`, `sh -c`, `git -c`, a substitution) is judged as a commit with
+no trailer. The same hook judges the file tools `Edit`, `Write` and `NotebookEdit`: a path that git
+ignores and does not track (drafts in `.shipit/td/`, `.shipit/drive/`, `notes/`, build output) is
+not the work and passes; a tracked file, a new file and a file in a new folder are the work.
+
+These are the answers, copied by the hooks:
+
+- A, a move by an agent that is not the maker: `ShipIt: on a slice branch only shipit:maker commits or moves the work, so that a receipt names who made it. Start shipit:maker for this change.`
+- B, a maker's commit without its trailer, or not one plain command: `ShipIt: a maker commits with one plain command that carries its trailer: git commit -m "<message>" --trailer "ShipIt-Made-By: shipit:maker".`
+- C, an edit by an agent that is not the maker: `ShipIt: on a slice branch only shipit:maker edits the work (a file git would commit), so that a receipt names who made it. Start shipit:maker for this change.`
+- F, the question to the owner's main session: `ShipIt: only shipit:maker changes a slice's work. Answer yes only if you, the owner, make this change yourself; commit it with --trailer "ShipIt-Made-By: owner".`
+- G, the main session writing the maker's trailer: `ShipIt: only shipit:maker may write its own trailer; the main session is not the maker.`
+
+**The receipt.** For a slice started after this rule shipped, `shipit receipt` checks every commit
+of the slice's own work: from the fork the check judged to the tip, no merges, and without the
+commits of the slices it comes `after` in the roadmap (their branches `slice/<goal>/<slice>`,
+local or on origin, when they exist). Each must carry the trailer `ShipIt-Made-By: shipit:maker`
+or `ShipIt-Made-By: owner`. The author of a review of the work (`--author`) must be the setup's
+maker (its tier, and its effort when the setup gives one) or its stand-in. A plan review keeps its
+notice. The refusals exit 1 and write nothing:
+
+- `shipit: --author <author> is not the setup's maker (<rank>): the work is the maker's, so its review names the setup's maker`
+- `shipit: commit <commit> on <branch> has no "ShipIt-Made-By: shipit:maker" or "ShipIt-Made-By: owner" trailer: only shipit:maker, or the owner, makes the work of a slice (docs/claude-code.md)`
+
+**The cut-over.** A slice is under the trailer rule only when its start entry in the logbook says
+so: `shipit start` writes `"author_rule": true` from the release of this rule on. A slice that
+was started before, or by hand under the stacking rule (it has no start entry), is told on stderr
+and goes on: `shipit: <slice> was started before the author rule: the trailers of its commits are not checked`.
+A rebase changes nothing: the mark is on the start, not on a commit. No commit gets a trailer
+after the fact.
+
+**Limits.** The trailer is a claim the receipt checks, not proof.
+- A shell outside Claude Code can type the trailer, and a lead's Bash edit (`sed -i`, a redirect)
+  is not seen: the hooks judge file tools and git commands, not what a program writes.
+- A commit made off a slice branch and brought in by the maker is the maker's.
+- The hooks check "a slice branch", not "the slice's linked worktree": a main working copy kept on
+  a slice branch is judged as one.
+- The owner's own change from a shell, or a suggestion applied on GitHub, needs the trailer
+  `ShipIt-Made-By: owner` (amend the commit and add it);
+  without it every later receipt of the work is refused until the owner adds it.
+- A child slice whose parent was squash-merged and whose parent branch is gone sees the parent's
+  commits as its own, with no trailer: after the parent merges, rebase the child onto the base
+  (the stacking rule).
+- The maker runs at the setup's maker rank or its stand-in; a hard step at a higher rank needs a
+  setup change by the owner, as a setup-only pull request.
 
 ## Sessions
 

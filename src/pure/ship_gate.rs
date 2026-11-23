@@ -94,7 +94,7 @@ pub(crate) const INTERPRETERS: [&str; 12] = [
     "sh", "bash", "zsh", "dash", "ksh", "fish", "python", "python3", "perl", "ruby", "node",
     "script",
 ];
-const WRAPPERS: [&str; 6] = ["eval", "xargs", "exec", "su", "ssh", "watch"];
+pub(crate) const WRAPPERS: [&str; 6] = ["eval", "xargs", "exec", "su", "ssh", "watch"];
 // Programs whose words are text for them, whatever the words say.
 const DATA_PROGRAMS: [&str; 16] = [
     "echo", "printf", "grep", "egrep", "fgrep", "rg", "ag", "which", "type", "whereis", "man",
@@ -429,12 +429,12 @@ fn reads_symbolic_ref(args: &[String]) -> bool {
 // The global options of a git command, then its subcommand. Only `-C <dir>`, `--no-pager`,
 // `--git-dir` and `--work-tree` (the folders are judged apart) are plain; any other option
 // can run a program or change the config.
-enum Global {
+pub(crate) enum Global {
     Plain { sub: Option<usize>, options: bool },
     Unknown,
 }
 
-fn split_global(rest: &[String]) -> Global {
+pub(crate) fn split_global(rest: &[String]) -> Global {
     let mut at = 0;
     let mut options = false;
     while let Some(word) = rest.get(at) {
@@ -838,28 +838,36 @@ fn plain_reasons(
 
 // The folders a git command names for itself, as the segment's folder and the text: `-C <dir>`,
 // `--git-dir`, `--work-tree`, and the GIT_DIR and GIT_WORK_TREE variables.
+pub(crate) fn folders_of(words: &[String]) -> Vec<String> {
+    let mut found = Vec::new();
+    for (at, word) in words.iter().enumerate() {
+        let glued = ["GIT_DIR=", "GIT_WORK_TREE=", "--git-dir=", "--work-tree="]
+            .iter()
+            .find_map(|prefix| word.strip_prefix(prefix));
+        let next = ["-C", "--git-dir", "--work-tree"]
+            .contains(&word.as_str())
+            .then(|| words.get(at + 1).map(String::as_str))
+            .flatten();
+        if let Some(folder) = glued.or(next) {
+            let folder = folder.strip_suffix("/.git").unwrap_or(folder);
+            found.push(folder.to_owned());
+        }
+    }
+    found
+}
+
 pub(crate) fn named_folders(command: &str) -> Vec<(Option<String>, String)> {
     let Parse::Plain { segments, .. } = parse(command) else {
         return Vec::new();
     };
-    let mut found = Vec::new();
-    for segment in &segments {
-        let words = &segment.words;
-        for (at, word) in words.iter().enumerate() {
-            let glued = ["GIT_DIR=", "GIT_WORK_TREE=", "--git-dir=", "--work-tree="]
-                .iter()
-                .find_map(|prefix| word.strip_prefix(prefix));
-            let next = ["-C", "--git-dir", "--work-tree"]
-                .contains(&word.as_str())
-                .then(|| words.get(at + 1).map(String::as_str))
-                .flatten();
-            if let Some(folder) = glued.or(next) {
-                let folder = folder.strip_suffix("/.git").unwrap_or(folder);
-                found.push((segment.dir.clone(), folder.to_owned()));
-            }
-        }
-    }
-    found
+    segments
+        .iter()
+        .flat_map(|segment| {
+            folders_of(&segment.words)
+                .into_iter()
+                .map(|folder| (segment.dir.clone(), folder))
+        })
+        .collect()
 }
 
 const GOALS_FOLDER: &str = "/shipit/goals";
