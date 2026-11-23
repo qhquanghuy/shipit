@@ -260,6 +260,17 @@ A rebase changes nothing: the mark is on the start, not on a commit. No commit g
 after the fact.
 
 **Limits.** The trailer is a claim the receipt checks, not proof.
+The rule stops a lead or a reviewer from quietly taking over a maker's work. It is not a defence
+against an agent that sets out to forge a receipt; that is outside v1. It does not stop:
+- an agent that amends a commit and keeps its message (the maker's trailer stays) on another
+  branch, then moves the slice onto it with `git rebase <that branch> slice/<goal>/<slice>`;
+- an exported `GIT_DIR` or `GIT_WORK_TREE` (export in one command, git in the next) that points git
+  at a slice's worktree from another folder;
+- `git rebase <upstream> slice/...` from another branch, and `git checkout` with the orphan option:
+  they move no maker trailer, and the receipt refuses a commit without one;
+- a merge commit: merges are not checked;
+- a Claude Code that sends no `agent_type`: every subagent, the maker included, is then refused
+  (it was present in 2.1.327).
 - A shell outside Claude Code can type the trailer, and a lead's Bash edit (`sed -i`, a redirect)
   is not seen: the hooks judge file tools and git commands, not what a program writes.
 - A commit made off a slice branch and brought in by the maker is the maker's.
