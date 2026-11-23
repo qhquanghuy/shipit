@@ -220,7 +220,7 @@ Only `shipit:slice` may start agents: leaving `Agent` out of `tools` is what sto
 - By default Claude Code allows three layers of agents. Only `shipit:slice` has the `Agent` tool; setting `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH` to 2 closes the third layer for every other agent too.
 - A slice agent cannot ask the owner. A decision point ends it as blocked, its final message carries the decision point, and the lead asks the owner and starts a new slice agent.
 
-**Pushes, pull requests and the store.** A skill pushes only `git push -u origin slice/<goal>/<slice>`, alone in its Bash call. It opens the pull request with `gh pr create --title <title> --body-file <file>`. `gh pr create`, `gh pr edit` and `gh pr comment` pass the gate in every mode, so no gate stops a gh write: the skills' rule, to post to a pull request only when the owner says yes, is prose. Store files are copied in with one plain `mkdir -p … && cp …` through Bash, because the harness protects the git folder: a file-tool write there asks in default mode, goes to the classifier in auto mode, and is refused in dontAsk mode, and an allow rule does not change that.
+**Pushes, pull requests and the store.** A skill pushes only `git push -u origin slice/<goal>/<slice>`, alone in its Bash call. It opens the pull request with `gh pr create --title <title> --body-file <file>`. `gh pr create`, `gh pr edit` and `gh pr comment` pass the gate in every mode, so no gate stops a gh write: the skills' rule, to post to a pull request only when the owner says yes, is prose. Store files are put in with `shipit store put`, because the harness protects the git folder: a file-tool write there, or a Bash command that names a path under it, asks in default mode, goes to the classifier in auto mode, and is refused in a headless run, and an allow rule does not change that; `shipit store put` names no such path, and ShipIt writes the file. A goal or roadmap version is the owner's decision and is still copied with `mkdir -p … && cp …`, which asks.
 
 ### Permissions the skills need
 
@@ -257,13 +257,14 @@ The skills run commands and write files. In a headless run (`claude -p`) every q
 
 A skill makes its own drafts folder with `mktemp -d /tmp/shipit.XXXXXX`, so `Edit(//tmp/shipit.*/**)` lets it write drafts there and nowhere else under `/tmp`.
 
-**The worktree.** The slice's worktree is made at `../wt/<slice>`, outside the folder of the session. Start the session with `--add-dir ../wt`, or the owner approves the prompt for it. This is a known gap until a follow-up slice.
+**The worktree.** `shipit start` prints `git worktree add .shipit/wt/<slice> <branch>`: the worktree sits inside the project, where the session may read, write and run commands, so no `--add-dir` is needed (it needs a folder that exists, and the worktree is made later). `shipit start` adds `/.shipit/wt/` to `<git common dir>/info/exclude`, so git, and the search tools that read git's ignore rules, skip it in every working copy; nothing is committed. A tool of the project that walks the folder without git's rules (a test runner, a linter) may still see it: add `.shipit/wt` to its own ignore list.
 
-**The store.** The harness treats files under the git folder as sensitive: it asks for each write into the store, and a headless run refuses. The rules above do not change that. In a headless run the skills stop and hand the owner the exact `mkdir -p` and `cp` commands to run. This is a known gap until a follow-up slice.
+**The store.** The harness asks for a write under the git folder and a headless run refuses it, whatever the allow rules say; `shipit store put` writes build plans, plan reviews and reviews instead, and `Bash(shipit *)` allows it. A goal or roadmap version is the owner's decision: its copy asks.
 
 These commands are not in the list; they ask:
 
-- Asks: the store copy (`mkdir -p` and `cp`): the skills hand the owner the exact commands. A follow-up slice adds a command of ShipIt for the store copy.
+- Asks: the store copy (`mkdir -p` and `cp`): only for a goal or roadmap version, the owner's decision; the lead copies it, or hands the owner the exact commands.
+
 - Asks: the review's link hash, once per link: its `printf`, piped to the hash.
 
 ## Limits

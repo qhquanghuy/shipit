@@ -14,7 +14,7 @@ Reviews one change in full and merges the result into one `review`. The owner, t
 ## Output
 One merged `review`: `shipit template review`, checked with `shipit validate review <file>`. Its agents fill `explanation`, `informed-review` and `second-opinion`.
 ## Effects
-Reads git and gh: `git diff`, `git log`, `git fetch`, `gh pr view`, `gh pr diff` and `sha256sum`; it searches with the Grep tool. Starts `shipit:reader`, then two reviewers at once. Writes every output in a temporary folder that it makes itself with `mktemp -d /tmp/shipit.XXXXXX` (it never asks the owner for one); in a slice only, copies them into the store and records the receipts. In v1 every review is full.
+Reads git and gh: `git diff`, `git log`, `git fetch`, `gh pr view`, `gh pr diff` and `sha256sum`; it searches with the Grep tool. Starts `shipit:reader`, then two reviewers at once. Writes every output in a temporary folder that it makes itself with `mktemp -d /tmp/shipit.XXXXXX` (it never asks the owner for one); in a slice only, puts them into the store with `shipit store put` and records the receipts. In v1 every review is full.
 Questions to the owner use the words of the [guide](../../docs/guide.md) and its glossary, and ask only what changes what is built.
 Never: edit code, push, merge, or review the work itself as the lead. Post to the pull request only when the owner says yes: no gate stops a gh write, so this is a rule of prose.
 ## Outcomes
@@ -37,7 +37,7 @@ Never: edit code, push, merge, or review the work itself as the lead. Post to th
 ## Cases
 | Case | How it is told | Agents | Skipped, listed in the review with why | Outputs go to |
 |---|---|---|---|---|
-| 1. in a slice (called by `shipit-slice`) | a slice branch with a check receipt | `shipit:reader`; `shipit:work-reviewer` twice, each prompt with the line `shipit-branch: slice/<goal>/<slice>` | nothing | drafted in a temporary folder, then copied into the store (Store files) at `goals/<goal>/slices/<slice>/reviews/round-<k>/` |
+| 1. in a slice (called by `shipit-slice`) | a slice branch with a check receipt | `shipit:reader`; `shipit:work-reviewer` twice, each prompt with the line `shipit-branch: slice/<goal>/<slice>` | nothing | drafted in a temporary folder, then put into the store (Store files) at `goals/<goal>/slices/<slice>/reviews/round-<k>/` |
 | 2. a ShipIt project, not a slice | `.config/shipit.toml` at HEAD, and the change is not a slice branch under review | `shipit:reader`; two plain agents given the text of `../../agents/work-reviewer.md`, no `shipit-branch:` line | receipt, rank, coverage | a temporary folder outside the repository |
 | 3. outside a ShipIt project | no `.config/shipit.toml` at HEAD | `shipit:reader`; `shipit:work-reviewer` twice, no `shipit-branch:` line | receipt, rank, coverage, and validation (check by hand) | a temporary folder |
 Case 2 is the one place with plain agents: in a ShipIt project the review gate denies `shipit:work-reviewer` without a `shipit-branch:` line that names a slice branch, and a change that is not a slice has none. They show as general agents (`docs/claude-code.md`). Case 3 has no setup, so the gate lets the named role start.
@@ -63,8 +63,8 @@ Written by the informed reviewer, who knows the build plan; checked in step 7.
 - Look here: first every changed test from step 2a (path and line; edited, removed or weakened, and does it still prove what it proved), then two or three spots the informed reviewer is least sure of, each a step on a path.
 ## Store files
 - The store is `<git common dir>/shipit`. Find it with `git rev-parse --git-common-dir`, run alone, and type the printed path into the next command. A skill never spells the git folder itself.
-- Write: draft with the file tools in a temporary folder made with `mktemp -d /tmp/shipit.XXXXXX`, validate the draft there, then copy it in with one plain command: `mkdir -p <git common dir>/shipit/goals/<goal>/slices/<slice>/reviews/round-<k> && cp <draft> <git common dir>/shipit/goals/<goal>/slices/<slice>/reviews/round-<k>/<name>`. A store file is never edited in place.
+- Write: draft with the file tools in a temporary folder made with `mktemp -d /tmp/shipit.XXXXXX`, validate the draft there, then put each in with `shipit store put <kind> <draft> --goal <goal> --slice <slice> --round <k>` (kind: `explanation`, `informed-review`, `second-opinion` or `review`; k: the fix round, from 1). It never replaces a file. A store file is never edited in place.
 - Read: with the file tools.
-- If the copy asks or is refused (a headless run refuses), stop and give the owner the exact `mkdir -p` and `cp` commands to run.
+- If `shipit store put` refuses, report its message and stop.
 ## Claims
 Every agent report and every review ends with three lists, each of which may be the single item `none`. **Verified:** checked by running something; each item names the command or test that ran. **Inferred:** reasoned from the code or the docs, not run; this is the list the owner must check. **Unverifiable:** could not be checked here, and why.
