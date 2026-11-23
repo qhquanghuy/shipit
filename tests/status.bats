@@ -261,8 +261,11 @@ READY="owner: ship it, then shipit log alpha shipped --merge <merge commit> --go
   plan_ready alpha
   make_work slice/demo/alpha 1
   check_here
-  "$SHIPIT_BIN" receipt informed-review alpha --author opus:high --by fable:high --result approve
-  "$SHIPIT_BIN" receipt second-opinion alpha --author fable:high --by fable:high --result approve --fresh
+  # receipts as the tool wrote them before it refused an author that is not the maker
+  "$SHIPIT_BIN" receipt informed-review alpha --author sonnet:high --by fable:high --result approve
+  "$SHIPIT_BIN" receipt second-opinion alpha --author sonnet:high --by fable:high --result approve
+  old_author informed-review opus
+  old_author second-opinion fable fresh
   st
   [[ $(the_line alpha) == *"Claims: informed-review author is not the setup's maker; second-opinion author is not the setup's maker; second-opinion used --fresh."* ]]
   st --json
