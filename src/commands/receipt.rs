@@ -7,9 +7,9 @@ use crate::edge::clock::now_utc;
 use crate::edge::git::Git;
 use crate::edge::records::{
     WriteNew, append_line, build_plan_path, goal_names, load_goal, logbook_path, newest_roadmap,
-    receipt_path, store_dir, write_new,
+    read_logbook, receipt_path, store_dir, write_new,
 };
-use crate::edge::slice_git::{branch_tip, file_hash, load_policy, tip_of};
+use crate::edge::slice_git::{branch_tip, file_hash, load_policy, made_by, tip_of};
 use crate::edge::store::read_json;
 use crate::pure::branch::slice_branch;
 use crate::pure::failure::Failure;
@@ -17,13 +17,13 @@ use crate::pure::finding::{Finding, Outcome, outcome_problems, parse_finding};
 use crate::pure::flags::{goal_flag, once, take_value, unknown_argument, worker_flag};
 use crate::pure::goal::GoalName;
 use crate::pure::goal_pick::{element_named, which_goal};
-use crate::pure::logbook::{Entry, line};
+use crate::pure::logbook::{Entry, line, under_author_rule};
 use crate::pure::messages::{NOT_A_RESULT, say};
-use crate::pure::rank::{Worker, rank_verdict, role_notice};
+use crate::pure::rank::{Basis, Worker, rank_verdict, role_notice, role_text};
 use crate::pure::receipt::Oid;
 use crate::pure::review::{Receipt, ReceiptKind, Subject, receipt_time, tool};
 use crate::pure::roadmap::{Element, Roadmap, SliceName};
-use crate::pure::setup::HEAD;
+use crate::pure::setup::{HEAD, Role};
 
 pub(crate) const HIDDEN: bool = false;
 pub(crate) const NEEDS_SETUP: bool = true;
@@ -31,7 +31,7 @@ pub(crate) const USAGE: &str = "usage: shipit receipt <plan-review|informed-revi
 pub(crate) const SUMMARY: &str = "Records a review or test-drive receipt for the current version of a plan or of the work, after checking that the reviewer ranks above the author under the base branch's setup.";
 pub(crate) const EXITS: [&str; 4] = [
     "receipt written",
-    "refused: rank rule, a receipt for this version exists, no check receipt for this content, or no changes against the base",
+    "refused: rank rule, a receipt for this version exists, no check receipt for this content, no changes against the base, the author is not the setup's maker, or a commit of the work has no maker's or owner's trailer",
     "usage, setup, goal, roadmap or finding error",
     "",
 ];
@@ -131,6 +131,8 @@ struct Target {
     subject: Subject,
     tree: Option<Oid>,
     commit: Option<Oid>,
+    // The checked fork and the tip: the range of the slice's own work.
+    range: Option<(Oid, Oid)>,
 }
 
 fn unknown_slice(target: &str, goal: &GoalName) -> Failure {
@@ -172,6 +174,7 @@ fn plan_target(
         subject: Subject::File { file: relative },
         tree: None,
         commit: None,
+        range: None,
     })
 }
 
@@ -229,6 +232,7 @@ fn work_target(
             })?
         }
     };
+    let range = (checked.merge_base.clone(), tip.commit.clone());
     Ok(Target {
         slice: Some(slice),
         key,
@@ -240,7 +244,93 @@ fn work_target(
         },
         tree: Some(tip.tree),
         commit: Some(tip.commit),
+        range: Some(range),
     })
+}
+
+fn log_receipt(
+    store: &Path,
+    goal: &GoalName,
+    (request, target): (&Request, &Target),
+    (basis, time): (Basis, &str),
+) -> Result<(), Failure> {
+    let Some(slice) = &target.slice else {
+        return Ok(());
+    };
+    let entry = Entry::Receipt {
+        kind: request.kind.name().to_owned(),
+        key: target.key.to_string(),
+        tree: target.tree.as_ref().map(ToString::to_string),
+        commit: target.commit.as_ref().map(ToString::to_string),
+        result: request.outcome.to_string(),
+        findings: u64::try_from(request.findings.len()).unwrap_or(u64::MAX),
+        author: request.author.to_string(),
+        by: request.by.to_string(),
+        rank: basis.to_string(),
+    };
+    let text = line(&entry, slice, time, &tool()).map_err(Failure::usage)?;
+    append_line(&logbook_path(store, goal), &text)
+}
+
+// A plan's author may be anyone, with a notice; the author of the work is the setup's maker.
+fn check_author(
+    (git, store): (&Git, &Path),
+    (goal, roadmap): (&GoalName, &Roadmap),
+    (request, target): (&Request, &Target),
+    (role_of, notice): (&Role, Option<&String>),
+    err: &mut dyn Write,
+) -> Result<(), Failure> {
+    if request.kind == ReceiptKind::PlanReview {
+        if let Some(notice) = notice {
+            writeln!(err, "shipit: {notice}").ok();
+        }
+        return Ok(());
+    }
+    if notice.is_some() {
+        return Err(Failure::no(format!(
+            "--author {} is not the setup's maker ({}): the work is the maker's, so its review names the setup's maker",
+            request.author,
+            role_text(role_of)
+        )));
+    }
+    check_author_rule(git, store, (goal, roadmap), target, err)
+}
+
+// A slice started under the rule has the maker's or the owner's trailer on every commit of its own
+// work; an older slice is told that its commits are not checked.
+fn check_author_rule(
+    git: &Git,
+    store: &Path,
+    (goal, roadmap): (&GoalName, &Roadmap),
+    target: &Target,
+    err: &mut dyn Write,
+) -> Result<(), Failure> {
+    let (Some(slice), Some(range)) = (&target.slice, &target.range) else {
+        return Ok(());
+    };
+    if !under_author_rule(&read_logbook(store, goal)?, slice) {
+        writeln!(
+            err,
+            "shipit: {slice} was started before the author rule: the trailers of its commits are not checked"
+        )
+        .ok();
+        return Ok(());
+    }
+    let after: Vec<Oid> = match element_named(roadmap, slice) {
+        Some(Element::Slice(found)) => found
+            .after
+            .iter()
+            .filter_map(|name| branch_tip(git, &slice_branch(goal, name)))
+            .collect(),
+        Some(Element::Proof(_)) | None => Vec::new(),
+    };
+    if let Some(short) = made_by(git, (&range.0, &range.1), &after)? {
+        let branch = slice_branch(goal, slice);
+        return Err(Failure::no(format!(
+            r#"commit {short} on {branch} has no "ShipIt-Made-By: shipit:maker" or "ShipIt-Made-By: owner" trailer: only shipit:maker, or the owner, makes the work of a slice (docs/claude-code.md)"#
+        )));
+    }
+    Ok(())
 }
 
 pub(crate) fn run(
@@ -281,9 +371,13 @@ pub(crate) fn run(
         (role, role_of),
     )?;
     let notice = role_notice(role, role_of, &request.author, &author_rank);
-    if let Some(notice) = &notice {
-        writeln!(err, "shipit: {notice}").ok();
-    }
+    check_author(
+        (&git, &store),
+        (&goal, &roadmap),
+        (&request, &target),
+        (role_of, notice.as_ref()),
+        err,
+    )?;
     let is_role = Some(notice.is_none());
     let is_planner = is_role.filter(|_| request.kind == ReceiptKind::PlanReview);
     let is_maker = is_role.filter(|_| request.kind != ReceiptKind::PlanReview);
@@ -293,7 +387,7 @@ pub(crate) fn run(
         version: 1,
         key: target.key.to_string(),
         slice: target.slice.as_ref(),
-        subject: target.subject,
+        subject: target.subject.clone(),
         author: &author_rank,
         author_is_maker: is_maker,
         author_is_planner: is_planner,
@@ -317,21 +411,7 @@ pub(crate) fn run(
         }
         Err(WriteNew::Cannot(failure)) => return Err(failure),
     }
-    if let Some(slice) = &target.slice {
-        let entry = Entry::Receipt {
-            kind: request.kind.name().to_owned(),
-            key: target.key.to_string(),
-            tree: target.tree.as_ref().map(ToString::to_string),
-            commit: target.commit.as_ref().map(ToString::to_string),
-            result: request.outcome.to_string(),
-            findings: u64::try_from(request.findings.len()).unwrap_or(u64::MAX),
-            author: request.author.to_string(),
-            by: request.by.to_string(),
-            rank: basis.to_string(),
-        };
-        let text = line(&entry, slice, &time, &tool()).map_err(Failure::usage)?;
-        append_line(&logbook_path(&store, &goal), &text)?;
-    }
+    log_receipt(&store, &goal, (&request, &target), (basis, &time))?;
     let short = target.key.as_str().get(..12).unwrap_or(target.key.as_str());
     writeln!(
         out,

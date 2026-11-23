@@ -204,7 +204,7 @@ pub(crate) fn rank_verdict(
     Ok((author_rank, by_rank, basis))
 }
 
-fn role_text(role: &Role) -> String {
+pub(crate) fn role_text(role: &Role) -> String {
     let tier = u64::from(&role.tier);
     match role.effort {
         Some(effort) => format!("tier {tier}, effort {}", effort_name(effort)),

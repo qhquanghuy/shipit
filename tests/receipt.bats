@@ -191,7 +191,7 @@ PLAN=(--author opus:high --by fable:high --result approve)
   mkdir sub
   printf 'x\n' >sub/é.txt
   git add -A
-  git commit -q -m "work"
+  git commit -q -m "work" --trailer "ShipIt-Made-By: shipit:maker"
   check_here
   rec second-opinion beta --author sonnet:high --by opus:high --result approve
   [ "$status" -eq 0 ]
@@ -215,17 +215,17 @@ PLAN=(--author opus:high --by fable:high --result approve)
   make_work slice/demo/beta 1
   printf '\000\001\002' >bin.dat
   git add bin.dat
-  git commit -q -m "a binary file"
+  git commit -q -m "a binary file" --trailer "ShipIt-Made-By: shipit:maker"
   check_here
   rec second-opinion beta --author sonnet:high --by opus:high --result approve
   [ "$status" -eq 0 ]
   printf '\000\001\003' >bin.dat
-  git commit -q -am "another binary content"
+  git commit -q -am "another binary content" --trailer "ShipIt-Made-By: shipit:maker"
   check_here
   rec second-opinion beta --author sonnet:high --by opus:high --result approve
   [ "$status" -eq 0 ]
   printf 'text\n' >>beta-1
-  git commit -q -am "a text change"
+  git commit -q -am "a text change" --trailer "ShipIt-Made-By: shipit:maker"
   check_here
   rec second-opinion beta --author sonnet:high --by opus:high --result approve
   [ "$status" -eq 0 ]
@@ -240,7 +240,7 @@ PLAN=(--author opus:high --by fable:high --result approve)
   [ "$stderr" = "shipit: no check receipt for this content: run shipit check on slice/demo/beta" ]
   git checkout -q main
   git checkout -q -b slice/demo/gamma
-  git commit -q --allow-empty -m "nothing"
+  git commit -q --allow-empty -m "nothing" --trailer "ShipIt-Made-By: shipit:maker"
   check_here
   rec second-opinion gamma --author sonnet:high --by opus:high --result approve
   [ "$status" -eq 1 ]
@@ -275,7 +275,7 @@ PLAN=(--author opus:high --by fable:high --result approve)
   first=$(git rev-parse HEAD)
   check_here
   printf 'more\n' >>beta-1
-  git commit -q -am "more work"
+  git commit -q -am "more work" --trailer "ShipIt-Made-By: shipit:maker"
   check_here
   rec second-opinion beta --author sonnet:high --by opus:high --result approve --commit "$first"
   [ "$status" -eq 0 ]
