@@ -661,3 +661,24 @@ check_store_writes() {
   [ "$status" -eq 1 ]
   [[ $output == *"build-plan.md"* ]]
 }
+
+# check_lead_leaves_claims: step 7 of shipit-review says the review lead never edits a reviewer's
+# claims and sends the report back.
+check_lead_leaves_claims() {
+  local line bad=0
+  line=$(step_line "$(skill_file "$1" shipit-review)" 7)
+  [[ $line == *"never edits a reviewer's claims"* ]] || { echo "shipit-review: step 7 does not say the lead never edits a reviewer's claims"; bad=1; }
+  [[ $line == *"sends the report back"* ]] || { echo "shipit-review: step 7 does not say the lead sends the report back"; bad=1; }
+  return "$bad"
+}
+
+@test "skills: the review lead never edits a reviewer's claims" {
+  run check_lead_leaves_claims "$SHIPIT_SRC"
+  [ "$output" = "" ]
+  [ "$status" -eq 0 ]
+  copy_plugin "$BATS_TEST_TMPDIR/copy"
+  sed -i "/^7\. /s/ The review lead never edits a reviewer's claims: it sends the report back to that reviewer, or records its own disagreement beside it\.//" "$BATS_TEST_TMPDIR/copy/skills/shipit-review/SKILL.md"
+  run check_lead_leaves_claims "$BATS_TEST_TMPDIR/copy"
+  [ "$status" -eq 1 ]
+  [[ $output == *"never edits a reviewer's claims"* ]]
+}
