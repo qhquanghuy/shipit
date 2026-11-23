@@ -214,6 +214,14 @@ These are the answers, copied by the hooks:
 - C, an edit by an agent that is not the maker: `ShipIt: on a slice branch only shipit:maker edits the work (a file git would commit), so that a receipt names who made it. Start shipit:maker for this change.`
 - F, the question to the owner's main session: `ShipIt: only shipit:maker changes a slice's work. Answer yes only if you, the owner, make this change yourself; commit it with --trailer "ShipIt-Made-By: owner".`
 - G, the main session writing the maker's trailer: `ShipIt: only shipit:maker may write its own trailer; the main session is not the maker.`
+- D, a start of `shipit:maker` outside a working copy on a slice branch (the Agent tool of this Claude Code has no `cwd` to start it elsewhere): `ShipIt: shipit:maker works in the slice's worktree, and this Claude Code cannot start an agent in another folder: run the slice in a session opened in its worktree (docs/claude-code.md, Sessions).`
+- E, a start of `shipit:maker` at another rank than the setup's maker or its stand-in, with the model and the effort the setup's maker has (`sonnet` and `high` here): `ShipIt: start shipit:maker with model "sonnet" and effort "high", the setup's maker (agents.roles.maker), or its stand-in: the receipts name that rank as the author.`
+
+The agent gate holds the start of the maker: `shipit:maker` starts only at the setup's maker rank
+(its model, and its effort when the setup gives one) or the stand-in of its tier, with the `model` and
+`effort` of the Agent call, and only in a working copy on a slice branch (the session's folder, as
+the Agent tool cannot name another). The rank is read from the base branch's setup, as the agent
+cap is.
 
 **The receipt.** For a slice started after this rule shipped, `shipit receipt` checks every commit
 of the slice's own work: from the fork the check judged to the tip, no merges, and without the

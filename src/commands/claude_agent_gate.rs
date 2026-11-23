@@ -1,20 +1,21 @@
 use std::ffi::{OsStr, OsString};
 use std::io::Write;
 
-use crate::commands::claude_ship_gate::{base_names, gate_folder};
+use crate::commands::claude_ship_gate::{base_names, gate_folder, on_slice_branch};
 use crate::commands::setup::load_setup_table;
 use crate::commands::verify::verify_at;
 use crate::edge::agent_store::Ledger;
 use crate::edge::clock::now_utc;
 use crate::edge::git::Git;
-use crate::edge::hook_process::{exists, run_gate};
+use crate::edge::hook_process::{exists, home_dir, run_gate};
 use crate::edge::slice_git::load_policy;
 use crate::pure::agent_ledger::{Change, Entry, admit, seconds};
 use crate::pure::base::BranchName;
 use crate::pure::branch::is_slice_branch;
-use crate::pure::claude_hook::{HookInput, Target, agent_call, review_target, safe_field};
+use crate::pure::claude_hook::{HookInput, Target, agent_call, resolve, review_target, safe_field};
 use crate::pure::failure::{Exit, Failure};
-use crate::pure::setup::{HEAD, SETUP_PATH};
+use crate::pure::made_by::{NO_SLICE_FOLDER, maker_rank, maker_start};
+use crate::pure::setup::{HEAD, SETUP_PATH, Setup};
 use crate::pure::ship_gate::Answer;
 
 pub(crate) const HIDDEN: bool = true;
@@ -92,12 +93,36 @@ fn review_gate(git: &Git, input: &HookInput) -> Option<Answer> {
     }
 }
 
-// The cap is the base branch's word, as every other limit is: a slice cannot raise its own.
-fn agent_cap(git: &Git) -> Result<u64, Failure> {
+// The cap and the maker's rank are the base branch's word, as every other limit is: a slice cannot
+// raise its own.
+fn policy_of(git: &Git) -> Result<Setup, Failure> {
     let (head, _table) = load_setup_table(git, OsStr::new(HEAD))?;
     let mut ignored = Vec::new();
     let (policy, _base) = load_policy(git, head, &mut ignored)?;
-    Ok(u64::from(&policy.agents.parallel.agents))
+    Ok(policy)
+}
+
+fn agent_cap(git: &Git) -> Result<u64, Failure> {
+    Ok(u64::from(&policy_of(git)?.agents.parallel.agents))
+}
+
+// A maker starts at the setup's maker rank, in a working copy on a slice branch: the folder the
+// call names, else the session's.
+fn maker_gate(git: &Git, input: &HookInput) -> Option<Answer> {
+    let tool_input = input.tool_input.as_ref()?;
+    let started = maker_start(tool_input, || {
+        let policy = policy_of(git).map_err(|failure| cannot_start(failure.message))?;
+        maker_rank(&policy).ok_or_else(|| cannot_start("the setup has no tier for the maker"))
+    })?;
+    let folder = match started {
+        Ok(folder) => folder,
+        Err(text) => return Some(deny(text)),
+    };
+    let home = home_dir();
+    let dir = resolve(&input.cwd, home.as_deref(), folder.as_deref());
+    on_slice_branch(&dir)
+        .is_none()
+        .then(|| deny(NO_SLICE_FOLDER.to_owned()))
 }
 
 fn cannot_start(why: impl std::fmt::Display) -> String {
@@ -141,6 +166,9 @@ fn decide(input: &Result<HookInput, String>) -> Answer {
     }
     if !agent_call(input) {
         return Answer::Pass;
+    }
+    if let Some(answer) = maker_gate(&git, input) {
+        return answer;
     }
     match admit_start(&git, input) {
         Ok(()) => Answer::Pass,

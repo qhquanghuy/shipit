@@ -238,7 +238,7 @@ fn caller(input: &HookInput) -> Caller<'_> {
 }
 
 // The folder when it is a working copy of a ShipIt project on a slice branch: the work of a slice.
-fn on_slice_branch(dir: &Path) -> Option<Git> {
+pub(crate) fn on_slice_branch(dir: &Path) -> Option<Git> {
     let git = Git::at(dir).ok().filter(shipit_project)?;
     git.current_branch()
         .is_some_and(|branch| is_slice_branch(&branch))

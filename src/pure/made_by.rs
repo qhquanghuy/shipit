@@ -1,3 +1,7 @@
+use serde_json::Value;
+
+use crate::pure::rank::effort_name;
+use crate::pure::setup::Setup;
 use crate::pure::shell_words::{
     Parse, Segment, leading_program, message_values, parse, program, raw_words_unquoted,
 };
@@ -35,6 +39,8 @@ const NOT_MAKER_EDIT: &str = "ShipIt: on a slice branch only shipit:maker edits 
 const OWNER_ONLY: &str = "ShipIt: only shipit:maker changes a slice's work. Answer yes only if you, the owner, make this change yourself; commit it with --trailer \"ShipIt-Made-By: owner\".";
 const MAIN_IS_NOT_MAKER: &str =
     "ShipIt: only shipit:maker may write its own trailer; the main session is not the maker.";
+
+pub(crate) const NO_SLICE_FOLDER: &str = "ShipIt: shipit:maker works in the slice's worktree, and this Claude Code cannot start an agent in another folder: run the slice in a session opened in its worktree (docs/claude-code.md, Sessions).";
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Move {
@@ -234,6 +240,76 @@ pub(crate) fn answer(mode: Mode, verdict: Verdict) -> Answer {
     }
 }
 
+// The setup's maker as a start is judged: its model, its effort when the setup gives one, and the
+// stand-in of its tier. The effort is the receipt's word when the setup gives none.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MakerRank {
+    pub(crate) model: String,
+    pub(crate) effort: Option<String>,
+    pub(crate) stand_in: Option<(String, String)>,
+}
+
+pub(crate) fn maker_rank(setup: &Setup) -> Option<MakerRank> {
+    let role = &setup.agents.roles.maker;
+    let tier = setup
+        .agents
+        .tiers
+        .iter()
+        .find(|tier| u64::from(&tier.tier) == u64::from(&role.tier))?;
+    Some(MakerRank {
+        model: tier.model.as_str().to_owned(),
+        effort: role.effort.map(|effort| effort_name(effort).to_owned()),
+        stand_in: tier.stand_in.as_ref().map(|stand_in| {
+            (
+                stand_in.model.as_str().to_owned(),
+                effort_name(stand_in.effort).to_owned(),
+            )
+        }),
+    })
+}
+
+fn not_at_rank(maker: &MakerRank) -> String {
+    let effort = maker
+        .effort
+        .as_ref()
+        .map(|effort| format!(" and effort \"{effort}\""))
+        .unwrap_or_default();
+    format!(
+        "ShipIt: start shipit:maker with model \"{}\"{effort}, the setup's maker (agents.roles.maker), or its stand-in: the receipts name that rank as the author.",
+        maker.model
+    )
+}
+
+// None for an agent that is not the maker. For a maker: the folder the call names (`cwd`), when it
+// starts at the setup's maker rank or its stand-in, else the denial. The rank is read only for a
+// maker, and a setup that cannot be read is that denial.
+pub(crate) fn maker_start(
+    tool_input: &Value,
+    maker: impl FnOnce() -> Result<MakerRank, String>,
+) -> Option<Result<Option<String>, String>> {
+    let text = |key: &str| tool_input.get(key).and_then(Value::as_str);
+    if text("subagent_type") != Some(MAKER) {
+        return None;
+    }
+    Some(maker().and_then(|rank| {
+        let (model, effort) = (text("model"), text("effort"));
+        let own = model == Some(rank.model.as_str())
+            && rank
+                .effort
+                .as_deref()
+                .is_none_or(|want| effort == Some(want));
+        let stand_in = rank
+            .stand_in
+            .as_ref()
+            .is_some_and(|(m, e)| model == Some(m.as_str()) && effort == Some(e.as_str()));
+        if own || stand_in {
+            Ok(text("cwd").map(str::to_owned))
+        } else {
+            Err(not_at_rank(&rank))
+        }
+    }))
+}
+
 // The first commit of `git log` lines `<oid>\t<values>` whose values are empty or hold anything
 // but MAKER or OWNER, shortened to 12 characters.
 pub(crate) fn unmade(log: &str) -> Option<String> {
@@ -376,6 +452,25 @@ mod tests {
         }
     }
 
+    const MODELS: [&str; 3] = ["sonnet", "opus", "fable"];
+    const EFFORTS: [&str; 3] = ["low", "medium", "high"];
+
+    fn rank() -> impl Strategy<Value = MakerRank> {
+        (
+            proptest::sample::select(MODELS.to_vec()),
+            proptest::option::of(proptest::sample::select(EFFORTS.to_vec())),
+            proptest::option::of((
+                proptest::sample::select(MODELS.to_vec()),
+                proptest::sample::select(EFFORTS.to_vec()),
+            )),
+        )
+            .prop_map(|(model, effort, stand_in)| MakerRank {
+                model: model.to_owned(),
+                effort: effort.map(str::to_owned),
+                stand_in: stand_in.map(|(model, effort)| (model.to_owned(), effort.to_owned())),
+            })
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig {
             failure_persistence: None,
@@ -421,6 +516,42 @@ mod tests {
                 };
                 prop_assert_eq!(moves(&wrapped), Moves::Unreadable);
             }
+        }
+
+        #[test]
+        fn a_maker_starts_at_the_setups_maker_rank_or_its_stand_in(
+            rank in rank(),
+            kind in proptest::sample::select(vec![MAKER, "shipit:reader"]),
+            model in proptest::option::of(proptest::sample::select(MODELS.to_vec())),
+            effort in proptest::option::of(proptest::sample::select(EFFORTS.to_vec())),
+            folder in proptest::option::of("[a-z/]{1,8}"),
+        ) {
+            let mut call = serde_json::json!({ "subagent_type": kind });
+            for (key, value) in [("model", model), ("effort", effort)] {
+                if let Some(value) = value {
+                    call[key] = serde_json::json!(value);
+                }
+            }
+            if let Some(folder) = &folder {
+                call["cwd"] = serde_json::json!(folder);
+            }
+            let own = model == Some(rank.model.as_str())
+                && rank.effort.as_deref().is_none_or(|want| effort == Some(want));
+            let stand_in = rank
+                .stand_in
+                .as_ref()
+                .is_some_and(|(m, e)| model == Some(m.as_str()) && effort == Some(e.as_str()));
+            let wanted = if kind != MAKER {
+                None
+            } else if own || stand_in {
+                Some(Ok(folder.clone()))
+            } else {
+                Some(Err(not_at_rank(&rank)))
+            };
+            let loaded = rank.clone();
+            prop_assert_eq!(maker_start(&call, move || Ok(loaded)), wanted);
+            let unread = maker_start(&call, || Err("no setup".to_owned()));
+            prop_assert_eq!(unread, (kind == MAKER).then(|| Err("no setup".to_owned())));
         }
 
         #[test]
