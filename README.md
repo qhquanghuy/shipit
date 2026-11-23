@@ -59,6 +59,8 @@ A skill makes its own drafts folder with `mktemp -d /tmp/shipit.XXXXXX`, so `Edi
 
 **The store.** The harness asks for a write under the git folder and a headless run refuses it, whatever the allow rules say; `shipit store put` writes build plans, plan reviews and reviews instead, and `Bash(shipit *)` allows it. A goal or roadmap version is the owner's decision: its copy asks.
 
+**Trust and headless runs.** Claude Code reads the project's `.claude/settings.json` only in a folder that was trusted, and a headless run never shows the trust question, so there the list above is not read. Trust the folder once in an interactive session (`claude` in the project folder), or pass the list to each headless run: `claude -p --settings .claude/settings.json "<prompt>"`.
+
 These commands are not in the list; they ask:
 
 - Asks: the store copy (`mkdir -p` and `cp`): only for a goal or roadmap version, the owner's decision; the lead copies it, or hands the owner the exact commands.
