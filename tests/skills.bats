@@ -676,3 +676,42 @@ check_lead_leaves_claims() {
   [ "$status" -eq 1 ]
   [[ $output == *"never edits a reviewer's claims"* ]]
 }
+
+# check_drafts_in_project <root>: no skill or doc names a /tmp/shipit folder, and each skill that
+# drafts, or runs a test drive, names its folder inside the project, `.shipit/td/`.
+check_drafts_in_project() {
+  local root=$1 skill bad=0
+  five_skills "$root" || return 1
+  if grep -rnE 'tmp/shipit' "$root/README.md" "$root/docs" "$root/skills"; then
+    echo "a skill or doc names a folder under /tmp/shipit"
+    bad=1
+  fi
+  for skill in "${SKILL_NAMES[@]}"; do
+    grep -qF '.shipit/td/' "$(skill_file "$root" "$skill")" || { echo "$skill: no drafts folder under .shipit/td/"; bad=1; }
+  done
+  return "$bad"
+}
+
+@test "skills: every drafts and test-drive folder is inside the project, under .shipit/td" {
+  run check_drafts_in_project "$SHIPIT_SRC"
+  [ "$output" = "" ]
+  [ "$status" -eq 0 ]
+  copy_plugin "$BATS_TEST_TMPDIR/copy"
+  printf '\nMake it with `mktemp -d /tmp/shipit.XXXXXX`.\n' >>"$BATS_TEST_TMPDIR/copy/skills/shipit-slice/SKILL.md"
+  run check_drafts_in_project "$BATS_TEST_TMPDIR/copy"
+  [ "$status" -eq 1 ]
+  [[ $output == *"under /tmp/shipit"* ]]
+  copy_plugin "$BATS_TEST_TMPDIR/copy2"
+  sed -i 's|\.shipit/td/|.shipit/x/|g' "$BATS_TEST_TMPDIR/copy2/skills/shipit-test-drive/SKILL.md"
+  run check_drafts_in_project "$BATS_TEST_TMPDIR/copy2"
+  [ "$status" -eq 1 ]
+  [[ $output == *"shipit-test-drive: no drafts folder under .shipit/td/"* ]]
+}
+
+@test "skills: an owner's answer is logged with the lead's model and effort, and names the owner in --text" {
+  local line
+  line=$(step_line "$SHIPIT_SRC/skills/shipit-slice/SKILL.md" 6)
+  [[ $line == *'--by <model>:<effort>'* ]]
+  [[ $line == *'--text'* ]]
+  [[ $line == *'`--by owner` is refused'* ]]
+}
