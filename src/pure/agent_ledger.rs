@@ -2,8 +2,6 @@
 // The files are the edge's; what an entry means, and what each hook event does to the entries,
 // is decided here.
 
-use chrono::DateTime;
-
 // A start that never became an agent (another hook may refuse the call) stops counting after
 // this long.
 const RESERVATION_SECONDS: i64 = 120;
@@ -39,16 +37,72 @@ pub(crate) fn safe_id(text: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
-pub(crate) fn seconds(utc: &str) -> Option<i64> {
-    DateTime::parse_from_rfc3339(utc)
-        .ok()
-        .map(|time| time.timestamp())
+// Times are kept as `YYYY-MM-DDTHH:MM:SSZ`, in UTC, the one form ShipIt writes. The calendar is
+// the proleptic Gregorian one, in Howard Hinnant's day arithmetic: eras of 400 years, years that
+// start on March 1st so the leap day comes last.
+const DAY: i64 = 24 * 60 * 60;
+const ERA_DAYS: i64 = 146_097;
+// Days from 0000-03-01 to 1970-01-01.
+const EPOCH_SHIFT: i64 = 719_468;
+
+fn days_since_1970(year: i64, month: i64, day: i64) -> i64 {
+    let year = if month <= 2 { year - 1 } else { year };
+    let year_of_era = year.rem_euclid(400);
+    let day_of_year = (153 * ((month + 9) % 12) + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    year.div_euclid(400) * ERA_DAYS + day_of_era - EPOCH_SHIFT
 }
 
+fn date_of(days: i64) -> (i64, i64, i64) {
+    let days = days + EPOCH_SHIFT;
+    let day_of_era = days.rem_euclid(ERA_DAYS);
+    let year_of_era =
+        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_from_march = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_from_march + 2) / 5 + 1;
+    let month = (month_from_march + 2) % 12 + 1;
+    let year = days.div_euclid(ERA_DAYS) * 400 + year_of_era + i64::from(month <= 2);
+    (year, month, day)
+}
+
+fn digits(text: &str, width: usize) -> Option<i64> {
+    if text.len() == width && text.bytes().all(|byte| byte.is_ascii_digit()) {
+        text.parse().ok()
+    } else {
+        None
+    }
+}
+
+// Only the form ShipIt writes is a time. A date that does not exist (a February 30th, a month 13,
+// a day 0) is none: only a real date comes back from its own day count.
+pub(crate) fn seconds(utc: &str) -> Option<i64> {
+    let (date, clock) = utc.strip_suffix('Z')?.split_once('T')?;
+    let (year, rest) = date.split_once('-')?;
+    let (month, day) = rest.split_once('-')?;
+    let (hour, rest) = clock.split_once(':')?;
+    let (minute, second) = rest.split_once(':')?;
+    let (year, month, day) = (digits(year, 4)?, digits(month, 2)?, digits(day, 2)?);
+    let (hour, minute, second) = (digits(hour, 2)?, digits(minute, 2)?, digits(second, 2)?);
+    let days = days_since_1970(year, month, day);
+    let real = date_of(days) == (year, month, day) && hour < 24 && minute < 60 && second < 60;
+    real.then_some(days * DAY + hour * 3600 + minute * 60 + second)
+}
+
+// A time outside the years 0000 to 9999 has no text in that form.
 pub(crate) fn utc_text(at: i64) -> String {
-    DateTime::from_timestamp(at, 0)
-        .map(|time| time.format("%Y-%m-%dT%H:%M:%SZ").to_string())
-        .unwrap_or_default()
+    let (year, month, day) = date_of(at.div_euclid(DAY));
+    let second = at.rem_euclid(DAY);
+    if (0..=9999).contains(&year) {
+        format!(
+            "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+            second / 3600,
+            second % 3600 / 60,
+            second % 60
+        )
+    } else {
+        String::new()
+    }
 }
 
 pub(crate) fn file_name(entry: &Entry) -> String {
@@ -174,6 +228,10 @@ mod tests {
 
     use super::*;
 
+    // 0000-01-01T00:00:00Z and 9999-12-31T23:59:59Z.
+    const FIRST: i64 = -62_167_219_200;
+    const LAST: i64 = 253_402_300_799;
+
     fn id() -> impl Strategy<Value = String> {
         "[a-z0-9_-]{1,8}"
     }
@@ -297,11 +355,71 @@ mod tests {
         }
 
         #[test]
-        fn seconds_round_trips(at in 0_i64..4_102_444_800) {
+        fn seconds_round_trips(at in FIRST..=LAST) {
             let text = utc_text(at);
             prop_assert_eq!(seconds(&text), Some(at));
             prop_assert_eq!(seconds(&format!("{text}\n")), None);
             prop_assert_eq!(parse_entry("a-x", &format!("{text}\n")), Some(Entry::Running { agent_id: "x".to_owned(), at }));
+        }
+
+        #[test]
+        fn a_time_reads_iff_its_date_exists(
+            year in 0_i64..10_000,
+            month in 0_i64..14,
+            day in 0_i64..33,
+            hour in 0_i64..26,
+            minute in 0_i64..62,
+            second in 0_i64..62,
+        ) {
+            let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+            let month_days = match month {
+                2 if leap => 29,
+                2 => 28,
+                4 | 6 | 9 | 11 => 30,
+                _ => 31,
+            };
+            let exists = (1..=12).contains(&month)
+                && (1..=month_days).contains(&day)
+                && hour < 24
+                && minute < 60
+                && second < 60;
+            let text = format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z");
+            prop_assert_eq!(seconds(&text).is_some(), exists);
+            prop_assert_eq!(seconds(&format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:60Z")), None);
+        }
+
+        #[test]
+        fn a_text_reads_only_if_it_is_the_text_of_its_second(at in FIRST..=LAST) {
+            let written = utc_text(at);
+            for cut in 0..written.len() {
+                let (head, tail) = written.split_at(cut);
+                let tail = tail.get(1..).unwrap_or("");
+                for put in ["", "+", "-", " ", "t", "z", ".", "0", ":", "T", "Z"] {
+                    let text = format!("{head}{put}{tail}");
+                    if let Some(read) = seconds(&text) {
+                        prop_assert_eq!(utc_text(read), text);
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn the_next_second_has_the_next_text(at in FIRST..LAST) {
+            prop_assert!(utc_text(at) < utc_text(at + 1));
+        }
+
+        #[test]
+        fn a_time_outside_the_years_0000_to_9999_has_no_text(
+            at in prop_oneof![
+                i64::MIN..FIRST,
+                (FIRST - 1_000_000_000_000)..FIRST,
+                (LAST + 1)..(LAST + 1_000_000_000_000),
+                (LAST + 1)..=i64::MAX,
+                Just(LAST + 1),
+                Just(FIRST - 1),
+            ],
+        ) {
+            prop_assert_eq!(utc_text(at), "");
         }
 
         #[test]
@@ -353,5 +471,22 @@ mod tests {
             Err("ShipIt: 2 agents are already running in this session; the setup allows 2 ([agents.parallel] agents). Wait for one to finish, then start it again.".to_owned())
         );
         assert_eq!(admit(&entries, 5, 3), Ok(()));
+    }
+
+    // Ledger files written while the clock went through chrono still read, to the same second.
+    #[test]
+    fn files_written_with_chrono_still_read() {
+        for (text, at) in [
+            ("0000-01-01T00:00:00Z", -62_167_219_200),
+            ("1969-12-31T23:59:59Z", -1),
+            ("1970-01-01T00:00:00Z", 0),
+            ("2000-02-29T00:00:00Z", 951_782_400),
+            ("2026-11-22T16:13:17Z", 1_795_363_997),
+            ("2100-03-01T00:00:00Z", 4_107_542_400),
+            ("9999-12-31T23:59:59Z", 253_402_300_799),
+        ] {
+            assert_eq!(seconds(text), Some(at), "{text}");
+            assert_eq!(utc_text(at), text);
+        }
     }
 }
