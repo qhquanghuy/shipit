@@ -747,3 +747,31 @@ check_drafts_in_project() {
   [ "$status" -eq 0 ]
   [ "$output" = "logged answer for beta" ]
 }
+
+@test "skills: the store is read with shipit store show" {
+  local file skill
+  for file in "$SHIPIT_SRC"/skills/*/SKILL.md "$SHIPIT_SRC"/agents/*.md; do
+    run grep -nF -e 'Read: with the file tools' -e '`goal.vN.md` with the file tools' "$file"
+    [ "$output" = "" ]
+    [ "$status" -eq 1 ]
+  done
+  for skill in shipit-slice shipit-roadmap shipit-review; do
+    grep -qF 'shipit store show' "$SHIPIT_SRC/skills/$skill/SKILL.md"
+  done
+}
+
+@test "skills: the maker runs each command alone" {
+  local maker="$SHIPIT_SRC/agents/maker.md" drive="$SHIPIT_SRC/skills/shipit-test-drive/SKILL.md" name
+  grep -qF '`./test.sh`' "$maker"
+  grep -qF 'No `;`, `&&`, `|`, `echo` or `$`' "$maker"
+  grep -qF 'shipit store show build-plan' "$maker"
+  grep -qF "split a step's \`&&\` chain into separate calls" "$maker"
+  grep -qF 'test-drive.md' "$drive"
+  # Claude Code refuses an agent's Write of a file named report…, summary…, findings… or analysis….
+  while read -r name; do
+    [[ ${name##*/} != [Rr][Ee][Pp][Oo][Rr][Tt]* ]]
+    [[ ${name##*/} != [Ss][Uu][Mm][Mm][Aa][Rr][Yy]* ]]
+    [[ ${name##*/} != [Ff][Ii][Nn][Dd][Ii][Nn][Gg][Ss]* ]]
+    [[ ${name##*/} != [Aa][Nn][Aa][Ll][Yy][Ss][Ii][Ss]* ]]
+  done < <(grep -oE '[A-Za-z0-9_./-]+\.md' "$drive")
+}

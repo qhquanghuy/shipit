@@ -124,11 +124,15 @@ pub(crate) fn next_lines(base: &BranchName, start: Start) -> Vec<String> {
         )),
         Start::Pushed => {}
     }
+    lines.push(
+        "Next: commit .claude/settings.json (the permission list of the README) alone on adopt/settings: the owner pushes it and opens pull request 1."
+            .to_owned(),
+    );
     lines.push(format!(
-        "Next: fill in check in {SETUP_PATH}; commit that file alone on a new branch; shipit check; push; open pull request 1 (the setup file only)."
+        "After it merges: on adopt/setup, made from the updated {base}, fill in check in {SETUP_PATH} and commit that file alone; shipit check; the owner pushes it and opens pull request 2 (the setup file only)."
     ));
     lines.push(
-        "After it merges: on a new branch, shipit init --ci-job, set SHIPIT_COMMIT to a ShipIt commit hash, and ship it as a normal slice (pull request 2)."
+        "After it merges: on adopt/ci, shipit init --ci-job, set SHIPIT_COMMIT to a ShipIt commit hash; the owner pushes it and opens pull request 3 (the CI job only)."
             .to_owned(),
     );
     lines.push(format!(
@@ -242,17 +246,30 @@ mod tests {
         }
 
         #[test]
-        fn next_lines_per_start(base in base_name()) {
+        fn the_next_lines_name_three_pull_requests_settings_first(base in base_name()) {
             let common = next_lines(&base, Start::Pushed);
-            prop_assert_eq!(common.len(), 3);
+            prop_assert_eq!(common.len(), 4);
             let none = next_lines(&base, Start::NoCommits);
             prop_assert!(none.first().is_some_and(|line| line.starts_with("No commits yet: ")));
             prop_assert_eq!(none.get(1..), Some(common.as_slice()));
             let unpushed = next_lines(&base, Start::NoOrigin);
             prop_assert!(unpushed.first().is_some_and(|line| line.starts_with("No origin/")));
             prop_assert_eq!(unpushed.get(1..), Some(common.as_slice()));
-            prop_assert!(common.iter().any(|line| line.contains("pull request 1")));
-            prop_assert!(common.iter().any(|line| line.contains("pull request 2")));
+            let at = |needle: &str| common.iter().position(|line| line.contains(needle));
+            let (one, two, three) = (
+                at("pull request 1"),
+                at("pull request 2 (the setup file only)"),
+                at("pull request 3 (the CI job only)"),
+            );
+            prop_assert_eq!((one, two, three), (Some(0), Some(1), Some(2)));
+            prop_assert!(common.first().is_some_and(|line| line.contains(".claude/settings.json")));
+            for line in common.get(1..3).unwrap_or_default() {
+                prop_assert!(line.starts_with("After it merges"));
+            }
+            let from_updated = format!("made from the updated {base}");
+            let named = common.get(1).is_some_and(|line| line.contains(&from_updated));
+            prop_assert!(named);
+            prop_assert!(common.iter().all(|line| !line.contains("as a normal slice")));
         }
 
         #[test]

@@ -84,6 +84,37 @@ The refusals, each after `shipit: `:
 - `<level> is a symbolic link; the store holds no links`
 - `<path> exists; a store file is never replaced`
 
+## Store show
+
+`shipit store show <kind> --goal <name> [--slice <name>] [--round <n>] [--copy]` prints a store file on stdout,
+byte for byte, from any working copy of the project, because Claude Code refuses to read a file under the git
+folder, and ShipIt reads it itself. The kinds are the six of Store put at the same places and with the same
+flags, and two more:
+
+| kind | flags | file |
+|---|---|---|
+| `goal` | none | the newest `goals/<goal>/goal.vN.md` |
+| `roadmap` | none | the newest `goals/<goal>/roadmap.vN.md` |
+
+Rules:
+
+- It reads the one file and judges nothing: no roadmap is read, and the slice need not be one of the goal's.
+- Every level from `<git common dir>/shipit` down to the file is a real folder, and the file is a regular file, never a link; nothing is made.
+- `--copy` prints nothing of the file. It writes a copy into the drafts folder of the current working copy, `<top of the working copy>/.shipit/td/<folder>/store/<file>`, and prints `copied <path>`. The folder is the slice, or the goal for `goal` and `roadmap`; the folder `store/` below it, so that a draft in `<folder>` is never touched, is made with a `.gitignore` of the one line `*` (and so is `<folder>` when it has none), so that git ignores both. The file is `build-plan.md`, `plan-review.md`, `round-<n>-<kind>.md`, `goal.vN.md` or `roadmap.vN.md`, and an earlier copy is replaced with an atomic rename. The copy is a draft: ShipIt never reads it back. Claude Code cuts a long file printed in a Bash result to a preview, and reads a file inside the project whole with its Read tool.
+
+Exit 0 shown or copied, 1 the file is not in the store, 2 usage, goal or roadmap error, a link on the way, or a write that failed.
+
+The refusals, each after `shipit: `:
+
+- `shipit store show takes goal, roadmap, build-plan, plan-review, explanation, informed-review, second-opinion or review, not <kind>`
+- `<kind> takes no --slice or --round` (`goal` and `roadmap`)
+- `<kind> needs --slice <name>`, `--round is only for explanation, informed-review, second-opinion and review`, `<kind> needs --round <n>`, `--slice <text>: <rule>`, `--round <text>: a number from 1 up, with no sign and no leading zero`, as for Store put
+- `<path> is not in the store`
+- `<level> is a symbolic link; the store holds no links`
+- `<level> is a symbolic link; the drafts folder holds no links` (`--copy`, a link below the top of the working copy)
+- `no goal named "<goal>" in the store` (the goal has no roadmap folder), `no roadmap in <path>`, `no goal "<goal>" in the store` (`goal` finds no `goal.vN.md`); each exit 2
+- `--copy given twice; usage: …`, `--goal given twice; usage: …`, and the other usage errors of Store put (`unknown argument`, `<flag> needs a value`); exit 2
+
 ## Trust
 
 A receipt proves only that this machine ran the checks. Receipts are trusted locally and nowhere

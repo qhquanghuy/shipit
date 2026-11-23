@@ -269,25 +269,61 @@ pub(crate) enum Written {
     Replaced(PathBuf),
 }
 
-// One level of the way into the store: a real folder, made when missing. `create_dir` never
-// follows a link at the new name, and `create_dir_all` would.
-fn level_is_folder(level: &Path) -> Result<(), Failure> {
+fn not_in_store(path: &Path) -> Failure {
+    Failure::no(format!("{} is not in the store", path.display()))
+}
+
+// One level of the way into the store: a real folder. A writer makes a missing one, with
+// `create_dir`, which never follows a link at the new name (`create_dir_all` would); a reader
+// finds a missing one refused and creates nothing.
+fn level_is_folder(level: &Path, file: &Path, make: bool, home: &str) -> Result<(), Failure> {
     match fs::symlink_metadata(level) {
-        Ok(found) if found.file_type().is_symlink() => Err(link_refused(level)),
+        Ok(found) if found.file_type().is_symlink() => Err(link_refused_in(level, home)),
         Ok(found) if found.is_dir() => Ok(()),
-        Ok(_other) => Err(cannot_write_in(level)),
-        Err(why) if why.kind() == ErrorKind::NotFound => {
+        Ok(_other) if make => Err(cannot_write_in(level)),
+        Ok(_other) => Err(not_in_store(file)),
+        Err(why) if why.kind() == ErrorKind::NotFound && make => {
             fs::create_dir(level).map_err(|_why| cannot_write_in(level))
         }
-        Err(_why) => Err(cannot_write_in(level)),
+        Err(why) if why.kind() == ErrorKind::NotFound => Err(not_in_store(file)),
+        Err(_why) if make => Err(cannot_write_in(level)),
+        Err(_why) => Err(Failure::usage(format!("cannot read {}", level.display()))),
     }
 }
 
 fn link_refused(path: &Path) -> Failure {
+    link_refused_in(path, "the store")
+}
+
+fn link_refused_in(path: &Path, home: &str) -> Failure {
     Failure::usage(format!(
-        "{} is a symbolic link; the store holds no links",
+        "{} is a symbolic link; {home} holds no links",
         path.display()
     ))
+}
+
+// Every level from the store down to the folder of the file is a real folder; the folder and the
+// path of the file are returned.
+fn walk(
+    store: &Path,
+    parts: &[String],
+    make: bool,
+    home: &str,
+) -> Result<(PathBuf, PathBuf), Failure> {
+    let (name, folders) = parts
+        .split_last()
+        .ok_or_else(|| Failure::usage("nothing to put"))?;
+    let file = parts
+        .iter()
+        .fold(store.to_path_buf(), |dir, part| dir.join(part));
+    let mut dir = store.to_path_buf();
+    level_is_folder(&dir, &file, make, home)?;
+    for part in folders {
+        dir.push(part);
+        level_is_folder(&dir, &file, make, home)?;
+    }
+    let path = dir.join(name);
+    Ok((dir, path))
 }
 
 // The text goes at `parts` below the store, every level a real folder from the store down. A new
@@ -298,16 +334,7 @@ pub(crate) fn put_text(
     text: &str,
     how: Put,
 ) -> Result<Written, Failure> {
-    let (name, folders) = parts
-        .split_last()
-        .ok_or_else(|| Failure::usage("nothing to put"))?;
-    let mut dir = store.to_path_buf();
-    level_is_folder(&dir)?;
-    for part in folders {
-        dir.push(part);
-        level_is_folder(&dir)?;
-    }
-    let path = dir.join(name);
+    let (dir, path) = walk(store, parts, true, "the store")?;
     let taken = match fs::symlink_metadata(&path) {
         Ok(found) if found.file_type().is_symlink() => return Err(link_refused(&path)),
         Ok(_other) => true,
@@ -333,6 +360,34 @@ pub(crate) fn put_text(
             Err(WriteNew::Cannot(failure)) => Err(failure),
         },
     }
+}
+
+// The text of the file at `parts` below the store; a link anywhere on the way, the file's own
+// name included, is refused, and nothing is made.
+pub(crate) fn read_store_text(store: &Path, parts: &[String]) -> Result<String, Failure> {
+    let (_dir, path) = walk(store, parts, false, "the store")?;
+    match fs::symlink_metadata(&path) {
+        Ok(found) if found.file_type().is_symlink() => Err(link_refused(&path)),
+        Ok(found) if found.is_file() => read_text(&path),
+        Ok(_other) => Err(not_in_store(&path)),
+        Err(why) if why.kind() == ErrorKind::NotFound => Err(not_in_store(&path)),
+        Err(_why) => Err(Failure::usage(format!("cannot read {}", path.display()))),
+    }
+}
+
+// A copy for a reader goes at `parts` below `top`, every level a real folder and made when
+// missing. Its folder and the one above it get a `.gitignore` of one line `*` when they have none, and an earlier copy is
+// replaced whole with a rename. Returns the path of the copy.
+pub(crate) fn copy_text(top: &Path, parts: &[String], text: &str) -> Result<PathBuf, Failure> {
+    let (dir, path) = walk(top, parts, true, "the drafts folder")?;
+    for folder in dir.ancestors().take(2) {
+        match link_new(&folder.join(".gitignore"), b"*\n") {
+            Ok(()) | Err(WriteNew::Exists) => {}
+            Err(WriteNew::Cannot(failure)) => return Err(failure),
+        }
+    }
+    write_text_atomic(&path, text)?;
+    Ok(path)
 }
 
 // The text under a name no other writer uses, in the folder it is meant for; a stale file of a

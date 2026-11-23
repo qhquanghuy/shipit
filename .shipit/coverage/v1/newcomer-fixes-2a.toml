@@ -1,0 +1,12 @@
+DW17 = [
+  "a_shown_kind_names_its_store_file",
+  "store show: prints each kind from any working copy, byte for byte",
+  "store show: a copy lands in the drafts folder, ignored by git",
+  "store show: a missing file, a link or a wrong flag is refused",
+  "the_next_lines_name_three_pull_requests_settings_first",
+  "init: the three adoption pull requests can be followed in order",
+  "skills: the store is read with shipit store show",
+  "skills: the maker runs each command alone",
+  "docs: adoption starts with the permission list, trusted once",
+  "docs: nobody is told to edit the user settings file",
+]

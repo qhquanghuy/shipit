@@ -43,5 +43,5 @@ Never: merge, tag, push another branch, change the setup, or review its own work
 ## Store files
 - The store is `<git common dir>/shipit`. Find it with `git rev-parse --git-common-dir`, run alone, and type the printed path into the next command. A skill never spells the git folder itself.
 - Write: draft with the file tools in a drafts folder made with `mkdir -p .shipit/td/<slice>`, validate the draft there, then put it in: `shipit store put build-plan <draft> --goal <goal> --slice <slice>`, then `shipit store put plan-review <draft> --goal <goal> --slice <slice>`. It checks the draft again, writes it at its place and prints the path. Until the slice is started a put replaces the build plan or the `plan-review`; after that it refuses, and a changed build plan is the lead's copy by hand (docs/store.md). A store file is never edited in place.
-- Read: with the file tools.
+- Read: `shipit store show <kind> --goal <goal> [--slice <slice>] [--round <k>] --copy`, from any working copy, then the Read tool on the path it prints.
 - If `shipit store put` refuses, report its message and stop.
