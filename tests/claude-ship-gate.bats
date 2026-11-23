@@ -233,7 +233,8 @@ gate() {
   } >"$input"
   run --separate-stderr timeout 10 "$SHIPIT_BIN" claude-ship-gate <"$input"
   [ "$status" -eq 0 ]
-  [ -z "$output" ]
+  [ "$(decision)" = ask ]
+  [[ $(reason) == "ShipIt: only shipit:maker changes a slice's work"* ]]
 }
 
 # push.default=upstream sends a branch to the branch it tracks: main, for a slice cut from it.
@@ -259,10 +260,15 @@ gate() {
     gate "$command" bypassPermissions
     [ "$(decision)" = deny ]
   done
-  for command in "git status" "git add -A && git commit -m 'x' && git push -u origin slice/v1/x" "git add config" "git log -- config" "git fetch"; do
+  for command in "git status" "git add config" "git log -- config" "git fetch"; do
     gate "$command" bypassPermissions
     [ -z "$output" ]
   done
+  # on a slice branch the author rule answers a commit; the push itself still passes
+  gate "git add -A && git commit -m 'x' && git push -u origin slice/v1/x" default
+  [ "$(decision)" = ask ]
+  [[ $(reason) == "ShipIt: only shipit:maker changes a slice's work"* ]]
+  [[ $(reason) != *"only the owner ships"* ]]
 }
 
 @test "a cd to a folder under the home folder is read and judged there" {
@@ -362,4 +368,252 @@ old_commit() {
     gate "$command" bypassPermissions
     [ "$(decision)" = deny ]
   done
+}
+
+# by <type> <command> [mode]: the ship gate on a Bash call of a subagent of that type, in the repo.
+by() {
+  run_hook claude-ship-gate "$(as_agent "$1" "$(bash_input "$REPO" "$2" "${3:-default}")")"
+}
+
+# edits <who> <tool> <path> [mode]: the ship gate on an edit call; who is `main` or a subagent type.
+edits() {
+  local input
+  input=$(edit_input "$REPO" "$2" "$3")
+  if [[ $1 != main ]]; then
+    input=$(as_agent "$1" "$input")
+  fi
+  run_hook claude-ship-gate "$input"
+}
+
+@test "ship gate: on a slice branch only the maker moves the work, with its trailer" {
+  local maker='--trailer "ShipIt-Made-By: shipit:maker"' who command
+  by shipit:maker "git commit -m x $maker"
+  [ -z "$output" ]
+  by shipit:maker "git commit -m x --trailer=\"ShipIt-Made-By: shipit:maker\""
+  [ -z "$output" ]
+  by shipit:maker "git rebase main"
+  [ -z "$output" ]
+  for command in 'git commit -m x' 'git commit -m x --trailer "ShipIt-Made-By: owner"' \
+    "git -c a=b commit -m x $maker" "env git commit -m x $maker" "nix develop -c git commit -m x $maker" \
+    "sh -c 'git commit -m x $maker'" "git commit -m \"\$(cat m)\" $maker"; do
+    by shipit:maker "$command"
+    [ "$(decision)" = deny ]
+    [[ $(reason) == 'ShipIt: a maker commits with one plain command that carries its trailer: git commit -m "<message>" --trailer "ShipIt-Made-By: shipit:maker".'* ]]
+  done
+  for who in shipit:slice shipit:work-reviewer; do
+    for command in "git commit -m x $maker" 'git cherry-pick X' 'git reset --hard X' 'git revert X' \
+      'git merge X' 'git rebase main' 'git am p.patch' 'git pull'; do
+      by "$who" "$command"
+      [ "$(decision)" = deny ]
+      [[ $(reason) == "ShipIt: on a slice branch only shipit:maker commits or moves the work, so that a receipt names who made it. Start shipit:maker for this change."* ]]
+    done
+  done
+  by shipit:slice 'git log --grep commit'
+  [ -z "$output" ]
+  gate 'git commit -m x --trailer "ShipIt-Made-By: owner"' default
+  [ "$(decision)" = ask ]
+  [[ $(reason) == 'ShipIt: only shipit:maker changes a slice'"'"'s work. Answer yes only if you, the owner, make this change yourself; commit it with --trailer "ShipIt-Made-By: owner".' ]]
+  gate 'git commit -m x --trailer "ShipIt-Made-By: owner"' bypassPermissions
+  [ "$(decision)" = deny ]
+  gate "git commit -m x $maker" default
+  [ "$(decision)" = deny ]
+  [[ $(reason) == "ShipIt: only shipit:maker may write its own trailer; the main session is not the maker." ]]
+  gate 'git commit -m x' default
+  [ "$(decision)" = ask ]
+  gate 'git commit -m "$(cat m)"' default
+  [ "$(decision)" = ask ]
+  gate 'echo git commit' default
+  [ -z "$output" ]
+  # a folder of its own: the main copy is on main, the slice is a worktree
+  git checkout -q main
+  git worktree add -q -b slice/v1/w "$BATS_TEST_TMPDIR/wt"
+  gate "git -C $BATS_TEST_TMPDIR/wt commit -m x" default
+  [ "$(decision)" = ask ]
+  gate "cd $BATS_TEST_TMPDIR/wt && git commit -m x" default
+  [ "$(decision)" = ask ]
+  by shipit:slice "git -C $BATS_TEST_TMPDIR/wt reset --hard X"
+  [ "$(decision)" = deny ]
+  # off a slice branch there is no author answer
+  git checkout -q -b adopt/setup
+  for who in main shipit:slice shipit:maker; do
+    for command in 'git commit -m x' 'git rebase main' "env git commit -m x"; do
+      if [[ $who == main ]]; then gate "$command" default; else by "$who" "$command"; fi
+      [ -z "$output" ]
+    done
+  done
+  git checkout -q main
+  gate 'git commit -m x' default
+  [ -z "$output" ]
+}
+
+@test "ship gate: on a slice branch only the maker edits what git would commit" {
+  local wt="$BATS_TEST_TMPDIR/wt" tool
+  git checkout -q main
+  printf '.shipit/td/\n.shipit/drive/\nnotes/\ntarget/\n*.lock\n' >.gitignore
+  printf 'echo hi\n' >greet.sh
+  printf 'x\n' >x.lock
+  git add .gitignore greet.sh
+  git add -f x.lock
+  git commit -q -m "files"
+  git worktree add -q -b slice/v1/w "$wt"
+  edits main Edit "$wt/greet.sh"
+  [ "$(decision)" = ask ]
+  [[ $(reason) == 'ShipIt: only shipit:maker changes a slice'"'"'s work. Answer yes only if you, the owner, make this change yourself; commit it with --trailer "ShipIt-Made-By: owner".' ]]
+  edits shipit:slice Edit "$wt/greet.sh"
+  [ "$(decision)" = deny ]
+  [[ $(reason) == "ShipIt: on a slice branch only shipit:maker edits the work (a file git would commit), so that a receipt names who made it. Start shipit:maker for this change." ]]
+  edits shipit:maker Edit "$wt/greet.sh"
+  [ -z "$output" ]
+  for tool in Edit Write NotebookEdit; do
+    edits shipit:slice "$tool" "$wt/greet.sh"
+    [ "$(decision)" = deny ]
+  done
+  edits main Write "$wt/.shipit/td/alpha/x.md"
+  [ -z "$output" ]
+  edits shipit:slice Write "$wt/notes/x.md"
+  [ -z "$output" ]
+  edits shipit:slice Write "$wt/target/x"
+  [ -z "$output" ]
+  edits main Edit "$wt/x.lock"
+  [ "$(decision)" = ask ]
+  edits shipit:slice Edit "$wt/x.lock"
+  [ "$(decision)" = deny ]
+  edits main Write "$wt/new/folder/f.txt"
+  [ "$(decision)" = ask ]
+  edits shipit:slice Write "$BATS_TEST_TMPDIR/outside.txt"
+  [ -z "$output" ]
+  edits shipit:slice Edit "$REPO/greet.sh"
+  [ -z "$output" ]
+}
+
+@test "ship gate: drafts and test-drive folders are never the work, even before their .gitignore exists" {
+  [ ! -e "$REPO/.gitignore" ]
+  local path
+  for path in .shipit/td/alpha/.gitignore .shipit/td/alpha/build-plan.md .shipit/drive/alpha/.gitignore .shipit/drive/alpha/report.md; do
+    edits shipit:slice Write "$REPO/$path"
+    [ -z "$output" ]
+    edits main Write "$REPO/$path"
+    [ -z "$output" ]
+  done
+  edits shipit:slice Write "$REPO/.shipit/wt/x/.gitignore"
+  [ "$(decision)" = deny ]
+  edits shipit:slice Write "$REPO/.shipit/coverage/v1/x.toml"
+  [ "$(decision)" = deny ]
+}
+
+@test "ship gate: a branch move on a slice branch is a move of the work" {
+  local command who
+  for command in 'git checkout -B slice/v1/x tmp' 'git switch -C slice/v1/x tmp' 'git switch --force-create slice/v1/x tmp' \
+    'git branch -f slice/v1/x tmp' 'git update-ref refs/heads/slice/v1/x tmp' 'env git checkout -B slice/v1/x tmp'; do
+    by shipit:slice "$command"
+    [ "$(decision)" = deny ]
+    [[ $(reason) == "ShipIt: on a slice branch only shipit:maker commits or moves the work"* ]]
+    gate "$command" default
+    [ "$(decision)" = ask ]
+    [[ $(reason) == "ShipIt: only shipit:maker changes a slice's work"* ]]
+  done
+  by shipit:maker 'git checkout -B slice/v1/x tmp'
+  [ -z "$output" ]
+  for command in 'git checkout -b tmp' 'git checkout tmp' 'git switch tmp' 'git switch -c tmp' 'git branch tmp' 'git branch -d tmp'; do
+    for who in main shipit:slice; do
+      if [[ $who == main ]]; then gate "$command" default; else by "$who" "$command"; fi
+      [[ $output != *"only shipit:maker"* ]]
+    done
+  done
+}
+
+@test "ship gate: the maker's trailer is refused to a non-maker on any branch of a project" {
+  local maker='--trailer "ShipIt-Made-By: shipit:maker"' branch
+  for branch in tmp main adopt/setup slice/v1/x; do
+    git checkout -q -B "$branch"
+    gate "git commit -m x $maker" default
+    [ "$(decision)" = deny ]
+    [ "$(reason)" = "ShipIt: only shipit:maker may write its own trailer; the main session is not the maker." ]
+    by shipit:slice "git commit -m x $maker"
+    [ "$(decision)" = deny ]
+    [[ $(reason) == "ShipIt: on a slice branch only shipit:maker commits or moves the work"* ]]
+    by shipit:maker "git commit -m x $maker"
+    [ -z "$output" ]
+  done
+  git checkout -q -B tmp
+  gate 'git commit -m x --trailer "ShipIt-Made-By: owner"' default
+  [ -z "$output" ]
+  # every trailer counts, not the last only
+  git checkout -q slice/v1/x
+  gate "git commit -m x $maker --trailer \"ShipIt-Made-By: owner\"" default
+  [ "$(decision)" = deny ]
+  [[ $(reason) == "ShipIt: only shipit:maker may write its own trailer"* ]]
+  gate "git commit -m x --trailer \"ShipIt-Made-By: owner\" $maker" default
+  [ "$(decision)" = deny ]
+  by shipit:maker "git commit -m x $maker --trailer \"ShipIt-Made-By: owner\""
+  [ "$(decision)" = deny ]
+  [[ $(reason) == "ShipIt: a maker commits with one plain command"* ]]
+  by shipit:maker "git commit -m x --trailer \"ShipIt-Made-By: owner\" $maker"
+  [ "$(decision)" = deny ]
+}
+
+@test "ship gate: when the author rule and the ship gate both answer, the answer carries both texts" {
+  local owner='--trailer "ShipIt-Made-By: owner"' push='git push origin HEAD:main'
+  gate "git commit -m x $owner && $push" default
+  [ "$(decision)" = ask ]
+  [[ $(reason) == *"only shipit:maker changes a slice's work"* ]]
+  [[ $(reason) == *"only the owner ships. This command "*"pushes to the base branch main"* ]]
+  gate "git commit -m x $owner && $push" bypassPermissions
+  [ "$(decision)" = deny ]
+  [[ $(reason) == *"only shipit:maker changes a slice's work"*"pushes to the base branch main"* ]]
+  by shipit:slice "git commit -m x && $push"
+  [ "$(decision)" = deny ]
+  [[ $(reason) == *"only shipit:maker commits or moves the work"*"pushes to the base branch main"* ]]
+  by shipit:maker "$push"
+  [ "$(decision)" = ask ]
+  [[ $(reason) == *"pushes to the base branch main"* ]]
+}
+
+@test "ship gate: a commit made on another branch cannot be moved onto a slice branch, however its message is given" {
+  local msg='ShipIt-Made-By: shipit:maker' command
+  git checkout -q -b tmp
+  printf 'subject\n\n%s\n' "$msg" >"$BATS_TEST_TMPDIR/msg.txt"
+  # the maker's trailer as message text, or a message that is not read
+  for command in "git commit -am lead -m '$msg'" "git commit -am lead --message='$msg'" "git commit -F $BATS_TEST_TMPDIR/msg.txt" \
+    "git commit -t $BATS_TEST_TMPDIR/msg.txt" "git commit --file $BATS_TEST_TMPDIR/msg.txt" "git commit -C HEAD" "git commit --reuse-message=HEAD"; do
+    by shipit:slice "$command"
+    [ "$(decision)" = deny ]
+    gate "$command" default
+    [ -n "$output" ]
+    [[ $(reason) == *"ShipIt: "* ]]
+    gate "$command" bypassPermissions
+    [ "$(decision)" = deny ]
+  done
+  gate "git commit -m x -m 'ShipIt-Made-By: owner'" default
+  [ -z "$output" ]
+  # a branch pointed at, created or reset as a slice branch is a move of that slice's work, from any branch
+  for command in 'git checkout -B slice/v1/x tmp' 'git checkout -fB slice/v1/x tmp' 'git checkout -b slice/v1/new' \
+    'git switch -C slice/v1/x tmp' 'git switch -c slice/v1/new' 'git switch --force-create slice/v1/x tmp' \
+    'git branch -f slice/v1/x tmp' 'git branch -M slice/v1/x' 'git branch slice/v1/new tmp' \
+    "git worktree add -B slice/v1/x $BATS_TEST_TMPDIR/w tmp" "git worktree add -b slice/v1/new $BATS_TEST_TMPDIR/w" \
+    'git update-ref refs/heads/slice/v1/x HEAD' 'env git checkout -B slice/v1/x tmp'; do
+    by shipit:slice "$command"
+    [ "$(decision)" = deny ]
+    [[ $(reason) == "ShipIt: on a slice branch only shipit:maker commits or moves the work"* ]]
+    gate "$command" default
+    [ "$(decision)" = ask ]
+    [[ $(reason) == "ShipIt: only shipit:maker changes a slice's work"* ]]
+  done
+  by shipit:maker 'git checkout -B slice/v1/x tmp'
+  [ -z "$output" ]
+  # what only reads, switches to or deletes a slice branch, or starts from it, is not a move
+  for command in 'git checkout slice/v1/x' 'git switch slice/v1/x' 'git checkout -b other slice/v1/x' 'git switch -c other slice/v1/x' \
+    'git branch --list slice/v1/x' 'git branch -d slice/v1/x' "git worktree add $BATS_TEST_TMPDIR/w slice/v1/x" 'git branch other slice/v1/x'; do
+    by shipit:slice "$command"
+    [[ $output != *"only shipit:maker"* ]]
+  done
+}
+
+@test "ship gate: a path with .. is judged where it leads" {
+  edits shipit:slice Write "$REPO/.shipit/drive/../../greet.sh"
+  [ "$(decision)" = deny ]
+  edits shipit:slice Write "$REPO/.shipit/td/../drive/../x.md"
+  [ "$(decision)" = deny ]
+  edits shipit:slice Write "$REPO/src/../.shipit/td/a/draft.md"
+  [ -z "$output" ]
 }

@@ -82,7 +82,7 @@ READY="owner: ship it, then shipit log alpha shipped --merge <merge commit> --go
   make_slice_repo
   ready alpha
   printf 'more\n' >>alpha-1
-  git commit -q -am "more work"
+  git commit -q -am "more work" --trailer "ShipIt-Made-By: shipit:maker"
   st
   [[ $(the_line alpha) == "demo/alpha: made. Next: run shipit check on slice/demo/alpha"* ]]
   check_here
@@ -136,7 +136,7 @@ READY="owner: ship it, then shipit log alpha shipped --merge <merge commit> --go
   [[ $(the_line alpha) == "demo/alpha: checked. Next: maker: fix round 1 of 2: fix informed-review F1 or log them as known issues"* ]]
   [[ $(the_line alpha) == *"Open: must fix 1."* ]]
   printf 'fixed\n' >>alpha-1
-  git commit -q -am "a fix"
+  git commit -q -am "a fix" --trailer "ShipIt-Made-By: shipit:maker"
   check_here
   "$SHIPIT_BIN" receipt informed-review alpha --author sonnet:high --by opus:high --result rework \
     --finding "issue (blocking): second"
@@ -261,8 +261,11 @@ READY="owner: ship it, then shipit log alpha shipped --merge <merge commit> --go
   plan_ready alpha
   make_work slice/demo/alpha 1
   check_here
-  "$SHIPIT_BIN" receipt informed-review alpha --author opus:high --by fable:high --result approve
-  "$SHIPIT_BIN" receipt second-opinion alpha --author fable:high --by fable:high --result approve --fresh
+  # receipts as the tool wrote them before it refused an author that is not the maker
+  "$SHIPIT_BIN" receipt informed-review alpha --author sonnet:high --by fable:high --result approve
+  "$SHIPIT_BIN" receipt second-opinion alpha --author sonnet:high --by fable:high --result approve
+  old_author informed-review opus
+  old_author second-opinion fable fresh
   st
   [[ $(the_line alpha) == *"Claims: informed-review author is not the setup's maker; second-opinion author is not the setup's maker; second-opinion used --fresh."* ]]
   st --json

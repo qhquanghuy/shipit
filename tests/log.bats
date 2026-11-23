@@ -56,7 +56,7 @@ a_review() {
   [ "$status" -eq 1 ]
   [ "$stderr" = "shipit: beta has no informed-review receipt for its current version" ]
   printf 'more\n' >>beta-1
-  git commit -q -am "a new commit"
+  git commit -q -am "a new commit" --trailer "ShipIt-Made-By: shipit:maker"
   check_here
   lg beta known-issue --kind second-opinion --finding F3 --reason r --by sonnet:high
   [ "$status" -eq 1 ]
@@ -145,7 +145,7 @@ a_review() {
   git commit -q -m "a shared file"
   git checkout -q -b slice/demo/beta
   sed -i '5s/.*/five/' shared.txt
-  git commit -q -am "change line five"
+  git commit -q -am "change line five" --trailer "ShipIt-Made-By: shipit:maker"
   check_here
   "$SHIPIT_BIN" receipt informed-review beta --author sonnet:high --by opus:high --result approve
   git checkout -q main

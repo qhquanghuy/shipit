@@ -191,7 +191,7 @@ PLAN=(--author opus:high --by fable:high --result approve)
   mkdir sub
   printf 'x\n' >sub/é.txt
   git add -A
-  git commit -q -m "work"
+  git commit -q -m "work" --trailer "ShipIt-Made-By: shipit:maker"
   check_here
   rec second-opinion beta --author sonnet:high --by opus:high --result approve
   [ "$status" -eq 0 ]
@@ -215,17 +215,17 @@ PLAN=(--author opus:high --by fable:high --result approve)
   make_work slice/demo/beta 1
   printf '\000\001\002' >bin.dat
   git add bin.dat
-  git commit -q -m "a binary file"
+  git commit -q -m "a binary file" --trailer "ShipIt-Made-By: shipit:maker"
   check_here
   rec second-opinion beta --author sonnet:high --by opus:high --result approve
   [ "$status" -eq 0 ]
   printf '\000\001\003' >bin.dat
-  git commit -q -am "another binary content"
+  git commit -q -am "another binary content" --trailer "ShipIt-Made-By: shipit:maker"
   check_here
   rec second-opinion beta --author sonnet:high --by opus:high --result approve
   [ "$status" -eq 0 ]
   printf 'text\n' >>beta-1
-  git commit -q -am "a text change"
+  git commit -q -am "a text change" --trailer "ShipIt-Made-By: shipit:maker"
   check_here
   rec second-opinion beta --author sonnet:high --by opus:high --result approve
   [ "$status" -eq 0 ]
@@ -240,7 +240,7 @@ PLAN=(--author opus:high --by fable:high --result approve)
   [ "$stderr" = "shipit: no check receipt for this content: run shipit check on slice/demo/beta" ]
   git checkout -q main
   git checkout -q -b slice/demo/gamma
-  git commit -q --allow-empty -m "nothing"
+  git commit -q --allow-empty -m "nothing" --trailer "ShipIt-Made-By: shipit:maker"
   check_here
   rec second-opinion gamma --author sonnet:high --by opus:high --result approve
   [ "$status" -eq 1 ]
@@ -275,7 +275,7 @@ PLAN=(--author opus:high --by fable:high --result approve)
   first=$(git rev-parse HEAD)
   check_here
   printf 'more\n' >>beta-1
-  git commit -q -am "more work"
+  git commit -q -am "more work" --trailer "ShipIt-Made-By: shipit:maker"
   check_here
   rec second-opinion beta --author sonnet:high --by opus:high --result approve --commit "$first"
   [ "$status" -eq 0 ]
@@ -319,4 +319,100 @@ PLAN=(--author opus:high --by fable:high --result approve)
   [ "$status" -eq 1 ]
   [ "$stderr" = "shipit: $other is not on slice/demo/beta" ]
   [ ! -e "$(store)/receipts/review" ]
+}
+
+@test "receipt: the author of the work is the setup's maker" {
+  make_slice_repo
+  make_work slice/demo/beta 1
+  check_here
+  rec second-opinion beta --author opus:high --by fable:high --result approve
+  [ "$status" -eq 1 ]
+  [[ $stderr == *"shipit: --author opus:high is not the setup's maker (tier 2, effort high): the work is the maker's, so its review names the setup's maker" ]]
+  [ ! -e "$(store)/receipts/review" ]
+  rec second-opinion beta --author sonnet:high --by opus:high --result approve
+  [ "$status" -eq 0 ]
+  write_build_plan beta "the plan"
+  rec plan-review beta "${PLAN[@]}"
+  [ "$status" -eq 0 ]
+}
+
+@test "receipt: a commit of the work without a trailer is refused, for a slice started under the rule only" {
+  local short
+  make_slice_repo
+  # (a) a slice started by this tool: its first commit has no trailer
+  plan_ready alpha
+  run "$SHIPIT_BIN" start alpha
+  [ "$status" -eq 0 ]
+  git checkout -q slice/demo/alpha
+  plain_commit a1
+  short=$(git rev-parse HEAD | cut -c1-12)
+  check_here
+  rec informed-review alpha --author sonnet:high --by opus:high --result approve
+  [ "$status" -eq 1 ]
+  [[ $stderr == *"shipit: commit $short on slice/demo/alpha has no \"ShipIt-Made-By: shipit:maker\" or \"ShipIt-Made-By: owner\" trailer: only shipit:maker, or the owner, makes the work of a slice (docs/claude-code.md)" ]]
+  [ ! -e "$(store)/receipts/review" ]
+  # (d) a child does not see its parent's commits
+  logged_start beta rule
+  git checkout -q -b slice/demo/beta slice/demo/alpha
+  printf 'b\n' >b1
+  git add b1
+  git commit -q -m "work on beta" --trailer "ShipIt-Made-By: shipit:maker"
+  check_here
+  rec informed-review beta --author sonnet:high --by opus:high --result approve
+  [ "$status" -eq 0 ]
+  [[ $stderr != *"started before the author rule"* ]]
+  # (e) a child branch hides nothing of its parent
+  git checkout -q slice/demo/alpha
+  rec informed-review alpha --author sonnet:high --by opus:high --result approve
+  [ "$status" -eq 1 ]
+  [[ $stderr == *"commit $short on slice/demo/alpha has no"* ]]
+  # (b) the owner's trailer counts
+  git commit -q --amend --no-edit --trailer "ShipIt-Made-By: owner"
+  check_here
+  rec informed-review alpha --author sonnet:high --by opus:high --result approve
+  [ "$status" -eq 0 ]
+  # (f) a merge of main into the slice needs no trailer
+  git checkout -q main
+  plain_commit m1
+  git checkout -q slice/demo/alpha
+  git merge -q --no-ff -m "merge main" main
+  check_here
+  rec second-opinion alpha --author sonnet:high --by opus:high --result approve
+  [ "$status" -eq 0 ]
+  # (c) no author_rule in the start entry: not checked, also after a rebase
+  logged_start gamma
+  git checkout -q -b slice/demo/gamma main
+  plain_commit g1
+  git checkout -q main
+  plain_commit m2
+  git checkout -q slice/demo/gamma
+  git rebase -q main
+  check_here
+  rec informed-review gamma --author sonnet:high --by opus:high --result approve
+  [ "$status" -eq 0 ]
+  [[ $stderr == *"shipit: gamma was started before the author rule: the trailers of its commits are not checked"* ]]
+}
+
+@test "receipt: a slice with no start entry is not checked either" {
+  make_slice_repo
+  git checkout -q -b slice/demo/alpha main
+  plain_commit a1
+  check_here
+  rec informed-review alpha --author sonnet:high --by opus:high --result approve
+  [ "$status" -eq 0 ]
+  [[ $stderr == *"shipit: alpha was started before the author rule: the trailers of its commits are not checked"* ]]
+}
+
+@test "receipt: a slice branch forced onto an untrailered commit is refused" {
+  make_slice_repo
+  plan_ready alpha
+  run "$SHIPIT_BIN" start alpha
+  [ "$status" -eq 0 ]
+  git checkout -q -b tmp main
+  plain_commit forged
+  git checkout -q -B slice/demo/alpha tmp
+  check_here
+  rec informed-review alpha --author sonnet:high --by opus:high --result approve
+  [ "$status" -eq 1 ]
+  [[ $stderr == *"has no \"ShipIt-Made-By: shipit:maker\" or \"ShipIt-Made-By: owner\" trailer"* ]]
 }

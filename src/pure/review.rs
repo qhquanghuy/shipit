@@ -48,7 +48,7 @@ pub(crate) fn tool() -> String {
 }
 
 // A file for a plan; the branch, commit, tree and merge base for work.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(untagged)]
 pub(crate) enum Subject {
     File {

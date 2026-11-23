@@ -32,25 +32,21 @@ Never: write code, commit, push, or begin a slice (`shipit-slice` does that, aft
 6. Start `shipit:plan-reviewer` with the model and effort of its rank: the top tier, at the planner's effort. Author at the top tier: same tier at a higher effort, up to `agents.effort_cap`; at the cap too, a fresh agent at the same rank, recorded with `--fresh`. A model that is unavailable: its `stand_in`, written `<model>:<effort>@<tier>` in `--by`; `shipit receipt` refuses a stand-in that equals the author, and that is the outcome **no reviewer above the planner**. It fills `plan-review` (`shipit template plan-review`) and ends its report with Verified, Inferred and Unverifiable.
 7. Fix rounds, at most `agents.max_fix_rounds`. A roadmap already in the store is never edited: each change is a new version file, drafted and checked as in steps 3 and 4. The reviewed draft stays in the drafts folder until the owner approves it (step 8).
 8. Second decision point: write it as a `decision-point` to approve the roadmap, with a ```` ```example ```` block of the waves, and check it with `shipit validate decision-point <file>`. Its What names the roadmap version to approve (`roadmap.vN.md`) and what changed for the owner: the slices, their order and the waves. It does not list the reviewer's findings. Its Recommendation names the slices of wave 1. Once the owner approves, copy the draft in with one plain command, `mkdir -p <git common dir>/shipit/goals/<goal> && cp <draft> <git common dir>/shipit/goals/<goal>/roadmap.v<N>.md` (it asks; in a headless run hand the owner that command), then record `shipit receipt plan-review roadmap --goal <goal> --author <author> --by <model>:<effort> --result <result>`. Write `--by` as `<model>:<effort>@<tier>` only when a stand-in reviewed (step 6); otherwise plain `<model>:<effort>`.
-9. Third decision point: write it as a `decision-point` on how the slices run, with a ```` ```example ```` block like the one under How slices run, and check it with `shipit validate decision-point <file>`. It lists the four ways, says which the lead recommends and why. After the answer the lead hands each slice of wave 1 to `shipit-slice`, in the way the owner chose; `shipit-slice` writes the build plan first and begins the slice only after it is approved.
+9. Third decision point: write it as a `decision-point` on how the slices run, with a ```` ```example ```` block like the one under How slices run, and check it with `shipit validate decision-point <file>`. It lists the ways, says which the lead recommends and why. After the answer the lead hands each slice of wave 1 to `shipit-slice`, in the way the owner chose; `shipit-slice` writes the build plan first and begins the slice only after it is approved.
 ## How slices run
-The lead recommends one way from the number and size of the slices.
+Slices run one way, and the decision point says so and names the waves.
+
+The way is one session per slice, opened in the slice's worktree. `shipit:maker` works only in a working copy on a slice branch, and the Agent tool cannot start an agent in another folder, so no session in the main working copy can make a slice (`docs/claude-code.md`, The author rule). The slice's worktree comes from `shipit-slice` step 2, after the build plan is approved: the owner opens a new session in the worktree then.
 
 | Way | Who runs `shipit-slice` | Recommended when |
 |---|---|---|
-| one session per slice | a slice session the owner opens | the slices are large, or the owner wants to watch and answer each one |
-| lead fan-out | the lead, slice after slice, in each slice's worktree | two or three small slices, so the lead keeps them in its own context |
-| one agent per slice | `shipit:slice`, started by the lead for each slice | several mid-size slices at once, few owner questions; the cap must hold the slice agent and its two reviewers: 3 agents each (`agents.parallel.agents`) |
-| the `Workflow` tool | a script | many slices of one fixed shape; only on the owner's explicit opt-in |
+| one session per slice | a slice session the owner opens in the slice's worktree | every slice: the owner watches and answers each one |
 
 Example for the decision point, with the real waves:
 
 ```example
 Wave 1: alpha, beta (parallel), then gamma.
 1. one session per slice: you open 2 sessions now, 1 later
-2. lead fan-out: I run them one by one here
-3. one agent per slice (recommended: 3 mid-size slices; raise agents.parallel.agents to 6, or run them in turn)
-4. the `Workflow` tool: your opt-in
 ```
 ## Store files
 - The store is `<git common dir>/shipit`. Find it with `git rev-parse --git-common-dir`, run alone. A skill never spells the git folder itself.

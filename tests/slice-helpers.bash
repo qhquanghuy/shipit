@@ -44,7 +44,7 @@ make_work() {
     printf '%s\n' "$1 $i" >"${1##*/}-$i"
   done
   git add -A
-  git commit -q -m "work on $1"
+  git commit -q -m "work on $1" --trailer "ShipIt-Made-By: shipit:maker"
 }
 
 # rec <args>: run shipit receipt, stdout in $output, stderr in $stderr.
@@ -124,7 +124,7 @@ commit_map() {
   mkdir -p ".shipit/coverage/$1"
   printf '%s\n' "$3" >".shipit/coverage/$1/$2.toml"
   git add .shipit
-  git commit -q -m "a map"
+  git commit -q -m "a map" --trailer "ShipIt-Made-By: shipit:maker"
 }
 
 # fake_gh: a gh first on PATH. It logs `issue create <title>` for each call to $GH_LOG and prints
@@ -146,4 +146,41 @@ echo "https://example.invalid/issues/$n"
 GH
   chmod +x "$bin/gh"
   PATH="$bin:$PATH"
+}
+
+# logged_start <slice> [rule]: a started line in the goal's logbook; with `rule` as `shipit start`
+# writes it from the author rule on, without it as the older tool wrote it.
+logged_start() {
+  local book rule=''
+  book="$(store)/goals/demo/logbook.jsonl"
+  mkdir -p "$(dirname "$book")"
+  [[ ${2:-} == rule ]] && rule=',"author_rule":true'
+  printf '{"slice":"%s","event":"started","branch":"slice/demo/%s"%s,"time":"2026-11-21T10:00:00Z","tool":"shipit 0.1.0"}\n' \
+    "$1" "$1" "$rule" >>"$book"
+}
+
+# plain_commit <file>: a commit of one new file with no trailer.
+plain_commit() {
+  printf '%s\n' "$1" >"$1"
+  git add "$1"
+  git commit -q -m "plain $1"
+}
+
+# old_author <kind> <model> [fresh]: the receipt and its logbook line of the last receipt of that
+# kind, as the tool wrote them before the author of the work had to be the setup's maker: the
+# author is <model>:high, not the maker, and the rank is "fresh" when asked.
+old_author() {
+  local file rank
+  file=$(find "$(store)/receipts" -name "$1.json" | head -n 1)
+  rank=$(jq -r .rank "$file")
+  [[ ${3:-} == fresh ]] && rank=fresh
+  jq --arg m "$2" --arg r "$rank" \
+    '.author = {model: $m, effort: "high", tier: ({haiku: 1, sonnet: 2, opus: 3, fable: 4}[$m]), stand_in: false} | .author_is_maker = false | .rank = $r' \
+    "$file" >"$file.new"
+  mv "$file.new" "$file"
+  local book
+  book="$(store)/goals/demo/logbook.jsonl"
+  jq -c --arg k "$1" --arg m "$2" --arg r "$rank" \
+    'if .kind == $k then .author = ($m + ":high") | .rank = $r else . end' "$book" >"$book.new"
+  mv "$book.new" "$book"
 }

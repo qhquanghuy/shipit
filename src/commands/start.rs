@@ -143,6 +143,7 @@ pub(crate) fn run(
     create_branch(&git, &branch, &base_ref)?;
     let entry = Entry::Started {
         branch: branch.clone(),
+        author_rule: true,
     };
     let text = line(&entry, &slice, &now_utc(), &tool()).map_err(Failure::usage)?;
     append_line(&logbook_path(&store, &goal), &text)?;
