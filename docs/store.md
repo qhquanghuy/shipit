@@ -84,6 +84,33 @@ The refusals, each after `shipit: `:
 - `<level> is a symbolic link; the store holds no links`
 - `<path> exists; a store file is never replaced`
 
+## Store show
+
+`shipit store show <kind> --goal <name> [--slice <name>] [--round <n>]` prints a store file on stdout,
+byte for byte, from any working copy of the project, because Claude Code refuses to read a file under the git
+folder, and ShipIt reads it itself. The kinds are the six of Store put at the same places and with the same
+flags, and two more:
+
+| kind | flags | file |
+|---|---|---|
+| `goal` | none | the newest `goals/<goal>/goal.vN.md` |
+| `roadmap` | none | the newest `goals/<goal>/roadmap.vN.md` |
+
+Rules:
+
+- It reads the one file and judges nothing: no roadmap is read, and the slice need not be one of the goal's.
+- Every level from `<git common dir>/shipit` down to the file is a real folder, and the file is a regular file, never a link; nothing is made.
+
+Exit 0 shown, 1 the file is not in the store, 2 usage, goal or store error, or a link on the way.
+
+The refusals, each after `shipit: `:
+
+- `shipit store show takes goal, roadmap, build-plan, plan-review, explanation, informed-review, second-opinion or review, not <kind>`
+- `<kind> takes no --slice or --round` (`goal` and `roadmap`)
+- `<kind> needs --slice <name>`, `--round is only for explanation, informed-review, second-opinion and review`, `<kind> needs --round <n>`, `--slice <text>: <rule>`, `--round <text>: a number from 1 up, with no sign and no leading zero`, as for Store put
+- `<path> is not in the store`
+- `<level> is a symbolic link; the store holds no links`
+
 ## Trust
 
 A receipt proves only that this machine ran the checks. Receipts are trusted locally and nowhere

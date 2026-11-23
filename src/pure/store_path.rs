@@ -81,6 +81,34 @@ pub(crate) fn place(kind: &str, slice: Option<&str>, round: Option<&str>) -> Res
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Shown {
+    Goal,
+    Roadmap,
+    Placed(Place),
+}
+
+// The kind as typed, then the values of --slice and --round when given. A goal and a roadmap are
+// shown, though never put; the other kinds are placed as a put places them.
+pub(crate) fn shown(kind: &str, slice: Option<&str>, round: Option<&str>) -> Result<Shown, String> {
+    let whole = match kind {
+        "goal" => Some(Shown::Goal),
+        "roadmap" => Some(Shown::Roadmap),
+        _ => None,
+    };
+    let known = REVIEW_KINDS.contains(&kind) || matches!(kind, "build-plan" | "plan-review");
+    match whole {
+        Some(_) if slice.is_some() || round.is_some() => {
+            Err(format!("{kind} takes no --slice or --round"))
+        }
+        Some(found) => Ok(found),
+        None if known => place(kind, slice, round).map(Shown::Placed),
+        None => Err(format!(
+            "shipit store show takes goal, roadmap, build-plan, plan-review, explanation, informed-review, second-opinion or review, not {kind}"
+        )),
+    }
+}
+
 impl Place {
     pub(crate) const fn slice(&self) -> &SliceName {
         match self {
@@ -159,6 +187,37 @@ mod tests {
             prop_assert_eq!(found.parts(), expected);
             prop_assert_eq!(found.slice().to_string(), slice);
             prop_assert_eq!(found.replaceable(), !is_review);
+        }
+
+        #[test]
+        fn a_shown_kind_names_its_store_file(
+            kind in prop_oneof![
+                prop::sample::select(KINDS.to_vec()),
+                Just("goal"), Just("roadmap"), Just("other"),
+            ],
+            slice in prop::option::of("[a-z][a-z0-9-]{0,8}"),
+            round in prop::option::of(1_u32..),
+        ) {
+            prop_assume!(slice.as_deref() != Some("roadmap"));
+            let round = round.map(|round| round.to_string());
+            let found = shown(kind, slice.as_deref(), round.as_deref());
+            let flagged = slice.is_some() || round.is_some();
+            match kind {
+                "goal" | "roadmap" if flagged => prop_assert_eq!(
+                    found,
+                    Err(format!("{kind} takes no --slice or --round"))
+                ),
+                "goal" => prop_assert_eq!(found, Ok(Shown::Goal)),
+                "roadmap" => prop_assert_eq!(found, Ok(Shown::Roadmap)),
+                "other" => prop_assert_eq!(
+                    found,
+                    Err("shipit store show takes goal, roadmap, build-plan, plan-review, explanation, informed-review, second-opinion or review, not other".to_owned())
+                ),
+                _ => prop_assert_eq!(
+                    found,
+                    place(kind, slice.as_deref(), round.as_deref()).map(Shown::Placed)
+                ),
+            }
         }
 
         #[test]
