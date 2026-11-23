@@ -593,35 +593,29 @@ check_start_order() {
   run check_start_order "$BATS_TEST_TMPDIR/copy4"
   [ "$status" -eq 1 ]
   [[ $output == *"shipit-roadmap: a line names shipit start"* ]]
-}
-
-@test "skills: shipit start is named nowhere in shipit-slice outside the numbered step after the build plan review" {
-  copy_plugin "$BATS_TEST_TMPDIR/copy"
-  sed -i '/^- \*\*blocked\*\*/s/^- \*\*blocked\*\*: /- **blocked**: run `shipit start <slice>` first. /' "$BATS_TEST_TMPDIR/copy/skills/shipit-slice/SKILL.md"
-  run check_start_order "$BATS_TEST_TMPDIR/copy"
+  copy_plugin "$BATS_TEST_TMPDIR/copy5"
+  sed -i '/^- \*\*blocked\*\*/s/^- \*\*blocked\*\*: /- **blocked**: run `shipit start <slice>` first. /' "$BATS_TEST_TMPDIR/copy5/skills/shipit-slice/SKILL.md"
+  run check_start_order "$BATS_TEST_TMPDIR/copy5"
   [ "$status" -eq 1 ]
   [[ $output == *"not a numbered step names shipit start"* ]]
-  copy_plugin "$BATS_TEST_TMPDIR/copy2"
-  sed -i '/^Writes the build plan/s/runs `shipit validate`/runs `shipit start`, `shipit validate`/' "$BATS_TEST_TMPDIR/copy2/skills/shipit-slice/SKILL.md"
-  run check_start_order "$BATS_TEST_TMPDIR/copy2"
+  copy_plugin "$BATS_TEST_TMPDIR/copy6"
+  sed -i '/^Writes the build plan/s/runs `shipit validate`/runs `shipit start`, `shipit validate`/' "$BATS_TEST_TMPDIR/copy6/skills/shipit-slice/SKILL.md"
+  run check_start_order "$BATS_TEST_TMPDIR/copy6"
   [ "$status" -eq 1 ]
   [[ $output == *"not a numbered step names shipit start"* ]]
-}
-
-@test "skills: shipit start in prose, or with extra spaces, is also found in shipit-slice" {
-  copy_plugin "$BATS_TEST_TMPDIR/copy"
-  sed -i '/^- \*\*blocked\*\*/s/^- \*\*blocked\*\*: /- **blocked**: run shipit start first. /' "$BATS_TEST_TMPDIR/copy/skills/shipit-slice/SKILL.md"
-  run check_start_order "$BATS_TEST_TMPDIR/copy"
+  copy_plugin "$BATS_TEST_TMPDIR/copy7"
+  sed -i '/^- \*\*blocked\*\*/s/^- \*\*blocked\*\*: /- **blocked**: run shipit start first. /' "$BATS_TEST_TMPDIR/copy7/skills/shipit-slice/SKILL.md"
+  run check_start_order "$BATS_TEST_TMPDIR/copy7"
   [ "$status" -eq 1 ]
   [[ $output == *"not a numbered step names shipit start"* ]]
-  copy_plugin "$BATS_TEST_TMPDIR/copy2"
-  sed -i '/^- \*\*blocked\*\*/s/^- \*\*blocked\*\*: /- **blocked**: run `shipit  start` first. /' "$BATS_TEST_TMPDIR/copy2/skills/shipit-slice/SKILL.md"
-  run check_start_order "$BATS_TEST_TMPDIR/copy2"
+  copy_plugin "$BATS_TEST_TMPDIR/copy8"
+  sed -i '/^- \*\*blocked\*\*/s/^- \*\*blocked\*\*: /- **blocked**: run `shipit  start` first. /' "$BATS_TEST_TMPDIR/copy8/skills/shipit-slice/SKILL.md"
+  run check_start_order "$BATS_TEST_TMPDIR/copy8"
   [ "$status" -eq 1 ]
   [[ $output == *"not a numbered step names shipit start"* ]]
-  copy_plugin "$BATS_TEST_TMPDIR/copy3"
-  sed -i 's/^Never: write code/Never: write code, run shipit start/' "$BATS_TEST_TMPDIR/copy3/skills/shipit-roadmap/SKILL.md"
-  run check_start_order "$BATS_TEST_TMPDIR/copy3"
+  copy_plugin "$BATS_TEST_TMPDIR/copy9"
+  sed -i 's/^Never: write code/Never: write code, run shipit start/' "$BATS_TEST_TMPDIR/copy9/skills/shipit-roadmap/SKILL.md"
+  run check_start_order "$BATS_TEST_TMPDIR/copy9"
   [ "$status" -eq 1 ]
   [[ $output == *"shipit-roadmap: a line names shipit start"* ]]
 }
