@@ -590,7 +590,7 @@ check_start_order() {
   [ "$status" -eq 1 ]
   [[ $output == *"shipit-roadmap: a line names shipit start"* ]]
   copy_plugin "$BATS_TEST_TMPDIR/copy4"
-  sed -i 's/^| one agent per slice | `shipit:slice`, started by the lead for each slice |/| one agent per slice | `shipit:slice`, started by the lead, which runs `shipit start` |/' "$BATS_TEST_TMPDIR/copy4/skills/shipit-roadmap/SKILL.md"
+  sed -i 's/^| one session per slice | a slice session the owner opens |/| one session per slice | a slice session the owner opens, which runs `shipit start` |/' "$BATS_TEST_TMPDIR/copy4/skills/shipit-roadmap/SKILL.md"
   run check_start_order "$BATS_TEST_TMPDIR/copy4"
   [ "$status" -eq 1 ]
   [[ $output == *"shipit-roadmap: a line names shipit start"* ]]
@@ -781,4 +781,14 @@ check_drafts_in_project() {
   grep -qF 'ShipIt-Made-By' "$SHIPIT_SRC/src/pure/made_by.rs"
   grep -qF 'shipit:maker' "$SHIPIT_SRC/src/pure/made_by.rs"
   grep -qF 'ShipIt-Made-By: owner' "$SHIPIT_SRC/skills/shipit-slice/SKILL.md"
+}
+
+@test "skills: one session per slice is the way to run slices, and the text says how that session reaches the worktree" {
+  cd "$SHIPIT_SRC"
+  run grep -rniE 'one agent per slice|lead fan-out|start your makers' README.md docs/claude-code.md docs/guide.md skills agents
+  [ "$status" -eq 1 ]
+  [ "$output" = "" ]
+  grep -qF 'the owner opens a new session in the worktree' skills/shipit-slice/SKILL.md
+  grep -qF 'the owner opens a new session in the worktree' docs/guide.md
+  grep -qF 'the owner opens a new session in the worktree' docs/claude-code.md
 }
