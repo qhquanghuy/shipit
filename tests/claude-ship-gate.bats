@@ -481,3 +481,18 @@ edits() {
   edits shipit:slice Edit "$REPO/greet.sh"
   [ -z "$output" ]
 }
+
+@test "ship gate: drafts and test-drive folders are never the work, even before their .gitignore exists" {
+  [ ! -e "$REPO/.gitignore" ]
+  local path
+  for path in .shipit/td/alpha/.gitignore .shipit/td/alpha/build-plan.md .shipit/drive/alpha/.gitignore .shipit/drive/alpha/report.md; do
+    edits shipit:slice Write "$REPO/$path"
+    [ -z "$output" ]
+    edits main Write "$REPO/$path"
+    [ -z "$output" ]
+  done
+  edits shipit:slice Write "$REPO/.shipit/wt/x/.gitignore"
+  [ "$(decision)" = deny ]
+  edits shipit:slice Write "$REPO/.shipit/coverage/v1/x.toml"
+  [ "$(decision)" = deny ]
+}
