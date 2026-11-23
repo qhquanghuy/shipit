@@ -16,14 +16,15 @@ tracks them:
   goals/<goal>/roadmap.vN.md                   the goal's roadmap, versioned the same way
   goals/<goal>/logbook.jsonl                   append-only; one per goal, each entry names its slice
   goals/<goal>/slices/<slice>/build-plan.md    one build plan per slice
+  goals/<goal>/slices/<slice>/plan-review.md   the plan review that approved the build plan
+  goals/<goal>/slices/<slice>/reviews/round-<k>/<kind>.md   one file per review of a fix round
   metrics/<goal>.toml                          kept metrics: one table per slice, numbers only
 ```
 
 `shipit check` writes `receipts/check/`; `shipit receipt` writes the review, test-drive and
 plan-review receipts; `shipit receipt`, `shipit log` and `shipit start` append to the logbook of a
 goal; `shipit coverage` writes `receipts/coverage/` and `shipit metric` writes `receipts/metric/`; `shipit complete` writes `metrics/<goal>.toml` and then
-deletes the folder `goals/<goal>/`. The goal files, the roadmaps and the build plans
-are put there by hand. Later commands add files and never change this layout. Receipts are keyed by the work and not by a goal, so they
+deletes the folder `goals/<goal>/`. A goal version and a roadmap version are put there by hand: each is the owner's decision, and the lead copies a roadmap version once the owner approves it. `shipit store put` puts the build plans, plan reviews and reviews (Store put). Later commands add files and never change this layout. Receipts are keyed by the work and not by a goal, so they
 stay at the root. The coverage map of a slice is not here: it is committed in the project, at
 `.shipit/coverage/<goal>/<slice>.toml`.
 
@@ -41,6 +42,47 @@ stay at the root. The coverage map of a slice is not here: it is committed in th
 - Check receipts, coverage records, metric records and the metrics file are replaced atomically (the rename above).
 - Every receipt is one JSON object with `kind`, `version`, `key`, `time` (UTC, ISO 8601) and
   `tool` (`shipit <version>`).
+
+## Store put
+
+`shipit store put <kind> <draft> --goal <name> --slice <name> [--round <n>]` puts a checked draft into the
+store, because Claude Code refuses a write under the git folder before any allow rule, and ShipIt writes
+the file itself. Each place is below `goals/<goal>/slices/<slice>/`:
+
+| kind | flags | place | a taken place |
+|---|---|---|---|
+| `build-plan` | `--slice` | `build-plan.md` | replaced while the slice is not started, refused after |
+| `plan-review` | `--slice` | `plan-review.md` (the plan review that approved the build plan) | as `build-plan` |
+| `explanation`, `informed-review`, `second-opinion`, `review` | `--slice`, `--round` | `reviews/round-<n>/<kind>.md` | refused |
+
+Rules:
+
+- The draft is checked as `shipit validate <kind> <draft>` checks it, and nothing is written when it is not valid.
+- The slice must be a slice of the goal's newest roadmap, not a proof step.
+- A goal version and a roadmap version are never put: each is the owner's decision, and is copied by hand.
+- Names are parsed, so no place leaves `goals/<goal>/`: a round is a number from 1 up.
+- Every level from `<git common dir>/shipit` down to the file's folder is a real folder, never a link; a missing level is made.
+- A new file is written under a temporary name and hard-linked to its place, so a taken name is never replaced, a link there included.
+- A build plan or a plan review is replaced with an atomic rename only while the slice is not started (shown by `shipit status` as planned or build plan ready). A replaced build plan needs a new plan review, because the receipt is keyed by the file's hash. A replaced plan review is not tracked: no receipt or status reads the file.
+- After the start, a changed build plan is the lead's copy by hand.
+
+It prints `stored <path>` or `replaced <path>`, with the absolute path, on stdout. Exit 0 stored, 1 refused (the draft is not valid, or the place is taken), 2 usage, setup, goal, roadmap or slice error, a link on the way, or a write that failed.
+
+The refusals, each after `shipit: `:
+
+- `a goal version is the owner's: copy it into the store by hand (docs/store.md)`
+- `a roadmap version is the owner's decision: the lead copies it into the store by hand once the owner approves it (docs/store.md)`
+- `shipit store put takes build-plan, plan-review, explanation, informed-review, second-opinion or review, not <kind>`
+- `<kind> needs --slice <name>`
+- `--round is only for explanation, informed-review, second-opinion and review`
+- `<kind> needs --round <n>`
+- `--slice <text>: <rule>`
+- `--round <text>: a number from 1 up, with no sign and no leading zero`
+- `no slice named "<slice>" in the roadmap of goal "<goal>"`
+- `<slice> is a proof step: it has no build plan or reviews`
+- `<path> exists and the slice <slice> is started: a changed build plan or plan review is then the lead's copy by hand (docs/store.md)`
+- `<level> is a symbolic link; the store holds no links`
+- `<path> exists; a store file is never replaced`
 
 ## Trust
 
