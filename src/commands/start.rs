@@ -146,10 +146,17 @@ pub(crate) fn run(
     };
     let text = line(&entry, &slice, &now_utc(), &tool()).map_err(Failure::usage)?;
     append_line(&logbook_path(&store, &goal), &text)?;
+    // The main working copy holds the folder, whatever folder or worktree the start ran in.
+    let main_top = match (common.file_name(), common.parent()) {
+        (Some(name), Some(parent)) if name == ".git" => parent,
+        (Some(_) | None, Some(_) | None) => git.top(),
+    };
+    let worktree = main_top.join(".shipit").join("wt").join(slice.to_string());
     writeln!(
         out,
         "started {slice} on {branch}; make it in its own working copy: git worktree add \
-         .shipit/wt/{slice} {branch}"
+         {} {branch}",
+        worktree.display()
     )
     .ok();
     Ok(())

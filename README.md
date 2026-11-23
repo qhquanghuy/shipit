@@ -55,7 +55,7 @@ The skills run commands and write files. In a headless run (`claude -p`) every q
 
 A skill makes its own drafts folder with `mktemp -d /tmp/shipit.XXXXXX`, so `Edit(//tmp/shipit.*/**)` lets it write drafts there and nowhere else under `/tmp`.
 
-**The worktree.** `shipit start` prints `git worktree add .shipit/wt/<slice> <branch>`: the worktree sits inside the project, where the session may read, write and run commands, so no `--add-dir` is needed (it needs a folder that exists, and the worktree is made later). `shipit start` adds `/.shipit/wt/` to `<git common dir>/info/exclude`, so git, and the search tools that read git's ignore rules, skip it in every working copy; nothing is committed. A tool of the project that walks the folder without git's rules (a test runner, a linter) may still see it: add `.shipit/wt` to its own ignore list.
+**The worktree.** `shipit start` prints `git worktree add <path> <branch>`, with the absolute path `.shipit/wt/<slice>` under the top of the main working copy, whatever folder or worktree it ran in: the worktree sits inside the project, where the session may read, write and run commands, so no `--add-dir` is needed (it needs a folder that exists, and the worktree is made later). `shipit start` adds `/.shipit/wt/` to `<git common dir>/info/exclude`, so git, and the search tools that read git's ignore rules, skip it in every working copy; nothing is committed. A tool of the project that walks the folder without git's rules (a test runner, a linter) may still see it: add `.shipit/wt` to its own ignore list.
 
 **The store.** The harness asks for a write under the git folder and a headless run refuses it, whatever the allow rules say; `shipit store put` writes build plans, plan reviews and reviews instead, and `Bash(shipit *)` allows it. A goal or roadmap version is the owner's decision: its copy asks.
 
@@ -64,7 +64,6 @@ A skill makes its own drafts folder with `mktemp -d /tmp/shipit.XXXXXX`, so `Edi
 These commands are not in the list; they ask:
 
 - Asks: the store copy (`mkdir -p` and `cp`): only for a goal or roadmap version, the owner's decision; the lead copies it, or hands the owner the exact commands.
-
 - Asks: the review's link hash, once per link: its `printf`, piped to the hash.
 
 ## Run it

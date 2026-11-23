@@ -64,7 +64,7 @@ Rules:
 - Every level from `<git common dir>/shipit` down to the file's folder is a real folder, never a link; a missing level is made.
 - A new file is written under a temporary name and hard-linked to its place, so a taken name is never replaced, a link there included.
 - A build plan or a plan review is replaced with an atomic rename only while the slice is not started (shown by `shipit status` as planned or build plan ready). A replaced build plan needs a new plan review, because the receipt is keyed by the file's hash. A replaced plan review is not tracked: no receipt or status reads the file.
-- After the start, a changed build plan is the lead's copy by hand.
+- After the start, a changed build plan is the lead's copy by hand. The old plan-review receipt no longer matches the new version, so the slice needs a new plan review (`shipit status` shows it).
 
 It prints `stored <path>` or `replaced <path>`, with the absolute path, on stdout. Exit 0 stored, 1 refused (the draft is not valid, or the place is taken), 2 usage, setup, goal, roadmap or slice error, a link on the way, or a write that failed.
 
