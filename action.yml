@@ -25,14 +25,19 @@ runs:
     # The runner's own cargo, so no other tool is installed. A newer compiler's new warning must
     # not break every project's recheck, and the build stays outside the work tree so that
     # `shipit check` sees a clean tree.
+    # It runs in the action's own folder with the stable toolchain, so the checkout's cargo config
+    # and rust-toolchain file cannot change how the judge is built. With `uses: ./` the action's
+    # folder is the checkout, so there the pull request's own settings apply, which is wanted.
     - name: Build ShipIt
       shell: bash
       env:
+        RUSTUP_TOOLCHAIN: stable
         RUSTFLAGS: --cap-lints=warn
         CARGO_PROFILE_RELEASE_LTO: "off"
         CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
         CARGO_TARGET_DIR: ${{ runner.temp }}/shipit
       run: |
+        cd "$GITHUB_ACTION_PATH"
         cargo build --release --locked --manifest-path "$GITHUB_ACTION_PATH/Cargo.toml"
         echo "$RUNNER_TEMP/shipit/release" >> "$GITHUB_PATH"
 

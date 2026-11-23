@@ -1,0 +1,3 @@
+DW10 = [
+  "action: shipit is built in the action's own folder with the stable toolchain, and the step is held word for word",
+]
