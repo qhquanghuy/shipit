@@ -49,7 +49,6 @@ impl Mode {
     }
 }
 
-const COMPLEX: &str = "cannot be read as plain commands by ShipIt; it may ship (write plain commands, and name branches in plain text)";
 const HIDES: &str = "hides a git or gh command inside one word";
 const FEEDS: &str = "feeds a shell or interpreter";
 const NO_SLICE: &str =
@@ -71,7 +70,7 @@ const RUNS_PROGRAM: &str = "gives git a program to run (--exec, --upload-pack an
 const MERGES_BASE: &str = "merges into the base branch";
 const DOT_GIT: &str =
     "names .git, or a path under it, other than the goals folder .git/shipit/goals/";
-const GOALS_ONLY: &str = "does more than read, copy or make folders under .git/shipit/goals/ (only mkdir, cp without -r -R -a -L -s -l -H, cat, ls, head, tail, wc and shipit may run in such a command, with no redirect into a file)";
+const GOALS_ONLY: &str = "does more than read, copy or make folders under .git/shipit/goals/ (only mkdir, cp without -r -R -a -L -s -l -H, cat, ls, head, tail, wc, diff and shipit may run in such a command, with no redirect into a file)";
 const BRANCH_REWRITE: &str =
     "deletes, renames, copies or force-moves a branch (a base branch holds the setup file)";
 const FETCH_REFSPEC: &str =
@@ -216,7 +215,7 @@ fn triggered_by(text: &str, parsed: &Parse) -> bool {
             .iter()
             .flat_map(|segment| segment.words.iter())
             .any(|word| is_git_or_gh(program(word))),
-        Parse::Complex => false,
+        Parse::Complex(_) => false,
     };
     named || program_of_a_word || confirms_completion(text)
 }
@@ -863,27 +862,40 @@ pub(crate) fn named_folders(command: &str) -> Vec<(Option<String>, String)> {
     found
 }
 
-const GOALS_FOLDER: &str = "/shipit/goals/";
+const GOALS_FOLDER: &str = "/shipit/goals";
 // A link made in goals/ can point at the hooks or the receipts, and an archive can hold one, so
 // the programs that may run in a text naming the goals are a list, not a ban.
-const GOALS_PROGRAMS: [&str; 8] = ["mkdir", "cp", "cat", "ls", "head", "tail", "wc", "shipit"];
+const GOALS_PROGRAMS: [&str; 9] = [
+    "mkdir", "cp", "cat", "ls", "head", "tail", "wc", "diff", "shipit",
+];
 // The letters of the `cp` options that only copy a file: `-p -f -n -i -v`, and `-t` and `-T` that name
 // the target. Any other option can copy a link as a link (`-P`, `-d`, `--preserve=links`) or build
 // paths from the source (`--parents`).
 const COPY_LETTERS: &str = "pfnivtT";
 
+// The goals folder itself, or a path under it: `goals` ends the name (`goalsx`, `goals~` and
+// `goals$?` are other folders).
+fn goals_tail(after: &str) -> Option<&str> {
+    after.strip_prefix(GOALS_FOLDER).filter(|tail| {
+        matches!(
+            tail.chars().next(),
+            None | Some('/' | ' ' | '\t' | '\n' | '\'' | '"' | ';' | '&' | '|' | '<' | '>')
+        )
+    })
+}
+
 fn is_name_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.')
 }
 
-// A `.git` followed by a slash is a path under .git/, and passes only as `.git/shipit/goals/` (the
+// A `.git` followed by a slash is a path under .git/, and passes only as `.git/shipit/goals` (the
 // goals of the store, which the skills write) with no `..` part after it and no `receipts/`
 // anywhere. A text cannot show where a link inside goals/ points: only ShipIt and the skills
 // write there.
 fn dot_git_beyond_goals(text: &str) -> bool {
     text.match_indices(".git").any(|(at, found)| {
         let after = text.get(at + found.len()..).unwrap_or_default();
-        match after.strip_prefix(GOALS_FOLDER) {
+        match goals_tail(after) {
             Some(tail) => {
                 text.contains("receipts/")
                     || tail
@@ -940,7 +952,7 @@ fn only_copies_and_reads(command: &str, parsed: &Parse) -> bool {
 fn names_goals(text: &str) -> bool {
     text.match_indices(".git").any(|(at, found)| {
         text.get(at + found.len()..)
-            .is_some_and(|after| after.starts_with(GOALS_FOLDER))
+            .is_some_and(|after| goals_tail(after).is_some())
     })
 }
 
@@ -970,7 +982,7 @@ fn names_dot_git(command: &str, parsed: &Parse) -> bool {
                     .zip(data)
                     .any(|(word, is_data)| !is_data && is_bare_dot_git(word))
             }),
-        Parse::Complex => false,
+        Parse::Complex(_) => false,
     };
     bare || dot_git_beyond_goals(command) || dot_git_beyond_goals(&unquoted(command))
 }
@@ -1006,7 +1018,13 @@ pub(crate) fn ship_reasons(command: &str, facts: &dyn Fn(Option<&str>) -> Facts)
         add(&mut reasons, GOALS_ONLY);
     }
     match &parsed {
-        Parse::Complex => add(&mut reasons, COMPLEX),
+        Parse::Complex(cause) => add(
+            &mut reasons,
+            format!(
+                "cannot be read as plain commands by ShipIt: it holds {}; it may ship (write plain commands, and name branches in plain text)",
+                cause.text()
+            ),
+        ),
         Parse::Plain { segments, heredocs } => {
             plain_reasons(segments, heredocs, facts, &mut reasons);
         }
@@ -1490,9 +1508,6 @@ mod tests {
             for command in commands {
                 prop_assert_eq!(reasons(&command), Vec::<String>::new(), "{}", command);
             }
-            for command in ["git log {a,b}", "git log {1..3}", "git add ~/x", "git { ls; }"] {
-                prop_assert_eq!(reasons(command), vec![COMPLEX.to_owned()], "{}", command);
-            }
         }
 
         #[test]
@@ -1848,7 +1863,6 @@ mod tests {
                 format!("cat {goals}/{goal}/{file} {root}/.git/config"),
                 format!("cat {root}/.git/config {goals}/{goal}/{file}"),
                 format!("cat {goals}x/{file}"),
-                format!("ls {goals}"),
                 format!("cp x {root}/.git/hooks/{other}"),
                 format!("cp x {root}/.g'it'/hooks/{other}"),
                 format!("cp x '{root}/.git'/shipit/goals/../hooks/{other}"),
@@ -1914,6 +1928,46 @@ mod tests {
                 format!("ls .git {other}"),
             ] {
                 prop_assert_eq!(reasons(&command), Vec::<String>::new(), "{}", command);
+            }
+        }
+
+        // The name ends at `goals`: a closing slash is not needed, and `diff` only reads.
+        #[test]
+        fn the_goals_folder_may_be_named_without_its_slash_and_read_with_diff(
+            root in "/?[a-z]{1,6}(/[a-z]{1,6}){0,2}",
+            goal in name(),
+            other in name(),
+            file in "[a-z]{1,6}[.]md",
+        ) {
+            let goals = format!("{root}/.git/shipit/goals");
+            for command in [
+                format!("ls {goals}"),
+                format!("ls -la {goals}"),
+                format!("ls '{goals}'"),
+                format!("cat {goals}/{goal}/{file}"),
+                format!("diff {file} {goals}/{goal}/{file}"),
+                format!("diff -u {goals}/{goal}/{file} {goals}/{other}/{file}"),
+                format!("cp a {goals}"),
+            ] {
+                prop_assert_eq!(reasons(&command), Vec::<String>::new(), "{}", command);
+            }
+            for command in [
+                format!("ls {goals}x"),
+                format!("ls {goals}-{other}/"),
+                format!("ls {goals}~"),
+                format!("cat {goals}:x"),
+                format!("ls {goals}*"),
+                format!("ls '{goals}'x"),
+                format!("cat {goals}/.."),
+                format!("ls {goals}$?"),
+            ] {
+                prop_assert!(reasons(&command).contains(&DOT_GIT.to_owned()), "{}", command);
+            }
+            for command in [
+                format!("ln -s ../hooks {goals}"),
+                format!("diff {file} {goals}/{goal}/{file} > {goals}/{goal}/x"),
+            ] {
+                prop_assert!(reasons(&command).contains(&GOALS_ONLY.to_owned()), "{}", command);
             }
         }
 
@@ -2234,6 +2288,49 @@ mod tests {
         assert_eq!(reasons("git push origin v1.0"), [TAG]);
         assert_eq!(reasons("git push origin refs/tags/v1.0"), [TAG]);
         assert_eq!(reasons("git push"), [NO_SLICE]);
+    }
+
+    // Each unreadable form is asked about with its own cause; the texts are written out here so a
+    // reworded cause fails.
+    #[test]
+    fn an_unreadable_command_is_asked_about_with_its_cause() {
+        let braces = "a brace expansion (`{a,b}` or `{1..3}`)";
+        let tilde = "a `~` other than in `cd ~/<folder>`";
+        let group = "a subshell, a group or a shell keyword (`(`, `{`, `!`, `if`, `for`, `while`, `case`, `function` and the like)";
+        let expansion = "a `$` or a backquote other than `$?`";
+        let comment = "a comment (a word that starts with `#`)";
+        let backslash = "a backslash outside quotes";
+        let unclosed = "a quote or a heredoc that is not closed";
+        let heredoc = "a heredoc ShipIt does not read (`<<<`, no delimiter, or an unquoted delimiter whose text has `$`, a backquote or a backslash)";
+        let redirect = "a redirect ShipIt does not read (`<(`, `>|`, `<>` or no target)";
+        let folder = "a folder ShipIt does not follow (`cd` alone, with `-`, an option, a glob, `$?` or two folders, a `cd` that may not run, `pushd`, `popd`, or a git `-C`, `--git-dir` or `--work-tree` that holds `$?`)";
+        for (command, cause) in [
+            ("git log {a,b}", braces),
+            ("git log {1..3}", braces),
+            ("git add ~/x", tilde),
+            ("git { ls; }", group),
+            ("git status; (ls)", group),
+            ("git status; if ls; then ls; fi", group),
+            ("git status; echo $(date)", expansion),
+            ("git status; echo `date`", expansion),
+            ("git status # x", comment),
+            ("git status \\x", backslash),
+            ("git log 'x", unclosed),
+            ("git status; cat <<< x", heredoc),
+            ("git status; cat <<EOF\n$x\nEOF\n", heredoc),
+            ("git status; ls >| x", redirect),
+            ("git status; ls <(x)", redirect),
+            ("git status; cd -", folder),
+            ("git status; pushd x", folder),
+        ] {
+            assert_eq!(
+                reasons(command),
+                [format!(
+                    "cannot be read as plain commands by ShipIt: it holds {cause}; it may ship (write plain commands, and name branches in plain text)"
+                )],
+                "{command}"
+            );
+        }
     }
 
     // A write to the config is one reason, whatever the key says.

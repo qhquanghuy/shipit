@@ -20,7 +20,7 @@ load helpers
 # prefix, receipt fields, store paths and default values.
 
 # Flags of git, gh, nix, cargo and claude (--allowed reads the start of --allowedTools; --add-dir) that the docs mention; any other flag must be one of shipit's.
-EXTERNAL_FLAGS=(--all-targets --branch --check --command --ignore-submodules --print-build-logs --release --pager --pre --short --template --numstat --separate-git-dir --stat --target-directory --body-file --allowed --add-dir --title --git-common-dir --name-status --comments --detach --format)
+EXTERNAL_FLAGS=(--all-targets --branch --check --command --ignore-submodules --print-build-logs --release --pager --pre --short --template --numstat --separate-git-dir --stat --target-directory --body-file --allowed --add-dir --title --git-common-dir --name-status --comments --detach --format --git-dir --work-tree --settings --permission-mode)
 
 # files_in <root>: README.md, every file in docs/ and every skill under <root>.
 files_in() {
@@ -202,4 +202,74 @@ copy_docs() {
   run check_docs "$BATS_TEST_TMPDIR/docs"
   [ "$status" -eq 1 ]
   [[ $output == *"command: shipit verifyy"* ]]
+}
+
+# permission_part <file>: the lines under "### Permissions the skills need", up to the next heading.
+permission_part() {
+  awk '/^### Permissions the skills need$/ { on = 1; next } /^##/ { on = 0 } on' "$1"
+}
+
+# check_headless_list <file>: prints a line and fails when the permission part does not say how a
+# headless run gets the list.
+check_headless_list() {
+  local part bad=0
+  part=$(permission_part "$1")
+  [[ $part == *'--settings .claude/settings.json'* ]] || { echo "${1##*/}: no --settings .claude/settings.json in the permission part"; bad=1; }
+  [[ $part == *trusted* ]] || { echo "${1##*/}: the permission part does not say the folder must be trusted"; bad=1; }
+  return "$bad"
+}
+
+@test "docs: the permission part says how a headless run gets the list" {
+  local file
+  for file in README.md docs/claude-code.md; do
+    run check_headless_list "$SHIPIT_SRC/$file"
+    [ "$output" = "" ]
+    [ "$status" -eq 0 ]
+  done
+  copy_docs "$BATS_TEST_TMPDIR/docs"
+  for file in README.md docs/claude-code.md; do
+    grep -v '^\*\*Trust and headless runs\.\*\*' "$SHIPIT_SRC/$file" >"$BATS_TEST_TMPDIR/docs/$file"
+    run check_headless_list "$BATS_TEST_TMPDIR/docs/$file"
+    [ "$status" -eq 1 ]
+    [[ $output == *"--settings"* ]]
+  done
+}
+
+# check_newcomer_list <file>: prints a line and fails when the permission part lacks a right a
+# newcomer needs, or holds a rule that is too broad.
+check_newcomer_list() {
+  local part need bad=0
+  part=$(permission_part "$1")
+  for need in 'acceptEdits' '"Bash(git switch -c *)"' '"Bash(git checkout -b *)"' '"Bash(mkdir -p .shipit/td/*)"' '"Bash(mkdir -p .shipit/drive/*)"' '.shipit/td/' '.shipit/drive/'; do
+    [[ $part == *"$need"* ]] || { echo "${1##*/}: the permission part lacks $need"; bad=1; }
+  done
+  for need in '"Edit(//tmp' '"Bash(*)"' '"Edit(*)"' 'mktemp'; do
+    [[ $part != *"$need"* ]] || { echo "${1##*/}: the permission part holds $need"; bad=1; }
+  done
+  return "$bad"
+}
+
+@test "docs: the permission list is what a newcomer needs, and no broader" {
+  local file
+  for file in README.md docs/claude-code.md; do
+    run check_newcomer_list "$SHIPIT_SRC/$file"
+    [ "$output" = "" ]
+    [ "$status" -eq 0 ]
+  done
+  copy_docs "$BATS_TEST_TMPDIR/docs"
+  sed -i 's/acceptEdits/acceptNothing/g' "$BATS_TEST_TMPDIR/docs/README.md"
+  run check_newcomer_list "$BATS_TEST_TMPDIR/docs/README.md"
+  [ "$status" -eq 1 ]
+  [[ $output == *"lacks acceptEdits"* ]]
+  sed -i 's|"Bash(shipit \*)",|"Bash(shipit *)", "Bash(*)",|' "$BATS_TEST_TMPDIR/docs/docs/claude-code.md"
+  run check_newcomer_list "$BATS_TEST_TMPDIR/docs/docs/claude-code.md"
+  [ "$status" -eq 1 ]
+  [[ $output == *'holds "Bash(*)"'* ]]
+}
+
+@test "docs: the owner pushes the adoption branches" {
+  local part
+  part=$(awk '/^## Adopt ShipIt in a project$/ { on = 1; next } /^## / { on = 0 } on' "$SHIPIT_SRC/README.md")
+  [[ $part == *"The owner pushes"* ]]
+  [[ $part == *"adopt/"* ]]
 }

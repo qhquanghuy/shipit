@@ -10,8 +10,8 @@ use crate::pure::failure::Failure;
 use crate::pure::goal::GoalName;
 use crate::pure::kinds::{kind, kind_names};
 use crate::pure::messages::GOAL_NAME;
-use crate::pure::setup::HEAD;
-use crate::pure::template::{Context, validate};
+use crate::pure::setup::{HEAD, Setup};
+use crate::pure::template::{Context, Verdict, validate};
 
 pub(crate) const HIDDEN: bool = false;
 pub(crate) const NEEDS_SETUP: bool = true;
@@ -30,7 +30,7 @@ const NEEDS_GOAL: &str = "the roadmap needs its goal: shipit validate roadmap <f
 const GOAL_ONLY_FOR_ROADMAP: &str =
     "--goal and --goal-file are only for the roadmap, and only one of them";
 
-enum Goal<'a> {
+pub(crate) enum Goal<'a> {
     Nothing,
     Both,
     Stored(&'a OsStr),
@@ -73,6 +73,39 @@ fn goal_text(git: &Git, name: &str, goal: &Goal<'_>) -> Result<Option<String>, F
     read_text(&path).map(Some)
 }
 
+// The text of a draft held against its kind; the problems are the refusal.
+pub(crate) fn valid_text(
+    git: &Git,
+    setup: &Setup,
+    name: &str,
+    file: &OsStr,
+    goal: &Goal<'_>,
+) -> Result<(String, Verdict), Failure> {
+    let spec = kind(name).ok_or_else(|| {
+        Failure::usage(format!("unknown kind \"{name}\"; kinds: {}", kind_names()))
+    })?;
+    let goal = goal_text(git, name, goal)?;
+    let label = file.to_string_lossy();
+    let text = read_text(Path::new(file))?;
+    let ctx = Context {
+        file: &label,
+        max_lines: u64::from(&setup.owner.max_lines),
+        example_max_lines: u64::from(&setup.owner.example_max_lines),
+        goal: goal.as_deref(),
+    };
+    match validate(spec, &ctx, &text) {
+        Ok(verdict) => Ok((text, verdict)),
+        Err(problems) => {
+            let mut said = format!("{label} is not a valid {name}:");
+            for problem in problems {
+                said.push_str("\n  ");
+                said.push_str(&problem);
+            }
+            Err(Failure::no(said))
+        }
+    }
+}
+
 pub(crate) fn run(
     args: &[OsString],
     out: &mut dyn Write,
@@ -86,38 +119,15 @@ pub(crate) fn run(
     };
     let goal = goal_flag(flags)?.unwrap_or(Goal::Nothing);
     let name = name.to_string_lossy();
-    let spec = kind(&name).ok_or_else(|| {
-        Failure::usage(format!("unknown kind \"{name}\"; kinds: {}", kind_names()))
-    })?;
-    let goal = goal_text(&git, &name, &goal)?;
-    let label = file.to_string_lossy();
-    let text = read_text(Path::new(file))?;
-    let ctx = Context {
-        file: &label,
-        max_lines: u64::from(&setup.owner.max_lines),
-        example_max_lines: u64::from(&setup.owner.example_max_lines),
-        goal: goal.as_deref(),
-    };
-    match validate(spec, &ctx, &text) {
-        Ok(verdict) => {
-            write!(out, "valid {name}: {}", verdict.outcome).ok();
-            if let Some([must_fix, nice_to_fix, must_answer]) = verdict.counts {
-                write!(
-                    out,
-                    " ({must_fix} must fix, {nice_to_fix} nice to fix, {must_answer} must answer)"
-                )
-                .ok();
-            }
-            writeln!(out).ok();
-            Ok(())
-        }
-        Err(problems) => {
-            let mut said = format!("{label} is not a valid {name}:");
-            for problem in problems {
-                said.push_str("\n  ");
-                said.push_str(&problem);
-            }
-            Err(Failure::no(said))
-        }
+    let (_text, verdict) = valid_text(&git, &setup, &name, file, &goal)?;
+    write!(out, "valid {name}: {}", verdict.outcome).ok();
+    if let Some([must_fix, nice_to_fix, must_answer]) = verdict.counts {
+        write!(
+            out,
+            " ({must_fix} must fix, {nice_to_fix} nice to fix, {must_answer} must answer)"
+        )
+        .ok();
     }
+    writeln!(out).ok();
+    Ok(())
 }

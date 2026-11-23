@@ -17,7 +17,7 @@ pub(crate) enum Parse {
         segments: Vec<Segment>,
         heredocs: Vec<String>,
     },
-    Complex,
+    Complex(Unreadable),
 }
 
 const KEYWORDS: [&str; 12] = [
@@ -92,10 +92,44 @@ pub(crate) fn message_values(words: &[String]) -> Vec<bool> {
         .collect()
 }
 
-#[derive(Debug)]
-struct Complex;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Unreadable {
+    Expansion,
+    Group,
+    Tilde,
+    Comment,
+    Braces,
+    Backslash,
+    Unclosed,
+    Heredoc,
+    Redirect,
+    Folder,
+}
 
-type Read<T> = Result<T, Complex>;
+impl Unreadable {
+    pub(crate) const fn text(self) -> &'static str {
+        match self {
+            Self::Expansion => "a `$` or a backquote other than `$?`",
+            Self::Group => {
+                "a subshell, a group or a shell keyword (`(`, `{`, `!`, `if`, `for`, `while`, `case`, `function` and the like)"
+            }
+            Self::Tilde => "a `~` other than in `cd ~/<folder>`",
+            Self::Comment => "a comment (a word that starts with `#`)",
+            Self::Braces => "a brace expansion (`{a,b}` or `{1..3}`)",
+            Self::Backslash => "a backslash outside quotes",
+            Self::Unclosed => "a quote or a heredoc that is not closed",
+            Self::Heredoc => {
+                "a heredoc ShipIt does not read (`<<<`, no delimiter, or an unquoted delimiter whose text has `$`, a backquote or a backslash)"
+            }
+            Self::Redirect => "a redirect ShipIt does not read (`<(`, `>|`, `<>` or no target)",
+            Self::Folder => {
+                "a folder ShipIt does not follow (`cd` alone, with `-`, an option, a glob, `$?` or two folders, a `cd` that may not run, `pushd`, `popd`, or a git `-C`, `--git-dir` or `--work-tree` that holds `$?`)"
+            }
+        }
+    }
+}
+
+type Read<T> = Result<T, Unreadable>;
 
 struct Word {
     text: String,
@@ -142,6 +176,30 @@ fn has_brace_expansion(unquoted: &str) -> bool {
             .get(open + 1..)
             .and_then(|tail| tail.split_once('}'))
             .is_some_and(|(inside, _)| inside.contains(',') || inside.contains(".."))
+    })
+}
+
+// Only git takes a folder whose runtime digits could name a repository a gate must judge: `$?`
+// expands to digits only, so elsewhere it can never spell `git`, `.git` or a branch. The program is
+// `git` itself (after `NAME=value`, by any path), or any word after `env` or `command`, which
+// run the next program (reading too much here only asks).
+fn git_folder_holds_exit_status(words: &[String]) -> bool {
+    let mut rest = words.iter().skip_while(|word| is_assignment(word));
+    let args: Vec<&String> = match rest.next().map(|word| program(word)) {
+        Some("git") => rest.collect(),
+        Some("env" | "command") => rest
+            .skip_while(|word| program(word) != "git")
+            .skip(1)
+            .collect(),
+        Some(_) | None => return false,
+    };
+    args.iter().enumerate().any(|(at, word)| {
+        let after_flag = at
+            .checked_sub(1)
+            .and_then(|prior| args.get(prior))
+            .is_some_and(|flag| matches!(flag.as_str(), "-C" | "--git-dir" | "--work-tree"));
+        let glued = word.starts_with("--git-dir=") || word.starts_with("--work-tree=");
+        (after_flag || glued) && word.contains("$?")
     })
 }
 
@@ -199,7 +257,7 @@ impl Reader {
                 ';' => {
                     self.at += 1;
                     if self.peek() == Some(';') {
-                        return Err(Complex);
+                        return Err(Unreadable::Group);
                     }
                     self.end_segment(Sep::Semi)?;
                 }
@@ -221,7 +279,7 @@ impl Reader {
             }
         }
         if !self.pending.is_empty() {
-            return Err(Complex);
+            return Err(Unreadable::Unclosed);
         }
         self.end_segment(Sep::End)?;
         Ok((self.segments, self.heredocs))
@@ -253,7 +311,9 @@ impl Reader {
         }
         match (operator, self.peek()) {
             (Some('>'), Some('>' | '&')) | (Some('<'), Some('&')) => self.at += 1,
-            (Some('>'), Some('|')) | (Some('<'), Some('(' | '>')) => return Err(Complex),
+            (Some('>'), Some('|')) | (Some('<'), Some('(' | '>')) => {
+                return Err(Unreadable::Redirect);
+            }
             (Some('<'), Some('<')) => return self.heredoc(),
             (Some(_) | None, Some(_) | None) => {}
         }
@@ -265,7 +325,7 @@ impl Reader {
         self.skip_blanks();
         let target = self.read_word()?;
         if target.text.is_empty() && !target.quoted {
-            return Err(Complex);
+            return Err(Unreadable::Redirect);
         }
         Ok(())
     }
@@ -273,7 +333,7 @@ impl Reader {
     fn heredoc(&mut self) -> Read<()> {
         self.at += 1;
         if self.peek() == Some('<') {
-            return Err(Complex);
+            return Err(Unreadable::Heredoc);
         }
         let strip_tabs = self.peek() == Some('-');
         if strip_tabs {
@@ -282,7 +342,7 @@ impl Reader {
         self.skip_blanks();
         let delimiter = self.read_word()?;
         if delimiter.text.is_empty() {
-            return Err(Complex);
+            return Err(Unreadable::Heredoc);
         }
         self.pending.push(Pending {
             delimiter: delimiter.text,
@@ -294,7 +354,7 @@ impl Reader {
 
     fn read_line(&mut self) -> Read<String> {
         if self.at >= self.chars.len() {
-            return Err(Complex);
+            return Err(Unreadable::Unclosed);
         }
         let mut line = String::new();
         while let Some(c) = self.peek() {
@@ -325,7 +385,7 @@ impl Reader {
             }
             let body = lines.join("\n");
             if !pending.quoted && body.contains(['$', '`', '\\']) {
-                return Err(Complex);
+                return Err(Unreadable::Heredoc);
             }
             self.heredocs.push(body);
         }
@@ -347,15 +407,25 @@ impl Reader {
     fn finish_word(&mut self, word: Word) -> Read<()> {
         let text = word.text.as_str();
         let whole = !word.quoted;
-        if (whole && matches!(text, "!" | "{" | "}"))
-            || (word.starts_with_tilde && !self.is_home_folder(&word))
-            || word.starts_with_hash
-            || matches!(text, "pushd" | "popd")
-            || has_brace_expansion(&word.unquoted)
-            || (self.words.is_empty() && whole && KEYWORDS.contains(&text))
+        if whole && matches!(text, "!" | "{" | "}") {
+            return Err(Unreadable::Group);
+        }
+        if word.starts_with_tilde && !self.is_home_folder(&word) {
+            return Err(Unreadable::Tilde);
+        }
+        if word.starts_with_hash {
+            return Err(Unreadable::Comment);
+        }
+        if matches!(text, "pushd" | "popd") {
+            return Err(Unreadable::Folder);
+        }
+        if has_brace_expansion(&word.unquoted) {
+            return Err(Unreadable::Braces);
+        }
+        if (self.words.is_empty() && whole && KEYWORDS.contains(&text))
             || (whole && text == "function")
         {
-            return Err(Complex);
+            return Err(Unreadable::Group);
         }
         self.words.push(word);
         Ok(())
@@ -384,12 +454,14 @@ impl Reader {
                     word.quoted = true;
                     loop {
                         match self.peek() {
-                            None => return Err(Complex),
+                            None => return Err(Unreadable::Unclosed),
                             Some('\'') => {
                                 self.at += 1;
                                 break;
                             }
-                            Some('\n') if !self.pending.is_empty() => return Err(Complex),
+                            Some('\n') if !self.pending.is_empty() => {
+                                return Err(Unreadable::Heredoc);
+                            }
                             Some(inside) => {
                                 self.at += 1;
                                 word.text.push(inside);
@@ -415,10 +487,16 @@ impl Reader {
                     if self.peek_ahead(1) == Some('\n') {
                         self.at += 2;
                     } else {
-                        return Err(Complex);
+                        return Err(Unreadable::Backslash);
                     }
                 }
-                '$' | '`' | '(' | ')' => return Err(Complex),
+                '$' if self.peek_ahead(1) == Some('?') => {
+                    self.at += 2;
+                    word.text.push_str("$?");
+                    word.unquoted.push_str("$?");
+                }
+                '$' | '`' => return Err(Unreadable::Expansion),
+                '(' | ')' => return Err(Unreadable::Group),
                 plain => {
                     self.at += 1;
                     if word.text.is_empty() && plain == '~' {
@@ -439,13 +517,17 @@ impl Reader {
         self.at += 1;
         loop {
             let Some(c) = self.peek() else {
-                return Err(Complex);
+                return Err(Unreadable::Unclosed);
             };
             self.at += 1;
             match c {
                 '"' => return Ok(()),
-                '$' | '`' => return Err(Complex),
-                '\n' if !self.pending.is_empty() => return Err(Complex),
+                '$' if self.peek() == Some('?') => {
+                    self.at += 1;
+                    text.push_str("$?");
+                }
+                '$' | '`' => return Err(Unreadable::Expansion),
+                '\n' if !self.pending.is_empty() => return Err(Unreadable::Heredoc),
                 '\\' => match self.peek() {
                     Some(escaped @ ('"' | '\\' | '$' | '`')) => {
                         self.at += 1;
@@ -520,18 +602,27 @@ impl Reader {
             return Ok(());
         }
         let texts: Vec<String> = words.iter().map(|word| word.text.clone()).collect();
+        if git_folder_holds_exit_status(&texts) {
+            return Err(Unreadable::Folder);
+        }
         let mut next_dir = None;
         if texts.first().map(String::as_str) == Some("cd") {
             let [_, dir] = texts.as_slice() else {
-                return Err(Complex);
+                return Err(Unreadable::Folder);
             };
             let glob = words
                 .get(1)
                 .is_some_and(|word| word.unquoted.contains(['*', '?', '[']));
             let plain_before = matches!(before, Sep::Start | Sep::Semi | Sep::And | Sep::Newline);
             let plain_after = matches!(after, Sep::Semi | Sep::And | Sep::Newline | Sep::End);
-            if dir.is_empty() || dir.starts_with('-') || glob || !plain_before || !plain_after {
-                return Err(Complex);
+            if dir.is_empty()
+                || dir.starts_with('-')
+                || dir.contains("$?")
+                || glob
+                || !plain_before
+                || !plain_after
+            {
+                return Err(Unreadable::Folder);
             }
             // A tilde inside quotes is a folder called `~`, not the home folder.
             let literal_tilde =
@@ -558,7 +649,7 @@ impl Reader {
 pub(crate) fn parse(command: &str) -> Parse {
     match Reader::new(command).run() {
         Ok((segments, heredocs)) => Parse::Plain { segments, heredocs },
-        Err(Complex) => Parse::Complex,
+        Err(cause) => Parse::Complex(cause),
     }
 }
 
@@ -573,12 +664,12 @@ mod tests {
             Parse::Plain { segments, .. } => {
                 segments.into_iter().map(|segment| segment.words).collect()
             }
-            Parse::Complex => panic!("{command:?} is complex"),
+            Parse::Complex(_) => panic!("{command:?} is complex"),
         }
     }
 
     fn is_complex(command: &str) -> bool {
-        parse(command) == Parse::Complex
+        matches!(parse(command), Parse::Complex(_))
     }
 
     fn word() -> impl Strategy<Value = String> {
@@ -644,6 +735,42 @@ mod tests {
         }
 
         #[test]
+        fn dollar_question_is_text_and_any_other_dollar_is_unreadable(
+            before in "[a-z=]{0,6}",
+            after in "[a-z=]{0,6}",
+            wrap in prop_oneof![Just(""), Just("\"")],
+            other in "[a-zA-Z0-9_{(@#!*$'-]",
+            lead in prop_oneof![
+                Just(""), Just("X=1 "), Just("/usr/bin/"), Just("X=1 /usr/bin/"),
+                Just("env "), Just("env -i X=1 "), Just("/usr/bin/env "), Just("command "),
+                Just("command -p "), Just("command -- "),
+            ],
+        ) {
+            prop_assert_eq!(
+                plain(&format!("echo {wrap}{before}$?{after}{wrap}")),
+                vec![vec!["echo".to_owned(), format!("{before}$?{after}")]]
+            );
+            prop_assert_eq!(
+                parse(&format!("echo {wrap}{before}${other}{after}{wrap}")),
+                Parse::Complex(Unreadable::Expansion)
+            );
+            let folder = Parse::Complex(Unreadable::Folder);
+            prop_assert_eq!(parse(&format!("cd {wrap}{before}$?{wrap} && ls")), folder);
+            for flag in ["-C ", "--git-dir ", "--work-tree ", "--git-dir=", "--work-tree="] {
+                let command = format!("{lead}git {flag}{wrap}{before}$?{wrap} status");
+                prop_assert_eq!(parse(&command), Parse::Complex(Unreadable::Folder), "{}", command);
+            }
+            prop_assert_eq!(
+                plain(&format!("ls -C {before}$?")),
+                vec![vec!["ls".to_owned(), "-C".to_owned(), format!("{before}$?")]]
+            );
+            prop_assert_eq!(
+                plain(&format!("{lead}git -c x=y -C {before}a status")).len(),
+                1
+            );
+        }
+
+        #[test]
         fn cd_sets_the_folder_of_the_later_segments(
             a in "[a-z]{1,5}",
             b in "[a-z]{1,5}",
@@ -663,7 +790,7 @@ mod tests {
         ) {
             let dirs = |command: String| match parse(&command) {
                 Parse::Plain { segments, .. } => segments.into_iter().map(|s| s.dir).collect(),
-                Parse::Complex => vec![Some("complex".to_owned())],
+                Parse::Complex(_) => vec![Some("complex".to_owned())],
             };
             prop_assert_eq!(dirs(format!("cd ~/{a}\nls")), vec![None, Some(format!("~/{a}"))]);
             // A later folder is under the home folder, or replaces it, or is replaced by it.
@@ -736,7 +863,7 @@ mod tests {
         ) {
             let to_words = |command: String| match parse(&command) {
                 Parse::Plain { mut segments, .. } => segments.remove(0).words,
-                Parse::Complex => Vec::new(),
+                Parse::Complex(_) => Vec::new(),
             };
             let git = to_words(format!("{before}git commit -m '{text}' --message='{text}'"));
             prop_assert_eq!(message_values(&git).iter().filter(|data| **data).count(), 2);
@@ -821,7 +948,7 @@ mod tests {
         ) {
             let reads = |command: String| match parse(&command) {
                 Parse::Plain { segments, .. } => segments.into_iter().map(|s| s.reads_stdin).collect(),
-                Parse::Complex => vec![],
+                Parse::Complex(_) => vec![],
             };
             prop_assert_eq!(reads(format!("{a} < {file}")), vec![true]);
             prop_assert_eq!(reads(format!("{a} <{file} > out")), vec![true]);

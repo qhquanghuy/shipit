@@ -9,6 +9,7 @@ use crate::edge::records::{
     append_line, exists, load_goals, logbook_path, metrics_path, read_logbook, store_dir,
 };
 use crate::edge::slice_git::{create_branch, load_policy, origin_branch_of};
+use crate::edge::write;
 use crate::pure::branch::slice_branch;
 use crate::pure::failure::Failure;
 use crate::pure::flags::{goal_flag, unknown_argument};
@@ -20,10 +21,13 @@ use crate::pure::roadmap::{Element, SliceName};
 use crate::pure::setup::HEAD;
 use crate::pure::state::{StartFacts, State, start_refusal};
 
+// Anchored and ending in a slash: it never matches `.shipit/coverage/`.
+const WORKTREES: &str = "/.shipit/wt/";
+
 pub(crate) const HIDDEN: bool = false;
 pub(crate) const NEEDS_SETUP: bool = true;
 pub(crate) const USAGE: &str = "usage: shipit start <slice> [--goal <name>]";
-pub(crate) const SUMMARY: &str = "Makes the slice's branch and logs it, refused at the parallel cap, which counts all goals; fetch first, since a goal that another clone has not pushed is not seen, and two starts at the same moment can both pass the cap.";
+pub(crate) const SUMMARY: &str = "Makes the slice's branch and logs it, refused at the parallel cap, which counts all goals; fetch first, since a goal that another clone has not pushed is not seen, and two starts at the same moment can both pass the cap. It adds /.shipit/wt/ to the git common dir's info/exclude, so the worktree it names stays out of git.";
 pub(crate) const EXITS: [&str; 4] = [
     "started",
     "refused: build plan not ready, an earlier slice not shipped, the branch exists, or the cap is reached",
@@ -134,6 +138,7 @@ pub(crate) fn run(
         }
     }
 
+    write::append_line(&common.join("info").join("exclude"), WORKTREES)?;
     let branch = slice_branch(&goal, &slice);
     create_branch(&git, &branch, &base_ref)?;
     let entry = Entry::Started {
@@ -141,10 +146,17 @@ pub(crate) fn run(
     };
     let text = line(&entry, &slice, &now_utc(), &tool()).map_err(Failure::usage)?;
     append_line(&logbook_path(&store, &goal), &text)?;
+    // The main working copy holds the folder, whatever folder or worktree the start ran in.
+    let main_top = match (common.file_name(), common.parent()) {
+        (Some(name), Some(parent)) if name == ".git" => parent,
+        (Some(_) | None, Some(_) | None) => git.top(),
+    };
+    let worktree = main_top.join(".shipit").join("wt").join(slice.to_string());
     writeln!(
         out,
         "started {slice} on {branch}; make it in its own working copy: git worktree add \
-         ../wt/{slice} {branch}"
+         {} {branch}",
+        worktree.display()
     )
     .ok();
     Ok(())

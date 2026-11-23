@@ -6,7 +6,7 @@ description: Use when a slice needs its test drive: using the built result as it
 Does the test drive of one slice. The tester (`shipit:tester`) runs it, started by the lead or by `shipit-slice` once the reviews approve. Terms: [vocabulary](../../docs/vocab.md).
 ## Inputs
 - The goal and its done-when: in the prompt, from the lead.
-- A folder with only the built result, its docs and sample data: the lead prepares it as the domain pack says.
+- A folder with only the built result, its docs and sample data: the lead prepares it as the domain pack says, at `.shipit/drive/<slice>` inside the project, apart from the drafts folder of the slice (made with `mkdir -p .shipit/drive/<slice>` and the one line `*` in its `.gitignore`), so that the tester may run the result there.
 - The path of the slice's worktree, from the lead: step 6 runs `shipit validate` from there.
 - The machine facts and notes: `shipit doctor`.
 ## Output

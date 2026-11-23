@@ -64,6 +64,23 @@ plain text. For git it is a list: in a command that names git, only these pass w
 - Everything else asks, such as `submodule`, `bisect`, `filter-branch`, `send-pack`, an alias or
   a typo, and an option that hands git a program to run.
 
+When the gate cannot read a command it asks, and the ask says why: `cannot be read as plain
+commands by ShipIt: it holds <cause>; it may ship (write plain commands, and name branches in plain
+text)`. The cause is one of these:
+
+- a `$` or a backquote other than `$?`
+- a subshell, a group or a shell keyword (`(`, `{`, `!`, `if`, `for`, `while`, `case`, `function` and the like)
+- a `~` other than in `cd ~/<folder>`
+- a comment (a word that starts with `#`)
+- a brace expansion (`{a,b}` or `{1..3}`)
+- a backslash outside quotes
+- a quote or a heredoc that is not closed
+- a heredoc ShipIt does not read (`<<<`, no delimiter, or an unquoted delimiter whose text has `$`, a backquote or a backslash)
+- a redirect ShipIt does not read (`<(`, `>|`, `<>` or no target)
+- a folder ShipIt does not follow (`cd` alone, with `-`, an option, a glob, `$?` or two folders, a `cd` that may not run, `pushd`, `popd`, or a git `-C`, `--git-dir` or `--work-tree` that holds `$?`)
+
+`$?` is read as text, so `echo "exit=$?"` passes; a `cd`, or a git `-C`, `--git-dir` or `--work-tree`, whose folder holds it does not.
+
 The only silent push is an explicit push of a slice branch, in a command that does not also
 switch, merge, rebase, reset, configure or change folder, in a repository whose config does not
 send a push elsewhere (a remote's push or mirror setting, `push.default` other than `simple` or
@@ -112,17 +129,20 @@ gh release create v1.0.0
 
 The goals of the store, `<git common dir>/shipit/goals/`, are the one place under `.git` that
 passes: the skills write them. Every `.git` in the command must be followed at once by
-`/shipit/goals/`, with no `..` part after it and no `receipts/` anywhere. Anything else naming
+`/shipit/goals`, then the end of the word, a `/`, a blank, a quote or a shell separator, with no
+`..` part after it and no `receipts/` anywhere. Anything else naming
 `.git` asks, and so does `.git` as a path part of its own. A link made there reaches the hooks and
 the receipts, and an archive can hold one, so in a text that names the goals only `mkdir`, `cp`
 (with no option but `-p`, `-f`, `-n`, `-i`, `-v`, `-t`, `-T`, `--target-directory` and `--`), `cat`,
-`ls`, `head`, `tail`, `wc` and `shipit` may run, and nothing may be redirected into a file (`2>&1`
+`ls`, `head`, `tail`, `wc`, `diff` and `shipit` may run, and nothing may be redirected into a file (`2>&1`
 and `/dev/null` are fine). Any other program in the same command makes it ask, so write the store
 copy as a command of its own.
 
 ```sh silent
 mkdir -p .git/shipit/goals/v1 && cp a.md .git/shipit/goals/v1/roadmap.v1.md
 cat .git/shipit/goals/v1/roadmap.v1.md
+ls .git/shipit/goals
+diff a.md .git/shipit/goals/v1/roadmap.v1.md
 ls /path/to/repo/.git/shipit/goals/
 shipit validate build-plan .git/shipit/goals/v1/slices/x/build-plan.md
 ```
@@ -143,6 +163,7 @@ cd /other/repo && git push origin main
 cp a.md .git/shipit/receipts/check/x.json
 cat .git/shipit/goals/v1/a.md .git/config
 ls .git/shipit/goalsx/
+ls .git/shipit/goals~
 cd .git && ls
 git reflog expire --all
 git symbolic-ref HEAD refs/heads/main
@@ -199,7 +220,7 @@ Only `shipit:slice` may start agents: leaving `Agent` out of `tools` is what sto
 - By default Claude Code allows three layers of agents. Only `shipit:slice` has the `Agent` tool; setting `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH` to 2 closes the third layer for every other agent too.
 - A slice agent cannot ask the owner. A decision point ends it as blocked, its final message carries the decision point, and the lead asks the owner and starts a new slice agent.
 
-**Pushes, pull requests and the store.** A skill pushes only `git push -u origin slice/<goal>/<slice>`, alone in its Bash call. It opens the pull request with `gh pr create --title <title> --body-file <file>`. `gh pr create`, `gh pr edit` and `gh pr comment` pass the gate in every mode, so no gate stops a gh write: the skills' rule, to post to a pull request only when the owner says yes, is prose. Store files are copied in with one plain `mkdir -p … && cp …` through Bash, because the harness protects the git folder: a file-tool write there asks in default mode, goes to the classifier in auto mode, and is refused in dontAsk mode, and an allow rule does not change that.
+**Pushes, pull requests and the store.** A skill pushes only `git push -u origin slice/<goal>/<slice>`, alone in its Bash call. It opens the pull request with `gh pr create --title <title> --body-file <file>`. `gh pr create`, `gh pr edit` and `gh pr comment` pass the gate in every mode, so no gate stops a gh write: the skills' rule, to post to a pull request only when the owner says yes, is prose. Store files are put in with `shipit store put`, because the harness protects the git folder: a file-tool write there, or a Bash command that names a path under it, asks in default mode, goes to the classifier in auto mode, and is refused in a headless run, and an allow rule does not change that; `shipit store put` names no such path, and ShipIt writes the file. A goal or roadmap version is the owner's decision and is still copied with `mkdir -p … && cp …`, which asks.
 
 ### Permissions the skills need
 
@@ -218,31 +239,39 @@ The skills run commands and write files. In a headless run (`claude -p`) every q
       "Bash(git fetch *)",
       "Bash(git grep *)",
       "Bash(git worktree add *)",
+      "Bash(git switch -c *)",
+      "Bash(git checkout -b *)",
       "Bash(git add *)",
       "Bash(git commit *)",
       "Bash(git push -u origin slice/*)",
       "Bash(gh pr create *)",
       "Bash(gh pr view *)",
       "Bash(gh pr diff *)",
-      "Bash(mktemp -d /tmp/shipit.XXXXXX)",
+      "Bash(mkdir -p .shipit/td/*)",
+      "Bash(mkdir -p .shipit/drive/*)",
       "Bash(sha256sum *)",
       "Bash(./test.sh *)",
-      "Edit(//tmp/shipit.*/**)",
       "Read(~/.claude/plugins/cache/shipit/**)"
     ]
   }
 }
 ```
 
-A skill makes its own drafts folder with `mktemp -d /tmp/shipit.XXXXXX`, so `Edit(//tmp/shipit.*/**)` lets it write drafts there and nowhere else under `/tmp`.
+A skill makes its drafts folder inside the project, `.shipit/td/<name>` (`<name>` is the slice, or the goal for the roadmap), with `mkdir -p .shipit/td/<name>`, and writes the one line `*` to the `.gitignore` in it, so that git ignores the folder. The test drive has its own folder, `.shipit/drive/<slice>`, made the same way with `mkdir -p .shipit/drive/<slice>`, so that the tester sees only the built result, its docs and sample data, not the drafts. A folder inside the project is one the session may read, write and run commands in, so it needs no `--add-dir`.
 
-**The worktree.** The slice's worktree is made at `../wt/<slice>`, outside the folder of the session. Start the session with `--add-dir ../wt`, or the owner approves the prompt for it. This is a known gap until a follow-up slice.
+**Editing files and branches.** The list has no `Edit` rule. Add `--permission-mode acceptEdits` to each headless run (`claude -p --permission-mode acceptEdits ...`), which lets the session edit the files of the project, its worktree and `.shipit/td/`, and nothing outside them; in an interactive session the owner accepts the edits. The list holds `git switch -c` and `git checkout -b`, so that an agent can make an adoption branch (`adopt/setup`, `adopt/ci`, `adopt/settings`); `shipit start` makes the slice branches itself.
 
-**The store.** The harness treats files under the git folder as sensitive: it asks for each write into the store, and a headless run refuses. The rules above do not change that. In a headless run the skills stop and hand the owner the exact `mkdir -p` and `cp` commands to run. This is a known gap until a follow-up slice.
+**Running the result.** The test drive runs the built program, and a maker runs the project's own check: give each a rule like the one for `./test.sh`, for example `Bash(./greet.sh *)` for a program `greet.sh`. They run from the worktree or from `.shipit/drive/<slice>`, both inside the project.
+
+**The worktree.** `shipit start` prints `git worktree add <path> <branch>`, with the absolute path `.shipit/wt/<slice>` under the top of the main working copy, whatever folder or worktree it ran in: the worktree sits inside the project, where the session may read, write and run commands, so no `--add-dir` is needed (it needs a folder that exists, and the worktree is made later). `shipit start` adds `/.shipit/wt/` to `<git common dir>/info/exclude`, so git, and the search tools that read git's ignore rules, skip it in every working copy; nothing is committed. A tool of the project that walks the folder without git's rules (a test runner, a linter) may still see it: add `.shipit/wt` to its own ignore list.
+
+**The store.** The harness asks for a write under the git folder and a headless run refuses it, whatever the allow rules say; `shipit store put` writes build plans, plan reviews and reviews instead, and `Bash(shipit *)` allows it. A goal or roadmap version is the owner's decision: its copy asks.
+
+**Trust and headless runs.** Claude Code reads the project's `.claude/settings.json` only in a folder that was trusted, and a headless run never shows the trust question, so there the list above is not read. Trust the folder once in an interactive session (`claude` in the project folder), or pass the list to each headless run: `claude -p --settings .claude/settings.json "<prompt>"`.
 
 These commands are not in the list; they ask:
 
-- Asks: the store copy (`mkdir -p` and `cp`): the skills hand the owner the exact commands. A follow-up slice adds a command of ShipIt for the store copy.
+- Asks: the store copy (`mkdir -p` and `cp`): only for a goal or roadmap version, the owner's decision; the lead copies it, or hands the owner the exact commands.
 - Asks: the review's link hash, once per link: its `printf`, piped to the hash.
 
 ## Limits
@@ -264,7 +293,7 @@ Known, and not caught:
   names git or gh, `ls ~/.config/gh`, a `for` loop over `git add`, a command substitution in such a
   command, `git clone`, `git pull`, `git submodule` and `git tag v1`, a `python` or `perl` run,
   `cd /other/repo && git push origin main` from inside a project (the working folder is always
-  judged), a text that names `.git/`, `.git/shipit/goals` without its closing slash, `git apply`
+  judged), a text that names `.git/`, `git apply`
   to apply a patch, `tar` or `mv` into the goals, `bash script.sh`
   and `bash -o x`, `git reflog expire`, `git init --template`, `nix develop -c git commit -m …`
   that holds `git push` in the message, and `git config` with a key and no flag that reads;

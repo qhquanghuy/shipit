@@ -230,20 +230,108 @@ pub(crate) enum WriteNew {
     Cannot(Failure),
 }
 
+fn cannot_write_in(dir: &Path) -> Failure {
+    Failure::usage(format!("cannot write in {}", dir.display()))
+}
+
 // A temporary file in the final folder is hard-linked to the final name, which fails when the
-// name is taken: the first receipt is never replaced.
-pub(crate) fn write_new(path: &Path, value: &impl Serialize) -> Result<(), WriteNew> {
+// name is taken, a dangling link included: what is there is never replaced.
+fn link_new(path: &Path, bytes: &[u8]) -> Result<(), WriteNew> {
     let dir = path.parent().unwrap_or(Path::new("."));
-    let cannot = || WriteNew::Cannot(Failure::usage(format!("cannot write in {}", dir.display())));
-    let mut text = serde_json::to_vec_pretty(value).map_err(|_why| cannot())?;
-    text.push(b'\n');
-    let temporary = write_temporary(dir, &text).map_err(|_why| cannot())?;
+    let cannot = || WriteNew::Cannot(cannot_write_in(dir));
+    let temporary = write_temporary(dir, bytes).map_err(|_why| cannot())?;
     let linked = fs::hard_link(&temporary, path);
     fs::remove_file(&temporary).ok();
     match linked {
         Ok(()) => Ok(()),
         Err(why) if why.kind() == ErrorKind::AlreadyExists => Err(WriteNew::Exists),
         Err(_why) => Err(cannot()),
+    }
+}
+
+pub(crate) fn write_new(path: &Path, value: &impl Serialize) -> Result<(), WriteNew> {
+    let dir = path.parent().unwrap_or(Path::new("."));
+    let mut text =
+        serde_json::to_vec_pretty(value).map_err(|_why| WriteNew::Cannot(cannot_write_in(dir)))?;
+    text.push(b'\n');
+    link_new(path, &text)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Put {
+    New,
+    Replace,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Written {
+    Stored(PathBuf),
+    Replaced(PathBuf),
+}
+
+// One level of the way into the store: a real folder, made when missing. `create_dir` never
+// follows a link at the new name, and `create_dir_all` would.
+fn level_is_folder(level: &Path) -> Result<(), Failure> {
+    match fs::symlink_metadata(level) {
+        Ok(found) if found.file_type().is_symlink() => Err(link_refused(level)),
+        Ok(found) if found.is_dir() => Ok(()),
+        Ok(_other) => Err(cannot_write_in(level)),
+        Err(why) if why.kind() == ErrorKind::NotFound => {
+            fs::create_dir(level).map_err(|_why| cannot_write_in(level))
+        }
+        Err(_why) => Err(cannot_write_in(level)),
+    }
+}
+
+fn link_refused(path: &Path) -> Failure {
+    Failure::usage(format!(
+        "{} is a symbolic link; the store holds no links",
+        path.display()
+    ))
+}
+
+// The text goes at `parts` below the store, every level a real folder from the store down. A new
+// file is never put over a name; a replacing put swaps the whole file with a rename.
+pub(crate) fn put_text(
+    store: &Path,
+    parts: &[String],
+    text: &str,
+    how: Put,
+) -> Result<Written, Failure> {
+    let (name, folders) = parts
+        .split_last()
+        .ok_or_else(|| Failure::usage("nothing to put"))?;
+    let mut dir = store.to_path_buf();
+    level_is_folder(&dir)?;
+    for part in folders {
+        dir.push(part);
+        level_is_folder(&dir)?;
+    }
+    let path = dir.join(name);
+    let taken = match fs::symlink_metadata(&path) {
+        Ok(found) if found.file_type().is_symlink() => return Err(link_refused(&path)),
+        Ok(_other) => true,
+        Err(why) if why.kind() == ErrorKind::NotFound => false,
+        Err(_why) => return Err(cannot_write_in(&dir)),
+    };
+    match (how, taken) {
+        (Put::Replace, true) => {
+            let temporary =
+                write_temporary(&dir, text.as_bytes()).map_err(|_why| cannot_write_in(&dir))?;
+            fs::rename(&temporary, &path).map_err(|_why| {
+                fs::remove_file(&temporary).ok();
+                cannot_write_in(&dir)
+            })?;
+            Ok(Written::Replaced(path))
+        }
+        (Put::New | Put::Replace, _) => match link_new(&path, text.as_bytes()) {
+            Ok(()) => Ok(Written::Stored(path)),
+            Err(WriteNew::Exists) => Err(Failure::no(format!(
+                "{} exists; a store file is never replaced",
+                path.display()
+            ))),
+            Err(WriteNew::Cannot(failure)) => Err(failure),
+        },
     }
 }
 
@@ -322,6 +410,8 @@ pub(crate) fn append_line(path: &Path, text: &str) -> Result<(), Failure> {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
     use crate::edge::testing::scratch;
 
@@ -370,5 +460,119 @@ mod tests {
             Ok(dir.join("roadmap.v10.md"))
         );
         fs::remove_dir_all(&store).ok();
+    }
+
+    fn parts(names: &[&str]) -> Vec<String> {
+        names.iter().map(|name| (*name).to_owned()).collect()
+    }
+
+    fn tmp_files(dir: &Path) -> Vec<String> {
+        fs::read_dir(dir)
+            .expect("lists")
+            .filter_map(Result::ok)
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .filter(|name| name.starts_with(".tmp."))
+            .collect()
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            failure_persistence: None,
+            cases: 16,
+            ..ProptestConfig::default()
+        })]
+
+        #[test]
+        fn a_put_never_replaces_a_name_and_leaves_no_temporary_file(
+            first in "[a-z ]{0,12}",
+            second in "[a-z ]{0,12}",
+        ) {
+            let store = scratch("put-new");
+            let way = parts(&["goals", "g", "slices", "a", "reviews", "round-1", "review.md"]);
+            let path = store.join("goals/g/slices/a/reviews/round-1/review.md");
+            prop_assert_eq!(
+                put_text(&store, &way, &first, Put::New),
+                Ok(Written::Stored(path.clone()))
+            );
+            let taken = Failure::no(format!("{} exists; a store file is never replaced", path.display()));
+            prop_assert_eq!(put_text(&store, &way, &second, Put::New), Err(taken));
+            prop_assert_eq!(fs::read_to_string(&path).expect("reads"), first);
+            let dangling = path.with_file_name("other.md");
+            std::os::unix::fs::symlink(store.join("nowhere"), &dangling).expect("links");
+            let way = parts(&["goals", "g", "slices", "a", "reviews", "round-1", "other.md"]);
+            prop_assert!(put_text(&store, &way, &second, Put::New).is_err());
+            prop_assert!(!store.join("nowhere").exists());
+            prop_assert!(tmp_files(path.parent().expect("a folder")).is_empty());
+            fs::remove_dir_all(&store).ok();
+        }
+
+        #[test]
+        fn a_replacing_put_swaps_the_whole_file_and_never_follows_a_link(
+            first in "[a-z ]{0,12}",
+            second in "[a-z ]{0,12}",
+        ) {
+            let store = scratch("put-replace");
+            let way = parts(&["goals", "g", "slices", "a", "build-plan.md"]);
+            let path = store.join("goals/g/slices/a/build-plan.md");
+            prop_assert_eq!(
+                put_text(&store, &way, &first, Put::Replace),
+                Ok(Written::Stored(path.clone()))
+            );
+            prop_assert_eq!(
+                put_text(&store, &way, &second, Put::Replace),
+                Ok(Written::Replaced(path.clone()))
+            );
+            prop_assert_eq!(fs::read_to_string(&path).expect("reads"), second);
+            prop_assert!(tmp_files(path.parent().expect("a folder")).is_empty());
+            let target = store.join("target.txt");
+            fs::write(&target, "kept").expect("writes");
+            let linked = path.with_file_name("plan-review.md");
+            std::os::unix::fs::symlink(&target, &linked).expect("links");
+            let way = parts(&["goals", "g", "slices", "a", "plan-review.md"]);
+            prop_assert_eq!(
+                put_text(&store, &way, &first, Put::Replace),
+                Err(link_refused(&linked))
+            );
+            prop_assert_eq!(fs::read_to_string(&target).expect("reads"), "kept");
+            fs::remove_dir_all(&store).ok();
+        }
+    }
+
+    #[test]
+    fn a_link_on_the_way_into_the_store_is_refused() {
+        let way = parts(&[
+            "goals",
+            "g",
+            "slices",
+            "a",
+            "reviews",
+            "round-1",
+            "review.md",
+        ]);
+        for at in 0..=6 {
+            let root = scratch(&format!("put-link-{at}"));
+            let elsewhere = root.join("elsewhere");
+            fs::create_dir(&elsewhere).expect("makes");
+            let store = root.join("shipit");
+            let levels: Vec<PathBuf> = way
+                .iter()
+                .take(6)
+                .scan(store.clone(), |path, name| {
+                    path.push(name);
+                    Some(path.clone())
+                })
+                .collect();
+            fs::create_dir_all(levels.last().expect("a level")).expect("makes");
+            let linked = if at == 0 { &store } else { &levels[at - 1] };
+            fs::remove_dir_all(linked).expect("removes");
+            std::os::unix::fs::symlink(&elsewhere, linked).expect("links");
+            assert_eq!(
+                put_text(&store, &way, "x", Put::New),
+                Err(link_refused(linked)),
+                "level {at}"
+            );
+            assert_eq!(fs::read_dir(&elsewhere).expect("lists").count(), 0);
+            fs::remove_dir_all(&root).ok();
+        }
     }
 }

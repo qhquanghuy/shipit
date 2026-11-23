@@ -2,6 +2,7 @@
 
 bats_require_minimum_version 1.5.0
 load helpers
+load slice-helpers
 
 # These tests read skills/ and what a skill says about itself. A skill is prose, so they check its
 # shape (the function parts), what each part must name, and that what it names exists. Whether an
@@ -593,35 +594,156 @@ check_start_order() {
   run check_start_order "$BATS_TEST_TMPDIR/copy4"
   [ "$status" -eq 1 ]
   [[ $output == *"shipit-roadmap: a line names shipit start"* ]]
-}
-
-@test "skills: shipit start is named nowhere in shipit-slice outside the numbered step after the build plan review" {
-  copy_plugin "$BATS_TEST_TMPDIR/copy"
-  sed -i '/^- \*\*blocked\*\*/s/^- \*\*blocked\*\*: /- **blocked**: run `shipit start <slice>` first. /' "$BATS_TEST_TMPDIR/copy/skills/shipit-slice/SKILL.md"
-  run check_start_order "$BATS_TEST_TMPDIR/copy"
+  copy_plugin "$BATS_TEST_TMPDIR/copy5"
+  sed -i '/^- \*\*blocked\*\*/s/^- \*\*blocked\*\*: /- **blocked**: run `shipit start <slice>` first. /' "$BATS_TEST_TMPDIR/copy5/skills/shipit-slice/SKILL.md"
+  run check_start_order "$BATS_TEST_TMPDIR/copy5"
   [ "$status" -eq 1 ]
   [[ $output == *"not a numbered step names shipit start"* ]]
-  copy_plugin "$BATS_TEST_TMPDIR/copy2"
-  sed -i '/^Writes the build plan/s/runs `shipit validate`/runs `shipit start`, `shipit validate`/' "$BATS_TEST_TMPDIR/copy2/skills/shipit-slice/SKILL.md"
-  run check_start_order "$BATS_TEST_TMPDIR/copy2"
+  copy_plugin "$BATS_TEST_TMPDIR/copy6"
+  sed -i '/^Writes the build plan/s/runs `shipit validate`/runs `shipit start`, `shipit validate`/' "$BATS_TEST_TMPDIR/copy6/skills/shipit-slice/SKILL.md"
+  run check_start_order "$BATS_TEST_TMPDIR/copy6"
   [ "$status" -eq 1 ]
   [[ $output == *"not a numbered step names shipit start"* ]]
-}
-
-@test "skills: shipit start in prose, or with extra spaces, is also found in shipit-slice" {
-  copy_plugin "$BATS_TEST_TMPDIR/copy"
-  sed -i '/^- \*\*blocked\*\*/s/^- \*\*blocked\*\*: /- **blocked**: run shipit start first. /' "$BATS_TEST_TMPDIR/copy/skills/shipit-slice/SKILL.md"
-  run check_start_order "$BATS_TEST_TMPDIR/copy"
+  copy_plugin "$BATS_TEST_TMPDIR/copy7"
+  sed -i '/^- \*\*blocked\*\*/s/^- \*\*blocked\*\*: /- **blocked**: run shipit start first. /' "$BATS_TEST_TMPDIR/copy7/skills/shipit-slice/SKILL.md"
+  run check_start_order "$BATS_TEST_TMPDIR/copy7"
   [ "$status" -eq 1 ]
   [[ $output == *"not a numbered step names shipit start"* ]]
-  copy_plugin "$BATS_TEST_TMPDIR/copy2"
-  sed -i '/^- \*\*blocked\*\*/s/^- \*\*blocked\*\*: /- **blocked**: run `shipit  start` first. /' "$BATS_TEST_TMPDIR/copy2/skills/shipit-slice/SKILL.md"
-  run check_start_order "$BATS_TEST_TMPDIR/copy2"
+  copy_plugin "$BATS_TEST_TMPDIR/copy8"
+  sed -i '/^- \*\*blocked\*\*/s/^- \*\*blocked\*\*: /- **blocked**: run `shipit  start` first. /' "$BATS_TEST_TMPDIR/copy8/skills/shipit-slice/SKILL.md"
+  run check_start_order "$BATS_TEST_TMPDIR/copy8"
   [ "$status" -eq 1 ]
   [[ $output == *"not a numbered step names shipit start"* ]]
-  copy_plugin "$BATS_TEST_TMPDIR/copy3"
-  sed -i 's/^Never: write code/Never: write code, run shipit start/' "$BATS_TEST_TMPDIR/copy3/skills/shipit-roadmap/SKILL.md"
-  run check_start_order "$BATS_TEST_TMPDIR/copy3"
+  copy_plugin "$BATS_TEST_TMPDIR/copy9"
+  sed -i 's/^Never: write code/Never: write code, run shipit start/' "$BATS_TEST_TMPDIR/copy9/skills/shipit-roadmap/SKILL.md"
+  run check_start_order "$BATS_TEST_TMPDIR/copy9"
   [ "$status" -eq 1 ]
   [[ $output == *"shipit-roadmap: a line names shipit start"* ]]
+}
+
+# check_store_writes: a build plan, a plan review and a review reach the store through
+# `shipit store put`; only a goal or roadmap version, the owner's, is copied with `cp`.
+check_store_writes() {
+  local root=$1 slice review file span target bad=0
+  five_skills "$root" || return 1
+  slice=$(skill_file "$root" shipit-slice)
+  review=$(skill_file "$root" shipit-review)
+  grep -qF '`shipit store put build-plan' "$slice" || { echo "shipit-slice: no shipit store put of the build plan"; bad=1; }
+  grep -qF '`shipit store put plan-review' "$slice" || { echo "shipit-slice: no shipit store put of the plan review"; bad=1; }
+  grep -F '`shipit store put <kind>' "$review" | grep -qF -- '--round' || { echo "shipit-review: no shipit store put of a review with --round"; bad=1; }
+  for file in "$root"/skills/*/SKILL.md; do
+    if grep -nE 'shipit store put (roadmap|goal)' "$file"; then
+      echo "${file#"$root"/}: a goal or roadmap version is put with shipit store put"
+      bad=1
+    fi
+    while IFS= read -r span; do
+      [[ $span == *'<git common dir>/shipit/goals/'* ]] || continue
+      target=${span##*/}
+      target=${target%'`'}
+      [[ $target =~ ^(goal|roadmap)\.v\<N\>\.md$ ]] || { echo "${file#"$root"/}: cp into the store of $target, which is not a goal or roadmap version"; bad=1; }
+    done < <(grep -oE '`[^`]*cp [^`]*`' "$file" || true)
+  done
+  return "$bad"
+}
+
+@test "skills: every store write but a goal or roadmap version is a shipit store put" {
+  run check_store_writes "$SHIPIT_SRC"
+  [ "$output" = "" ]
+  [ "$status" -eq 0 ]
+  copy_plugin "$BATS_TEST_TMPDIR/copy"
+  printf '\n`cp x <git common dir>/shipit/goals/<goal>/slices/<slice>/build-plan.md`\n' >>"$BATS_TEST_TMPDIR/copy/skills/shipit-slice/SKILL.md"
+  run check_store_writes "$BATS_TEST_TMPDIR/copy"
+  [ "$status" -eq 1 ]
+  [[ $output == *"build-plan.md"* ]]
+}
+
+# check_lead_leaves_claims: step 7 of shipit-review says the review lead never edits a reviewer's
+# claims and sends the report back.
+check_lead_leaves_claims() {
+  local line bad=0
+  line=$(step_line "$(skill_file "$1" shipit-review)" 7)
+  [[ $line == *"never edits a reviewer's claims"* ]] || { echo "shipit-review: step 7 does not say the lead never edits a reviewer's claims"; bad=1; }
+  [[ $line == *"sends the report back"* ]] || { echo "shipit-review: step 7 does not say the lead sends the report back"; bad=1; }
+  return "$bad"
+}
+
+@test "skills: the review lead never edits a reviewer's claims" {
+  run check_lead_leaves_claims "$SHIPIT_SRC"
+  [ "$output" = "" ]
+  [ "$status" -eq 0 ]
+  copy_plugin "$BATS_TEST_TMPDIR/copy"
+  sed -i "/^7\. /s/ The review lead never edits a reviewer's claims: it sends the report back to that reviewer, or records its own disagreement beside it\.//" "$BATS_TEST_TMPDIR/copy/skills/shipit-review/SKILL.md"
+  run check_lead_leaves_claims "$BATS_TEST_TMPDIR/copy"
+  [ "$status" -eq 1 ]
+  [[ $output == *"never edits a reviewer's claims"* ]]
+}
+
+# check_drafts_in_project <root>: no skill or doc names a /tmp/shipit folder, and each skill that
+# drafts, or runs a test drive, names its folder inside the project, `.shipit/td/`.
+check_drafts_in_project() {
+  local root=$1 skill folder bad=0
+  five_skills "$root" || return 1
+  if grep -rnE 'tmp/shipit' "$root/README.md" "$root/docs" "$root/skills"; then
+    echo "a skill or doc names a folder under /tmp/shipit"
+    bad=1
+  fi
+  for skill in "${SKILL_NAMES[@]}"; do
+    folder='.shipit/td/'
+    [[ $skill == shipit-test-drive ]] && folder='.shipit/drive/'
+    grep -qF "$folder" "$(skill_file "$root" "$skill")" || { echo "$skill: no folder under $folder"; bad=1; }
+  done
+  return "$bad"
+}
+
+@test "skills: every drafts and test-drive folder is inside the project, under .shipit/td" {
+  run check_drafts_in_project "$SHIPIT_SRC"
+  [ "$output" = "" ]
+  [ "$status" -eq 0 ]
+  copy_plugin "$BATS_TEST_TMPDIR/copy"
+  printf '\nMake it with `mktemp -d /tmp/shipit.XXXXXX`.\n' >>"$BATS_TEST_TMPDIR/copy/skills/shipit-slice/SKILL.md"
+  run check_drafts_in_project "$BATS_TEST_TMPDIR/copy"
+  [ "$status" -eq 1 ]
+  [[ $output == *"under /tmp/shipit"* ]]
+  copy_plugin "$BATS_TEST_TMPDIR/copy2"
+  sed -i 's|\.shipit/drive/|.shipit/x/|g' "$BATS_TEST_TMPDIR/copy2/skills/shipit-test-drive/SKILL.md"
+  run check_drafts_in_project "$BATS_TEST_TMPDIR/copy2"
+  [ "$status" -eq 1 ]
+  [[ $output == *"shipit-test-drive: no folder under .shipit/drive/"* ]]
+}
+
+@test "skills: an owner's answer is logged with the lead's model and effort, and names the owner in --text" {
+  local line
+  line=$(step_line "$SHIPIT_SRC/skills/shipit-slice/SKILL.md" 6)
+  [[ $line == *'--by <model>:<effort>'* ]]
+  [[ $line == *'--text'* ]]
+  [[ $line == *'`--by owner` is refused'* ]]
+}
+
+@test "skills: the test drive has its own folder, apart from the drafts folder of the slice" {
+  local slice drive drafts
+  slice=$SHIPIT_SRC/skills/shipit-slice/SKILL.md
+  drive=$(grep -oE '\.shipit/(td|drive)/<slice>' "$SHIPIT_SRC/skills/shipit-test-drive/SKILL.md" | sort -u)
+  drafts=$(grep -oE '\.shipit/(td|drive)/<slice>' "$slice" | sort -u)
+  [ "$drive" = ".shipit/drive/<slice>" ]
+  [ "$drafts" = ".shipit/td/<slice>" ]
+  [ "$drive" != "$drafts" ]
+}
+
+@test "skills: the owner-answer command of shipit-slice runs against the binary" {
+  local span cmd
+  make_slice_repo
+  make_work "slice/demo/beta" 1
+  check_here
+  rec second-opinion beta --author sonnet:high --by opus:high --result approve \
+    --finding "question: F1 text"
+  [ "$status" -eq 0 ]
+  span=$(step_line "$SHIPIT_SRC/skills/shipit-slice/SKILL.md" 6 | grep -oE '`shipit log <slice> answer[^`]*`' | tr -d '`')
+  [ -n "$span" ]
+  cmd=$(sed -e 's/<slice>/beta/' -e 's/<Fn>/F1/' -e 's/<model>:<effort>/sonnet:high/' \
+    -e 's/<kind>/second-opinion/' -e 's/<answer>/because/' <<<"$span")
+  [[ $cmd != *"<"* ]]
+  read -ra words <<<"$cmd"
+  run --separate-stderr "$SHIPIT_BIN" "${words[@]:1}"
+  [ "$status" -eq 0 ]
+  [ "$output" = "logged answer for beta" ]
 }

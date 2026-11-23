@@ -51,7 +51,7 @@ fn in_raw_words(pattern: &[String], words: &[String]) -> bool {
 fn matched<'a>(command: &str, notes: &'a Notes) -> Option<&'a Vec<String>> {
     let found = |holds: &dyn Fn(&[String]) -> bool| notes.never.0.iter().find(|p| holds(p));
     match parse(command) {
-        Parse::Complex => {
+        Parse::Complex(_) => {
             let words = raw_words_unquoted(command);
             found(&|pattern| in_raw_words(pattern, &words))
         }
