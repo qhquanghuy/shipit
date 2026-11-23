@@ -283,6 +283,17 @@ pub(crate) fn forged_trailer(caller: &Caller<'_>, change: &Change<'_>) -> Verdic
     }
 }
 
+// Two answers to one command: the stronger kind, and both texts.
+pub(crate) fn both(first: Answer, second: Answer) -> Answer {
+    match (first, second) {
+        (Answer::Pass, other) | (other, Answer::Pass) => other,
+        (Answer::Deny(a), Answer::Deny(b) | Answer::Ask(b)) | (Answer::Ask(a), Answer::Deny(b)) => {
+            Answer::Deny(format!("{a} {b}"))
+        }
+        (Answer::Ask(a), Answer::Ask(b)) => Answer::Ask(format!("{a} {b}")),
+    }
+}
+
 // A question the permission mode cannot put to the owner is a denial, as the ship gate's is.
 pub(crate) fn answer(mode: Mode, verdict: Verdict) -> Answer {
     match (verdict, mode) {
@@ -681,5 +692,30 @@ mod tests {
             prop_assert_eq!(forged_trailer(&caller, &change), wanted);
         }
 
+        #[test]
+        fn two_answers_to_one_command_keep_the_stronger_kind_and_both_texts(
+            first in proptest::option::of((any::<bool>(), "[a-z]{1,6}")),
+            second in proptest::option::of((any::<bool>(), "[A-Z]{1,6}")),
+        ) {
+            let make = |part: &Option<(bool, String)>| match part {
+                None => Answer::Pass,
+                Some((true, text)) => Answer::Deny(text.clone()),
+                Some((false, text)) => Answer::Ask(text.clone()),
+            };
+            let joined = both(make(&first), make(&second));
+            let texts: Vec<&String> = first.iter().chain(second.iter()).map(|(_, text)| text).collect();
+            let denied = first.iter().chain(second.iter()).any(|(deny, _)| *deny);
+            match joined {
+                Answer::Pass => prop_assert!(texts.is_empty()),
+                Answer::Deny(text) => {
+                    prop_assert!(denied);
+                    prop_assert!(texts.iter().all(|part| text.contains(part.as_str())));
+                }
+                Answer::Ask(text) => {
+                    prop_assert!(!denied);
+                    prop_assert!(texts.iter().all(|part| text.contains(part.as_str())));
+                }
+            }
+        }
     }
 }

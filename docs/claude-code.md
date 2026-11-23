@@ -206,6 +206,9 @@ in every working copy of a ShipIt project, on any branch: a commit that carries 
 else, is refused (answer A for an agent, G for the main session), so that it cannot be moved onto a
 slice branch later.
 
+When the author rule and the ship gate both answer one command (a commit joined to a push to the
+base branch, say), the answer is the stronger of the two and carries both texts.
+
 A folder counts when it is a working copy of a ShipIt project whose current branch is a slice
 branch (`slice/<goal>/<slice>`). The hook that judges Bash and Monitor reads each git command with
 its `cd` and its `-C`; a command that names git and one of these moves but is not all plain git

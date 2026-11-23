@@ -12,7 +12,9 @@ use crate::edge::records::store_dir;
 use crate::pure::branch::is_slice_branch;
 use crate::pure::claude_hook::{HookInput, mcp_ship, resolve};
 use crate::pure::failure::Failure;
-use crate::pure::made_by::{Caller, Change, Moves, answer, author_verdict, forged_trailer, moves};
+use crate::pure::made_by::{
+    Caller, Change, Moves, answer, author_verdict, both, forged_trailer, moves,
+};
 use crate::pure::setup::{HEAD, SETUP_PATH};
 use crate::pure::ship_gate::{
     Answer, Facts, judged_dirs, named_folders, rewires_push, ship_answer, ship_reasons, triggered,
@@ -349,10 +351,7 @@ fn judge(input: &HookInput) -> Answer {
             .map_or(Answer::Pass, |path| judge_edit(input, path));
     }
     match text("command") {
-        Some(command) => match judge_moves(input, command) {
-            Answer::Pass => judge_command(input, command),
-            decided @ (Answer::Ask(_) | Answer::Deny(_)) => decided,
-        },
+        Some(command) => both(judge_moves(input, command), judge_command(input, command)),
         None => unreadable(input, "the hook input has no tool_input.command"),
     }
 }
