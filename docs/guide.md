@@ -71,9 +71,9 @@ At adoption, at the start of each goal, and whenever you ask, a `shipit:model-sc
 
 The lead session is named by `shipit session-name <goal>`; a slice session by `shipit session-name <goal> <slice>`. At the end of the roadmap you pick one of four ways:
 
-1. one session per slice: you open a session for each;
-2. lead fan-out: the lead runs the slices one after the other;
-3. one agent per slice: `shipit:slice` runs a whole slice; it cannot ask you, so a question ends it as blocked and the lead asks you;
+1. one session per slice: you open a session for each, in the slice's worktree; it is the only way for a headless run;
+2. lead fan-out: the lead runs the slices one after the other (not for a headless run: the maker cannot be started in another folder);
+3. one agent per slice: `shipit:slice` runs a whole slice; it cannot ask you, so a question ends it as blocked and the lead asks you (not for a headless run, for the same reason);
 4. the `Workflow` tool: a script runs the slices; only if you ask for it.
 
 ## Words you may meet

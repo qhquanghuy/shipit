@@ -7,4 +7,4 @@ Inputs: the goal, the slice and the store path, as the lead gives them. Start yo
 
 Your final message is one line: ready to ship or blocked, the pull request, the number of known issues and how many claims are inferred. When blocked, it carries the decision point. End with Verified, Inferred and Unverifiable.
 
-Never merge, tag, or push a branch other than the slice branch. Never change the setup. Never ask the owner directly. Never review your own work. Use the terms of docs/vocab.md.
+Never start `shipit:maker`: the gate refuses it outside the slice's worktree; end as blocked and ask for one session per slice. Never merge, tag, or push a branch other than the slice branch. Never change the setup. Never ask the owner directly. Never review your own work. Use the terms of docs/vocab.md.

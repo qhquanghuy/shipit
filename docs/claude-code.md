@@ -259,7 +259,7 @@ after the fact.
 ## Sessions
 
 Start the lead with `claude -n "$(shipit session-name <goal>)"`, and a slice in its own working
-copy with `claude -n "$(shipit session-name <goal> <slice>)"`. A session answers to its name, so a
+copy with `claude -n "$(shipit session-name <goal> <slice>)"`. Open it in the slice's worktree (the path `shipit start` prints): the maker starts in the folder of the session, and works only on a slice branch. A session answers to its name, so a
 slice session ends with one message to the lead. A lead that is not in bypass mode holds a message
 from a session that is (and the other way round) until the owner approves it, and drops it after
 five minutes. So the lead confirms with `shipit status`, which is the source of truth; a message is
@@ -287,6 +287,8 @@ Only `shipit:slice` may start agents: leaving `Agent` out of `tools` is what sto
 **Sessions and messages.** Name a session with `claude -n "$(shipit session-name <goal> <slice>)"` as under Sessions; a slice session ends with one message to the lead, which confirms with `shipit status`.
 
 **How slices run.** The last decision point of `shipit-roadmap` offers four ways: one session per slice; lead fan-out (the lead runs the slices in each slice's worktree); the `Workflow` tool, which only the owner's explicit opt-in chooses; and one agent per slice (`shipit:slice`, started by the lead in the main working copy; it makes the slice's worktree itself).
+
+The maker works only in a working copy on a slice branch, and the Agent tool of Claude Code 2.1.327 has no `cwd`: an agent it starts works in the folder of the session (measured). So a headless run has one way, one session per slice, opened in the slice's worktree; lead fan-out and one agent per slice are left out of its choices, and the roadmap skill says so. A slice agent ends as blocked and asks for one session per slice.
 
 **One agent per slice.** The slice agent is one layer below the lead; its makers, reader, reviewers and tester are one layer deeper. Measured with the plugin loaded:
 - The agent cap counts nested agents. One slice agent needs room for itself and its widest moment, two reviewers: 3 agents. With `agents.parallel.agents = 4` one slice agent runs at a time; for n at once the lead proposes `agents.parallel.agents = 3 × n` as a setup-only pull request.
