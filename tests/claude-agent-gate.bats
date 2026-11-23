@@ -134,3 +134,37 @@ receipt() {
   [[ $(reason) == "ShipIt: the agent cannot start: the setup file .config/shipit.toml is not committed"*"commit it first." ]]
   [ ! -e "$BATS_TEST_TMPDIR/plugin-data" ]
 }
+
+@test "agent gate: a maker starts on a slice branch at the setup's maker rank" {
+  local wt="$BATS_TEST_TMPDIR/wt" rank='"model": "sonnet", "effort": "high"' denied
+  denied='ShipIt: shipit:maker works in the slice'"'"'s worktree, and this Claude Code cannot start an agent in another folder: run the slice in a session opened in its worktree (docs/claude-code.md, Sessions).'
+  git checkout -q main
+  git worktree add -q -b slice/v1/w "$wt"
+  run_hook claude-agent-gate "$(agent_input "$REPO" shipit:maker "Make it." "{$rank, \"cwd\": \"$wt\"}")"
+  [ -z "$output" ]
+  run_hook claude-agent-gate "$(agent_input "$REPO" shipit:maker "Make it." "{$rank}")"
+  [ "$(decision)" = deny ]
+  [ "$(reason)" = "$denied" ]
+  run_hook claude-agent-gate "$(agent_input "$REPO" shipit:maker "Make it." "{$rank, \"cwd\": \"$REPO\"}")"
+  [ "$(decision)" = deny ]
+  [ "$(reason)" = "$denied" ]
+  run_hook claude-agent-gate "$(agent_input "$wt" shipit:maker "Make it." "{$rank}")"
+  [ -z "$output" ]
+  run_hook claude-agent-gate "$(agent_input "$REPO" shipit:reader "Read it.")"
+  [ -z "$output" ]
+  local extra
+  for extra in '"model": "opus", "effort": "high"' '"effort": "high"' '"model": "sonnet", "effort": "low"' '"model": "sonnet"'; do
+    run_hook claude-agent-gate "$(agent_input "$wt" shipit:maker "Make it." "{$extra}")"
+    [ "$(decision)" = deny ]
+    [ "$(reason)" = 'ShipIt: start shipit:maker with model "sonnet" and effort "high", the setup'"'"'s maker (agents.roles.maker), or its stand-in: the receipts name that rank as the author.' ]
+  done
+  # the maker at the top tier: its stand-in passes too
+  write_setup "$(fixture_with 'gate.check=[]' 'agents.roles.maker.tier=4')"
+  run_hook claude-agent-gate "$(agent_input "$wt" shipit:maker "Make it." '{"model": "opus", "effort": "high"}')"
+  [ -z "$output" ]
+  run_hook claude-agent-gate "$(agent_input "$wt" shipit:maker "Make it." '{"model": "fable", "effort": "high"}')"
+  [ -z "$output" ]
+  run_hook claude-agent-gate "$(agent_input "$wt" shipit:maker "Make it." "{$rank}")"
+  [ "$(decision)" = deny ]
+  [[ $(reason) == 'ShipIt: start shipit:maker with model "fable" and effort "high", '* ]]
+}
