@@ -36,7 +36,7 @@ Never: merge, tag, push another branch, change the setup, or review its own work
 8. One message to the lead, within `owner.status_update_max_lines`: ready to ship or blocked, the pull request, the number of known issues and how many claims are inferred. Message the lead session by its name (`shipit session-name <goal>`); the lead confirms with `shipit status`.
 ## As a slice agent
 - The lead starts `shipit:slice` in the main working copy, at the planner's rank, and passes the goal, the slice and the store path. The agent runs steps 1 to 7 itself: it writes the build plan in step 1 and makes the worktree itself in step 2.
-- It never starts `shipit:maker`: the gate refuses a maker outside the slice's worktree, and the Agent tool of this Claude Code cannot start an agent in another folder. It ends as blocked and asks for one session per slice.
+- It never starts `shipit:maker`: the gate refuses a maker outside the slice's worktree, and the Agent tool cannot start an agent in another folder. It ends as blocked and asks for one session per slice.
 - Its makers, reader, reviewers and tester run one layer deeper, each with the model and effort of its rank. None of them can start an agent: their `tools` leave `Agent` out.
 - The review gate and the agent cap count agents started by an agent (measured). One slice agent needs room for itself and its widest moment, two reviewers: 3 agents. `docs/claude-code.md` says what that means for `agents.parallel.agents`.
 - It never asks the owner. A decision point ends it as **blocked**, and its final message carries the decision point; the lead asks the owner and starts a new slice agent, which continues from `shipit status`.

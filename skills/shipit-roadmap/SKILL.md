@@ -36,7 +36,7 @@ Never: write code, commit, push, or begin a slice (`shipit-slice` does that, aft
 ## How slices run
 The lead recommends one way from the number and size of the slices.
 
-A headless run (`claude -p`) has one way: one session per slice, opened in the slice's worktree. `shipit:maker` works only in a working copy on a slice branch, and the Agent tool of this Claude Code cannot start an agent in another folder, so lead fan-out and one agent per slice are left out of a headless run's choices (docs/claude-code.md, The author rule).
+A headless run has one way: one session per slice, opened in the slice's worktree. `shipit:maker` works only in a working copy on a slice branch, and the Agent tool cannot start an agent in another folder, so lead fan-out and one agent per slice are left out of a headless run's choices (docs/claude-code.md, The author rule).
 
 | Way | Who runs `shipit-slice` | Recommended when |
 |---|---|---|
