@@ -46,6 +46,7 @@ The skills run commands and write files. In a headless run (`claude -p`) every q
       "Bash(gh pr view *)",
       "Bash(gh pr diff *)",
       "Bash(mkdir -p .shipit/td/*)",
+      "Bash(mkdir -p .shipit/drive/*)",
       "Bash(sha256sum *)",
       "Bash(./test.sh *)",
       "Read(~/.claude/plugins/cache/shipit/**)"
@@ -54,11 +55,11 @@ The skills run commands and write files. In a headless run (`claude -p`) every q
 }
 ```
 
-A skill makes its drafts folder inside the project, `.shipit/td/<name>` (`<name>` is the slice, or the goal for the roadmap), with `mkdir -p .shipit/td/<name>`, and writes the one line `*` to the `.gitignore` in it, so that git ignores the folder. The test drive also runs in `.shipit/td/<slice>`. A folder inside the project is one the session may read, write and run commands in, so it needs no `--add-dir`.
+A skill makes its drafts folder inside the project, `.shipit/td/<name>` (`<name>` is the slice, or the goal for the roadmap), with `mkdir -p .shipit/td/<name>`, and writes the one line `*` to the `.gitignore` in it, so that git ignores the folder. The test drive has its own folder, `.shipit/drive/<slice>`, made the same way with `mkdir -p .shipit/drive/<slice>`, so that the tester sees only the built result, its docs and sample data, not the drafts. A folder inside the project is one the session may read, write and run commands in, so it needs no `--add-dir`.
 
 **Editing files and branches.** The list has no `Edit` rule. Add `--permission-mode acceptEdits` to each headless run (`claude -p --permission-mode acceptEdits ...`), which lets the session edit the files of the project, its worktree and `.shipit/td/`, and nothing outside them; in an interactive session the owner accepts the edits. The list holds `git switch -c` and `git checkout -b`, so that an agent can make an adoption branch (`adopt/setup`, `adopt/ci`, `adopt/settings`); `shipit start` makes the slice branches itself.
 
-**Running the result.** The test drive runs the built program, and a maker runs the project's own check: give each a rule like the one for `./test.sh`, for example `Bash(./greet.sh *)` for a program `greet.sh`. They run from the worktree or from `.shipit/td/<slice>`, both inside the project.
+**Running the result.** The test drive runs the built program, and a maker runs the project's own check: give each a rule like the one for `./test.sh`, for example `Bash(./greet.sh *)` for a program `greet.sh`. They run from the worktree or from `.shipit/drive/<slice>`, both inside the project.
 
 **The worktree.** `shipit start` prints `git worktree add <path> <branch>`, with the absolute path `.shipit/wt/<slice>` under the top of the main working copy, whatever folder or worktree it ran in: the worktree sits inside the project, where the session may read, write and run commands, so no `--add-dir` is needed (it needs a folder that exists, and the worktree is made later). `shipit start` adds `/.shipit/wt/` to `<git common dir>/info/exclude`, so git, and the search tools that read git's ignore rules, skip it in every working copy; nothing is committed. A tool of the project that walks the folder without git's rules (a test runner, a linter) may still see it: add `.shipit/wt` to its own ignore list.
 

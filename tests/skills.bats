@@ -681,14 +681,16 @@ check_lead_leaves_claims() {
 # check_drafts_in_project <root>: no skill or doc names a /tmp/shipit folder, and each skill that
 # drafts, or runs a test drive, names its folder inside the project, `.shipit/td/`.
 check_drafts_in_project() {
-  local root=$1 skill bad=0
+  local root=$1 skill folder bad=0
   five_skills "$root" || return 1
   if grep -rnE 'tmp/shipit' "$root/README.md" "$root/docs" "$root/skills"; then
     echo "a skill or doc names a folder under /tmp/shipit"
     bad=1
   fi
   for skill in "${SKILL_NAMES[@]}"; do
-    grep -qF '.shipit/td/' "$(skill_file "$root" "$skill")" || { echo "$skill: no drafts folder under .shipit/td/"; bad=1; }
+    folder='.shipit/td/'
+    [[ $skill == shipit-test-drive ]] && folder='.shipit/drive/'
+    grep -qF "$folder" "$(skill_file "$root" "$skill")" || { echo "$skill: no folder under $folder"; bad=1; }
   done
   return "$bad"
 }
@@ -703,10 +705,10 @@ check_drafts_in_project() {
   [ "$status" -eq 1 ]
   [[ $output == *"under /tmp/shipit"* ]]
   copy_plugin "$BATS_TEST_TMPDIR/copy2"
-  sed -i 's|\.shipit/td/|.shipit/x/|g' "$BATS_TEST_TMPDIR/copy2/skills/shipit-test-drive/SKILL.md"
+  sed -i 's|\.shipit/drive/|.shipit/x/|g' "$BATS_TEST_TMPDIR/copy2/skills/shipit-test-drive/SKILL.md"
   run check_drafts_in_project "$BATS_TEST_TMPDIR/copy2"
   [ "$status" -eq 1 ]
-  [[ $output == *"shipit-test-drive: no drafts folder under .shipit/td/"* ]]
+  [[ $output == *"shipit-test-drive: no folder under .shipit/drive/"* ]]
 }
 
 @test "skills: an owner's answer is logged with the lead's model and effort, and names the owner in --text" {
@@ -720,8 +722,8 @@ check_drafts_in_project() {
 @test "skills: the test drive has its own folder, apart from the drafts folder of the slice" {
   local slice drive drafts
   slice=$SHIPIT_SRC/skills/shipit-slice/SKILL.md
-  drive=$(grep -oE '\.shipit/[a-z]+/<slice>' "$SHIPIT_SRC/skills/shipit-test-drive/SKILL.md" | sort -u)
-  drafts=$(grep -oE '\.shipit/[a-z]+/<slice>' "$slice" | sort -u)
+  drive=$(grep -oE '\.shipit/(td|drive)/<slice>' "$SHIPIT_SRC/skills/shipit-test-drive/SKILL.md" | sort -u)
+  drafts=$(grep -oE '\.shipit/(td|drive)/<slice>' "$slice" | sort -u)
   [ "$drive" = ".shipit/drive/<slice>" ]
   [ "$drafts" = ".shipit/td/<slice>" ]
   [ "$drive" != "$drafts" ]
@@ -733,11 +735,11 @@ check_drafts_in_project() {
   make_work "slice/demo/beta" 1
   check_here
   rec second-opinion beta --author sonnet:high --by opus:high --result approve \
-    --finding "question: F2 text"
+    --finding "question: F1 text"
   [ "$status" -eq 0 ]
   span=$(step_line "$SHIPIT_SRC/skills/shipit-slice/SKILL.md" 6 | grep -oE '`shipit log <slice> answer[^`]*`' | tr -d '`')
   [ -n "$span" ]
-  cmd=$(sed -e 's/<slice>/beta/' -e 's/<Fn>/F2/' -e 's/<model>:<effort>/sonnet:high/' \
+  cmd=$(sed -e 's/<slice>/beta/' -e 's/<Fn>/F1/' -e 's/<model>:<effort>/sonnet:high/' \
     -e 's/<kind>/second-opinion/' -e 's/<answer>/because/' <<<"$span")
   [[ $cmd != *"<"* ]]
   read -ra words <<<"$cmd"
