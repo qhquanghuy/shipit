@@ -8,5 +8,6 @@ DW17 = [
   "skills: the store is read with shipit store show",
   "skills: the maker runs each command alone",
   "docs: adoption starts with the permission list, trusted once",
+  "docs: the permission part says how a headless run gets the list",
   "docs: nobody is told to edit the user settings file",
 ]
