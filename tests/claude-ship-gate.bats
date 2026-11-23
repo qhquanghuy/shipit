@@ -496,3 +496,54 @@ edits() {
   edits shipit:slice Write "$REPO/.shipit/coverage/v1/x.toml"
   [ "$(decision)" = deny ]
 }
+
+@test "ship gate: a branch move on a slice branch is a move of the work" {
+  local command who
+  for command in 'git checkout -B slice/v1/x tmp' 'git switch -C slice/v1/x tmp' 'git switch --force-create slice/v1/x tmp' \
+    'git branch -f slice/v1/x tmp' 'git update-ref refs/heads/slice/v1/x tmp' 'env git checkout -B slice/v1/x tmp'; do
+    by shipit:slice "$command"
+    [ "$(decision)" = deny ]
+    [[ $(reason) == "ShipIt: on a slice branch only shipit:maker commits or moves the work"* ]]
+    gate "$command" default
+    [ "$(decision)" = ask ]
+    [[ $(reason) == "ShipIt: only shipit:maker changes a slice's work"* ]]
+  done
+  by shipit:maker 'git checkout -B slice/v1/x tmp'
+  [ -z "$output" ]
+  for command in 'git checkout -b tmp' 'git checkout tmp' 'git switch tmp' 'git switch -c tmp' 'git branch tmp' 'git branch -d tmp'; do
+    for who in main shipit:slice; do
+      if [[ $who == main ]]; then gate "$command" default; else by "$who" "$command"; fi
+      [[ $output != *"only shipit:maker"* ]]
+    done
+  done
+}
+
+@test "ship gate: the maker's trailer is refused to a non-maker on any branch of a project" {
+  local maker='--trailer "ShipIt-Made-By: shipit:maker"' branch
+  for branch in tmp main adopt/setup slice/v1/x; do
+    git checkout -q -B "$branch"
+    gate "git commit -m x $maker" default
+    [ "$(decision)" = deny ]
+    [ "$(reason)" = "ShipIt: only shipit:maker may write its own trailer; the main session is not the maker." ]
+    by shipit:slice "git commit -m x $maker"
+    [ "$(decision)" = deny ]
+    [[ $(reason) == "ShipIt: on a slice branch only shipit:maker commits or moves the work"* ]]
+    by shipit:maker "git commit -m x $maker"
+    [ -z "$output" ]
+  done
+  git checkout -q -B tmp
+  gate 'git commit -m x --trailer "ShipIt-Made-By: owner"' default
+  [ -z "$output" ]
+  # every trailer counts, not the last only
+  git checkout -q slice/v1/x
+  gate "git commit -m x $maker --trailer \"ShipIt-Made-By: owner\"" default
+  [ "$(decision)" = deny ]
+  [[ $(reason) == "ShipIt: only shipit:maker may write its own trailer"* ]]
+  gate "git commit -m x --trailer \"ShipIt-Made-By: owner\" $maker" default
+  [ "$(decision)" = deny ]
+  by shipit:maker "git commit -m x $maker --trailer \"ShipIt-Made-By: owner\""
+  [ "$(decision)" = deny ]
+  [[ $(reason) == "ShipIt: a maker commits with one plain command"* ]]
+  by shipit:maker "git commit -m x --trailer \"ShipIt-Made-By: owner\" $maker"
+  [ "$(decision)" = deny ]
+}

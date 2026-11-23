@@ -402,3 +402,17 @@ PLAN=(--author opus:high --by fable:high --result approve)
   [ "$status" -eq 0 ]
   [[ $stderr == *"shipit: alpha was started before the author rule: the trailers of its commits are not checked"* ]]
 }
+
+@test "receipt: a slice branch forced onto an untrailered commit is refused" {
+  make_slice_repo
+  plan_ready alpha
+  run "$SHIPIT_BIN" start alpha
+  [ "$status" -eq 0 ]
+  git checkout -q -b tmp main
+  plain_commit forged
+  git checkout -q -B slice/demo/alpha tmp
+  check_here
+  rec informed-review alpha --author sonnet:high --by opus:high --result approve
+  [ "$status" -eq 1 ]
+  [[ $stderr == *"has no \"ShipIt-Made-By: shipit:maker\" or \"ShipIt-Made-By: owner\" trailer"* ]]
+}
