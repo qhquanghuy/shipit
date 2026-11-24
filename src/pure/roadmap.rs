@@ -9,8 +9,8 @@ use crate::pure::goal::{DoneWhen, GoalName, QualifiedDoneWhen, is_name, parse_do
 use crate::pure::messages::{
     AFTER_ARRAY, AFTER_ITEM, CYCLE, GOAL_NAME, LISTED_TWICE, MEETS_ARRAY, MEETS_ITEM, NO_SLICE,
     NOT_AN_ITEM, NOT_EMPTY, OBJECTS, OBJECTS_NON_EMPTY, OVERLAP, OWNS_ARRAY, OWNS_ITEM, OWNS_NONE,
-    SELF_AFTER, SELF_SPLIT, SLICE_NAME, SPLIT_ARRAY, SPLIT_ITEM, TRUE_OR_FALSE, UNKNOWN_AFTER,
-    UNKNOWN_SPLIT, USED_TWICE, say,
+    SELF_AFTER, SELF_SPLIT, SLICE_NAME, SPLIT_ARRAY, SPLIT_ITEM, SPLIT_UNHELD, TRUE_OR_FALSE,
+    UNKNOWN_AFTER, UNKNOWN_SPLIT, USED_TWICE, say,
 };
 use crate::pure::repo_path::RepoPath;
 use crate::pure::rules::{
@@ -673,8 +673,31 @@ fn split_problems(roadmap: &Roadmap, splits: &[Vec<SliceName>]) -> Vec<Problem> 
     problems
 }
 
-// Unknown names (`after`, then `split_into`) first, then a cycle, then overlapping paths: each
-// needs the one before it.
+// The overlap check skips a split slice, so its paths are safe only while its parts own them.
+fn unheld_problems(roadmap: &Roadmap, splits: &[Vec<SliceName>]) -> Vec<Problem> {
+    let mut problems = Vec::new();
+    for (index, (parts, element)) in splits.iter().zip(&roadmap.elements).enumerate() {
+        let held: BTreeSet<&str> = roadmap
+            .elements
+            .iter()
+            .filter(|other| parts.contains(other.name()))
+            .flat_map(Element::owns)
+            .map(RepoPath::as_str)
+            .collect();
+        for (place, owned) in element.owns().iter().enumerate() {
+            if !parts.is_empty() && !owned.self_and_parents().any(|path| held.contains(path)) {
+                problems.push(Problem::new(
+                    format!(".slice[{index}].owns[{place}]"),
+                    say(SPLIT_UNHELD, &[("path", owned)]),
+                ));
+            }
+        }
+    }
+    problems
+}
+
+// Unknown names (`after`, then `split_into`) first, then a split slice's paths its parts do not
+// own, then a cycle, then overlapping paths: each needs the one before it.
 fn whole_roadmap_problems(roadmap: &Roadmap, splits: &[Vec<SliceName>]) -> Vec<Problem> {
     let unknown_splits = split_problems(roadmap, splits);
     let adjacent = match adjacency(roadmap) {
@@ -685,6 +708,10 @@ fn whole_roadmap_problems(roadmap: &Roadmap, splits: &[Vec<SliceName>]) -> Vec<P
             return problems;
         }
     };
+    let unheld = unheld_problems(roadmap, splits);
+    if !unheld.is_empty() {
+        return unheld;
+    }
     if let Some(problem) = cycle_problem(roadmap, &adjacent) {
         return vec![problem];
     }
@@ -1299,5 +1326,21 @@ branch = \"slice/g/pf\"
             lines(&parse(&plain).expect_err("overlap")),
             [".slice[1].owns[0]: \"src/a.rs\" is also owned by a, which runs in parallel"]
         );
+        let unheld = format!(
+            "{}{}{}",
+            split_slice("beta", "src/beta.rs", Some("[\"dummy\"]")),
+            split_slice("dummy", "other/", None),
+            split_slice("gamma", "src/beta.rs", None),
+        );
+        assert_eq!(
+            lines(&parse(&unheld).expect_err("unheld")),
+            [".slice[0].owns[0]: \"src/beta.rs\" is not owned by a slice it is split into"]
+        );
+        let held_above = format!(
+            "{}{}",
+            split_slice("a", "src/a.rs", Some("[\"b\"]")),
+            split_slice("b", "src", None),
+        );
+        assert!(parse(&held_above).is_ok());
     }
 }

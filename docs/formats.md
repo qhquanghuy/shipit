@@ -52,7 +52,6 @@ after = []                # names of slices or proof steps; no repeats; not itse
 meets = ["DW1"]           # done-when ids of this goal: DW1 or demo:DW1; no repeats
 owns = ["src/alpha.rs", "docs/"]   # at least one path, no repeats
 test_drive = false
-split_into = ["alpha-a"]  # optional: the slices that carry this started slice's work (over-cap split)
 
 [[proof]]                 # work outside a slice (an owner's live test, another repository)
 name = "firectl-proof"
@@ -62,7 +61,8 @@ how = "a pull request to firectl, run from the firectl session"
 ```
 
 The top level holds exactly `goal` and `slice` (required, at least one) and `proof` (optional). A slice has exactly the
-keys above (and may also hold `split_into`); a proof step has `name`, `after`, `meets` and `how`. Names are unique across slices and proof steps. Indexes
+keys above and may also hold `split_into = ["alpha-a"]`: the slices that carry the work of a started slice split for being
+over the cap; a proof step has `name`, `after`, `meets` and `how`. Names are unique across slices and proof steps. Indexes
 in paths start at 0 (`.slice[2].owns[0]`). Roadmap order is the slices, then the proof steps.
 
 **Goal names.** A roadmap names its goal. A slice's branch is `slice/<goal>/<slice>`; it is derived, never written in the
@@ -78,7 +78,7 @@ path below it (`docs` holds `docs/x.md`; `src/a` does not hold `src/ab.rs`). Cas
 A done-when item that no automated test can prove is met by a proof step, never by a slice.
 
 The rules that need the whole roadmap run only when every element is valid on its own, in this order: unknown names
-(`after`, then `split_into`), then a cycle, then overlapping `owns`.
+(`after`, then `split_into`), then a split slice's paths its parts do not own, then a cycle, then overlapping `owns`.
 
 | Path | Message |
 |---|---|
@@ -106,25 +106,28 @@ The rules that need the whole roadmap run only when every element is valid on it
 | `.slice[i].split_into[j]` | `must be a slice name` |
 | `.slice[i].split_into[j]` | `"<name>" cannot be split into itself` |
 | `.slice[i].split_into[j]` | `no slice named "<name>"` |
+| `.slice[i].owns[j]` | `"<path>" is not owned by a slice it is split into` |
 
 `.meets[j]`, `.owns[j]` and `.split_into[j]` also say `"<item>" is listed twice` for a repeat (after the path is normalized). `.proof[i]`
 replaces `.slice[i]` for a proof step. A cycle is named from the first element, in order, that lies on one, along the
 shortest way back to itself, following `after`; for a proof step the path is `.proof`.
 
 **Parallel.** Two elements run in parallel when neither reaches the other through `after`, directly or through others.
-Two parallel slices may not own paths that overlap. The message names the earlier slice, at the later one's path. A slice with `split_into` is left out: its parts carry its paths.
+Two parallel slices may not own paths that overlap. The message names the earlier slice, at the later one's path. A slice with `split_into` is left out: each of its `owns` paths must be owned, itself or through a folder above it, by one
+of its parts, so the check guards them there.
 
 **Waves.** An element with no `after` is in wave 1; any other is one wave after the latest of its `after`. The command
 prints the names of each wave, in roadmap order.
 
 **A new version.** With `--goal`, `shipit validate roadmap` (and so `shipit store put roadmap`) compares the draft with
 the goal's newest stored roadmap version once the draft's form is valid; with no stored version only the `split_into`
-rule below runs, and with `--goal-file` nothing runs (a `split_into` is not checked there; `--goal` is). An entry is the comment lines right above a `[[slice]]` or
+rule below runs, and with `--goal-file` nothing runs (a `split_into` is not checked there; `--goal` is). `shipit format roadmap` checks only the form of `split_into`, not the
+rule below, and its JSON leaves it out. An entry is the comment lines right above a `[[slice]]` or
 `[[proof]]` header and its table, up to the next entry; a comment with a blank line before the next header belongs to
 the entry above it; the lines before the first entry are no entry. An entry is the same when its words (comment markers
 and whitespace aside), keys and values are; its place and its whitespace never count. Comment lines above, inside and below the table count; an end-of-line comment does not. A slice or proof step is started
 or shipped when the goal's logbook has a start or shipped entry for it. A shipped one cannot change or go; a started one
-cannot go, and may change only by gaining `split_into`, its table otherwise equal; one that has not started may change,
+cannot go, and may change only by gaining `split_into`, its comments and table otherwise equal; one that has not started may change,
 move or go. A slice may carry `split_into` only when the logbook says it has started and not shipped, or when its stored
 entry already had the same list; a new list names only slices the newest stored roadmap does not have. A shipped
 slice's drift is noted by the plan review, not written into its entry. Until owner-moments ships, `shipit start`,
@@ -137,14 +140,15 @@ clone, is not seen.
 | `<what> <name> has shipped: its entry cannot change` | a shipped entry changed, `split_into` included |
 | `<what> <name> has started: its entry may only gain split_into` | a started entry changed otherwise |
 | `<what> <name> has <state>: its entry cannot be removed` | no entry of that name in the draft; a rename counts |
-| `<file>: cannot tell the entries of the Slices block apart; write each header as a plain [[slice]] or [[proof]] line` | a header the reader cannot see as one, or an entry that is not one table |
+| `<file>: cannot tell the entries of the Slices block apart; write each header as a plain [[slice]] or [[proof]] line` | a header the reader cannot see as one, or an entry that is not one table; also, wrongly, a multi-line string whose last line starts with `#` right above a header |
 | `slice <name> cannot gain split_into: only a started slice that has not shipped splits, into slices the stored roadmap does not have` | a `split_into` the rule above refuses |
 
 `<what>` is `slice` or `proof step`, `<state>` is `started` or `shipped`; each refusal is a line after
 `<file> is not a valid roadmap:`, exit 1, the frozen entries in the stored roadmap's order and then the `split_into`
 refusals in the draft's order, at most one per name; the `<file>: cannot tell ..` message is exit 2 when it is about the
 newest stored version, and the recovery is to copy in by hand, as the next `roadmap.v<N>.md`, a version whose headers
-are plain lines (status shows it as not recorded).
+are plain lines (status shows it as not recorded). That copy is the new baseline: the compare reads the newest stored
+file, not the newest recorded one.
 
 ## Goal
 

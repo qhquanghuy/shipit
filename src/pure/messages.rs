@@ -51,6 +51,7 @@ messages! {
     SPLIT_ITEM = "must be a slice name";
     SELF_SPLIT = "\"<name>\" cannot be split into itself";
     UNKNOWN_SPLIT = "no slice named \"<name>\"";
+    SPLIT_UNHELD = "\"<path>\" is not owned by a slice it is split into";
 
     ENTRY_SHIPPED = "<what> <name> has shipped: its entry cannot change";
     ENTRY_SPLIT_ONLY = "<what> <name> has started: its entry may only gain split_into";

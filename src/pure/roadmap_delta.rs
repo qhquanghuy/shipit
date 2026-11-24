@@ -732,6 +732,10 @@ mod tests {
         assert_eq!(entries("road.md", &wrap(quoted_header)), apart);
         let in_string = "goal = \"g\"\n\n[[proof]]\nname = \"p\"\nafter = []\nmeets = []\nhow = \"\"\"\nrun it\n[[proof]]\n\"\"\"\n";
         assert_eq!(entries("road.md", &wrap(in_string)), apart);
+    }
+
+    #[test]
+    fn a_sub_table_stays_inside_its_entry() {
         let sub_table = "goal = \"g\"\n\n[[slice]]\nname = \"a\"\n[slice.extra]\nk = 1\n";
         let found = entries("road.md", &wrap(sub_table)).expect("one entry");
         assert_eq!(found.len(), 1);
