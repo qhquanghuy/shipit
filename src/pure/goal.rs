@@ -197,6 +197,7 @@ mod tests {
         fn an_item_reads_its_words_across_lines(
             words in proptest::collection::vec("[a-z]{1,6}", 1..8),
             breaks in proptest::collection::vec(0_u8..3, 8),
+            direct in any::<bool>(),
         ) {
             let mut item_text = String::new();
             for (word, space) in words.iter().zip(&breaks) {
@@ -207,8 +208,10 @@ mod tests {
                     _ => "\n   ",
                 });
             }
+            let item_text = item_text.trim_end();
+            let between = if direct { "\n" } else { "\n\nstray words\n" };
             let text = format!(
-                "{HEADING}\n\n1. {item_text}\n\nstray words\n2. second\n```\nfenced words\n```\n"
+                "{HEADING}\n\n1. {item_text}{between}2. second\n```\nfenced words\n```\n"
             );
             prop_assert_eq!(
                 goal_item_texts(&text),

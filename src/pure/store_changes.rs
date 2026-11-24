@@ -51,6 +51,7 @@ pub(crate) fn span(
 pub(crate) enum Flag {
     NotRecorded,
     ChangedByHand,
+    RecordedMissing,
 }
 
 // A goal with no record of a kind shows only its newest version as not recorded: older ones
@@ -72,8 +73,8 @@ pub(crate) fn flags(
             .map(|(version, _)| vec![(*version, Flag::NotRecorded)])
             .unwrap_or_default();
     };
-    found
-        .into_iter()
+    let mut flagged: Vec<(u64, Flag)> = found
+        .iter()
         .filter_map(|(version, hash)| {
             let flag = match last.get(version) {
                 None => (*version > lowest).then_some(Flag::NotRecorded),
@@ -81,7 +82,14 @@ pub(crate) fn flags(
             };
             flag.map(|flag| (*version, flag))
         })
-        .collect()
+        .collect();
+    flagged.extend(
+        last.keys()
+            .filter(|version| !found.iter().any(|(held, _)| held == *version))
+            .map(|version| (*version, Flag::RecordedMissing)),
+    );
+    flagged.sort_by_key(|(version, _)| *version);
+    flagged
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -141,6 +149,7 @@ pub(crate) fn flag_line(kind: OwnerFile, version: u64, flag: Flag) -> String {
     match flag {
         Flag::NotRecorded => format!("{stem} v{version}: stored by hand, not recorded"),
         Flag::ChangedByHand => format!("{stem} v{version}: changed by hand after it was stored"),
+        Flag::RecordedMissing => format!("{stem} v{version}: recorded but missing from the store"),
     }
 }
 
@@ -189,6 +198,15 @@ mod tests {
         text
     }
 
+    #[test]
+    fn a_gap_in_the_store_ends_at_the_newest_recorded_after_the_start() {
+        let history = [started("beta"), stored(OwnerFile::Goal, 3, 1)];
+        assert_eq!(
+            span(&history, 0, OwnerFile::Goal, &[1, 3]),
+            Some((Some(1), 3))
+        );
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig {
             failure_persistence: None,
@@ -220,19 +238,24 @@ mod tests {
             prop_assert_eq!(span(&history, start, wanted, &[]), None);
 
             let in_store: Vec<u64> = store.iter().copied().collect();
-            let earlier = before.iter().filter(|(k, _)| *k == wanted).map(|(_, v)| *v).max();
-            let later = after.iter().filter(|(k, _)| *k == wanted).map(|(_, v)| *v).min();
-            let from = earlier.or_else(|| {
-                let lowest = later?;
-                store.iter().copied().filter(|n| *n < lowest).max()
-            });
-            let expected = store.iter().copied().max().and_then(|to| match from {
-                Some(from) => (to > from).then_some((Some(from), to)),
-                None => later.map(|_| (None, to)),
-            });
-            prop_assert_eq!(span(&history, start, wanted, &in_store), expected);
-            if let Some((Some(from), to)) = expected {
-                prop_assert!(from < to);
+            let recorded: Vec<u64> = before
+                .iter()
+                .chain(&after)
+                .filter(|(k, _)| *k == wanted)
+                .map(|(_, v)| *v)
+                .collect();
+            let recorded_after = after.iter().any(|(k, _)| *k == wanted);
+            match span(&history, start, wanted, &in_store) {
+                Some((Some(from), to)) => {
+                    prop_assert_eq!(Some(&to), store.iter().next_back());
+                    prop_assert!(from < to);
+                    prop_assert!(recorded.contains(&from) || store.contains(&from));
+                }
+                Some((None, to)) => {
+                    prop_assert_eq!(Some(&to), store.iter().next_back());
+                    prop_assert!(recorded_after);
+                }
+                None => {}
             }
         }
 
@@ -245,32 +268,48 @@ mod tests {
             let history: Vec<Event> = records.iter().map(|(k, v, h)| stored(*k, *v, *h)).collect();
             let in_store: Vec<(u64, Option<Oid>)> =
                 files.iter().map(|(v, h)| (*v, h.map(oid))).collect();
-            let mut recorded: BTreeMap<u64, u8> = BTreeMap::new();
+            let mut last: BTreeMap<u64, u8> = BTreeMap::new();
             for (k, v, h) in &records {
                 if *k == wanted {
-                    recorded.insert(*v, *h);
+                    last.insert(*v, *h);
                 }
             }
-            let mut expected: Vec<(u64, Flag)> = Vec::new();
-            match recorded.keys().next() {
-                None => {
-                    if let Some(newest) = files.keys().next_back() {
-                        expected.push((*newest, Flag::NotRecorded));
-                    }
-                }
-                Some(lowest) => {
-                    for (version, hash) in &files {
-                        match recorded.get(version) {
-                            None if version > lowest => expected.push((*version, Flag::NotRecorded)),
-                            Some(kept) if *hash != Some(*kept) => {
-                                expected.push((*version, Flag::ChangedByHand));
-                            }
-                            None | Some(_) => {}
+            let found = flags(&history, wanted, &in_store);
+            let versions: Vec<u64> = found.iter().map(|(version, _)| *version).collect();
+            prop_assert!(versions.windows(2).all(|pair| pair[0] < pair[1]));
+            for (version, flag) in &found {
+                match flag {
+                    Flag::NotRecorded => {
+                        prop_assert!(files.contains_key(version));
+                        prop_assert!(!last.contains_key(version));
+                        if let Some(lowest) = last.keys().next() {
+                            prop_assert!(version > lowest);
+                        } else {
+                            prop_assert_eq!(Some(version), files.keys().next_back());
                         }
                     }
+                    Flag::ChangedByHand => {
+                        let hash = files.get(version).expect("in the store");
+                        let kept = last.get(version).expect("recorded");
+                        prop_assert!(*hash != Some(*kept));
+                    }
+                    Flag::RecordedMissing => {
+                        prop_assert!(last.contains_key(version));
+                        prop_assert!(!files.contains_key(version));
+                    }
                 }
             }
-            prop_assert_eq!(flags(&history, wanted, &in_store), expected);
+            for (version, hash) in &files {
+                if last.get(version).is_some_and(|kept| *hash == Some(*kept)) {
+                    prop_assert!(!versions.contains(version));
+                }
+            }
+            for version in last.keys().filter(|version| !files.contains_key(*version)) {
+                prop_assert!(found.contains(&(*version, Flag::RecordedMissing)));
+            }
+            if last.is_empty() {
+                prop_assert_eq!(found.len(), usize::from(!files.is_empty()));
+            }
         }
 
         #[test]

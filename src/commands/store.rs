@@ -210,10 +210,9 @@ fn put_owned(
         version,
         hash,
     };
-    append_line(
-        &logbook_path(&store, goal),
-        &stored_line(&stored, &now_utc(), &tool()),
-    )?;
+    let line = stored_line(&stored, &now_utc(), &tool())
+        .map_err(|why| Failure::usage(format!("cannot write the logbook line: {why}")))?;
+    append_line(&logbook_path(&store, goal), &line)?;
     writeln!(out, "stored {}", path.display()).ok();
     Ok(())
 }

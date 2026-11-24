@@ -172,7 +172,11 @@ struct StoredLine<'a> {
 }
 
 // The line with its newline; its size is bounded by construction.
-pub(crate) fn stored_line(stored: &StoredVersion, time: &str, tool: &str) -> String {
+pub(crate) fn stored_line(
+    stored: &StoredVersion,
+    time: &str,
+    tool: &str,
+) -> Result<String, String> {
     let line = StoredLine {
         event: "stored",
         kind: stored.kind.stem(),
@@ -181,9 +185,9 @@ pub(crate) fn stored_line(stored: &StoredVersion, time: &str, tool: &str) -> Str
         time,
         tool,
     };
-    let mut text = serde_json::to_string(&line).unwrap_or_default();
+    let mut text = serde_json::to_string(&line).map_err(|why| why.to_string())?;
     text.push('\n');
-    text
+    Ok(text)
 }
 
 fn parse_stored(object: &Map<String, Value>) -> Option<StoredVersion> {
@@ -421,7 +425,8 @@ mod tests {
                         "shipit 0.1.0",
                     )
                     .expect("short entries"),
-                    Event::Stored(found) => stored_line(found, "2026-11-21T10:00:00Z", "shipit 0.1.0"),
+                    Event::Stored(found) => stored_line(found, "2026-11-21T10:00:00Z", "shipit 0.1.0")
+                        .expect("a short line"),
                 })
                 .collect();
             prop_assert_eq!(read_history(&text), Ok(events));

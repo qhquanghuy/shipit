@@ -64,6 +64,7 @@ Rules:
 - A goal draft needs numbered done-when items. A roadmap draft is checked as `shipit validate roadmap <draft> --goal <goal>` checks it, and must name that goal in its Slices block.
 - Anyone may put a goal or roadmap version, because nothing tells the owner's `!` command from an agent's call (the same file descriptors and environment). An agent puts one only after the owner approves it in chat (the roadmap skill).
 - After the file is written, each put appends `{"event":"stored","kind":"goal","version":3,"hash":"<git hash of the file>","time":"…","tool":"shipit …"}` to the goal's logbook. If the hash or the append fails, the version stays and `shipit status` shows it as not recorded.
+- A binary built before this version cannot read a stored line: it stops on the logbook with `line <n> is not a logbook entry; fix that line by hand`. Do not delete the line; rebuild the binary in every worktree before the first put.
 - Names are parsed, so no place leaves `goals/<goal>/`: a round is a number from 1 up.
 - Every level from `<git common dir>/shipit` down to the file's folder is a real folder, never a link; a missing level is made.
 - A new file is written under a temporary name and hard-linked to its place, so a taken name is never replaced, a link there included.
@@ -90,6 +91,8 @@ The refusals, each after `shipit: `:
 - `<draft> names another goal than "<goal>": a roadmap is put under the goal it names`
 - `no goal "<goal>" in the store` (a roadmap put, and no goal version is stored); exit 2
 - `cannot append to <path>`; exit 2
+- `no file at <path>` (the hash of the stored file cannot be read); exit 2
+- `cannot write the logbook line: <why>`; exit 2
 
 ## What status and the summary show about versions
 
@@ -99,8 +102,9 @@ For every goal, started slice or not, its goal line in `shipit status` and each 
 
 - `<kind> v<n>: stored by hand, not recorded`: a version above the lowest recorded one that has no stored entry. When no version of that kind is recorded, its newest version, so an old goal shows it on every status until its next put. On an old goal this flag is constant: it cannot show an edit in place of a version that was never recorded, or of any version below the lowest record.
 - `<kind> v<n>: changed by hand after it was stored`: the file's hash is not the one its stored entry holds.
+- `<kind> v<n>: recorded but missing from the store`: a stored entry names a version whose file is gone.
 
-The limits: a stored line typed into the logbook by hand cannot be told from one the tool wrote, and a slice started without `shipit start` has no start to compare with.
+The limits: a stored line typed into the logbook by hand cannot be told from one the tool wrote, and a slice started without `shipit start` has no start to compare with. A version copied by hand before the start is not recorded, so the span since start can begin at an older version and show that copy's changes as changes since start.
 
 ## Store show
 

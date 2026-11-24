@@ -341,7 +341,6 @@ mod tests {
             }
         }
 
-
         #[test]
         fn the_flags_must_fit_the_kind(
             kind in prop_oneof![
