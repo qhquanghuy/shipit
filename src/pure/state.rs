@@ -6,7 +6,9 @@ use serde::{Serialize, Serializer};
 use crate::pure::finding::{Class, Outcome};
 use crate::pure::goal::{GoalName, QualifiedDoneWhen, parse_done_when};
 use crate::pure::logbook::{Entry, Logged, closed};
+use crate::pure::repo_path::RepoPath;
 use crate::pure::review::{ReceiptView, counts, open_findings};
+use crate::pure::risk::{Level, Risk, estimate};
 use crate::pure::roadmap::SliceName;
 use crate::pure::setup::Setup;
 use crate::pure::tests_ran::{Tested, is_coverage_line};
@@ -123,6 +125,7 @@ pub(crate) struct Facts {
     pub(crate) work: Option<Work>,
     pub(crate) entries: Vec<Logged>,
     pub(crate) changes: Vec<String>,
+    pub(crate) owns: Vec<RepoPath>,
 }
 
 #[derive(Debug, Serialize)]
@@ -146,6 +149,9 @@ pub(crate) struct View {
     #[serde(skip)]
     pub(crate) items: Vec<(QualifiedDoneWhen, Confirmation)>,
     pub(crate) unconfirmed: Vec<QualifiedDoneWhen>,
+    // Only an unshipped slice has a review level; a proof step has no review.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) review: Option<Risk>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -468,9 +474,15 @@ fn confirmed_items(
 }
 
 // The chain of conditions, each reached only with all before it; `shipped` overrides.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one chain reads every slot and the review level; split, it would pass them all around"
+)]
 pub(crate) fn view(facts: &Facts, policy: &Policy<'_>) -> View {
     let shipped = is_shipped(&facts.entries);
     let test_drive = matches!(facts.kind, Kind::Slice { test_drive: true });
+    let review = (!shipped && matches!(facts.kind, Kind::Slice { .. }))
+        .then(|| estimate(policy.setup, &facts.owns));
     let work = facts.work.as_ref();
     let none = String::new();
     let plan_key = facts.plan.as_ref().map_or(&none, |plan| &plan.key);
@@ -568,6 +580,7 @@ pub(crate) fn view(facts: &Facts, policy: &Policy<'_>) -> View {
         meets: facts.meets.clone(),
         items,
         unconfirmed,
+        review,
     }
 }
 
@@ -749,6 +762,18 @@ fn goal_lines(goal: &GoalView, lines: &mut Vec<String>) {
         if !view.changes.is_empty() {
             write!(notes, " Changed: {}.", plain(&view.changes.join("; "))).ok();
         }
+        if let Some(risk) = view
+            .review
+            .as_ref()
+            .filter(|risk| risk.level() == Level::Full)
+        {
+            write!(
+                notes,
+                " Review estimate: full ({}).",
+                plain(&risk.reasons_text())
+            )
+            .ok();
+        }
         if view.without_start {
             notes.push_str(" Started without shipit start.");
         }
@@ -920,6 +945,7 @@ mod tests {
             work,
             entries,
             changes: Vec::new(),
+            owns: Vec::new(),
         }
     }
 
@@ -1272,6 +1298,7 @@ mod tests {
                         meets: Vec::new(),
                         items: Vec::new(),
                         unconfirmed: Vec::new(),
+                        review: None,
                     })
                     .collect()
             };
@@ -1322,6 +1349,7 @@ mod tests {
                 meets: Vec::new(),
                 items: Vec::new(),
                 unconfirmed: Vec::new(),
+                review: None,
             };
             let before = [name("alpha")];
             let waits: Vec<&SliceName> = if waiting { before.iter().collect() } else { Vec::new() };
@@ -1582,18 +1610,42 @@ mod tests {
         };
         view.without_start = true;
         view.changes = vec!["goal v1 -> v3 since start: DW2 reworded, DW3 removed".to_owned()];
-        let shown = GoalView {
+        let owns = [RepoPath::parse("src/a.rs").expect("a path")];
+        let risky: toml::Table = toml::from_str("full_paths = [\"src/\"]").expect("a table");
+        view.review = Some(estimate(
+            &setup_with(&[("review", Value::Table(risky))]),
+            &owns,
+        ));
+        let mut shown = GoalView {
             goal: goal(),
             reviewed: false,
             flags: vec!["goal v3: stored by hand, not recorded".to_owned()],
             views: vec![view],
         };
+        let head = [
+            "open findings: must fix 1, must answer 0, nice to fix 2 · started: 1 of 3",
+            "goal demo: roadmap needs a review (shipit receipt plan-review roadmap --goal demo). goal v3: stored by hand, not recorded.",
+        ];
+        let line = "demo/beta: made. Next: run shipit check on slice/demo/beta. Open: must fix 1, nice to fix 2. Changed: goal v1 -> v3 since start: DW2 reworded, DW3 removed.";
         assert_eq!(
             render(&[&shown], &[], (1, 3), None),
             [
-                "open findings: must fix 1, must answer 0, nice to fix 2 · started: 1 of 3",
-                "goal demo: roadmap needs a review (shipit receipt plan-review roadmap --goal demo). goal v3: stored by hand, not recorded.",
-                "demo/beta: made. Next: run shipit check on slice/demo/beta. Open: must fix 1, nice to fix 2. Changed: goal v1 -> v3 since start: DW2 reworded, DW3 removed. Started without shipit start.",
+                head[0].to_owned(),
+                head[1].to_owned(),
+                format!(
+                    "{line} Review estimate: full (risky path src/a.rs). Started without shipit start."
+                ),
+            ]
+        );
+        if let Some(view) = shown.views.first_mut() {
+            view.review = Some(estimate(&setup_with(&[]), &owns));
+        }
+        assert_eq!(
+            render(&[&shown], &[], (1, 3), None),
+            [
+                head[0].to_owned(),
+                head[1].to_owned(),
+                format!("{line} Started without shipit start."),
             ]
         );
     }

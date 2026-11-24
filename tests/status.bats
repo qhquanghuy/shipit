@@ -65,6 +65,18 @@ READY="owner: ship it, then shipit log alpha shipped --merge <merge commit> --go
   [ "$(the_line alpha)" = "demo/alpha: ready to ship. Next: $READY. Started without shipit start." ]
 }
 
+@test "status: a slice not started shows a full review estimate from its owns" {
+  make_slice_repo
+  write_setup "$(cat .config/shipit.toml)"$'\n\n[review]\nfull_paths = ["docs/"]'
+  st
+  [ "$status" -eq 0 ]
+  [ "$(the_line alpha)" = "demo/alpha: planned. Next: planner: write the build plan at $(store)/goals/demo/slices/alpha/build-plan.md. Review estimate: full (risky path docs/alpha)." ]
+  [[ $(the_line beta) != *Review* ]]
+  st --json
+  [ "$(jq -c '.goals[0].slices[] | select(.name == "alpha") | .review' <<<"$output")" = '{"level":"full","from":"owns","reasons":["risky path docs/alpha"]}' ]
+  [ "$(jq -c '.goals[0].slices[] | select(.name == "proof") | has("review")' <<<"$output")" = false ]
+}
+
 @test "status: a reviewed slice stays checked until each done-when item is confirmed" {
   make_slice_repo
   plan_ready alpha

@@ -216,7 +216,7 @@ pub(crate) fn collect(
             .collect();
         let branch = slice_branch(goal, &name);
         let plan_file = build_plan_path(&store, goal, &name);
-        let (kind, after, meets, plan, work) = match element {
+        let (kind, after, meets, plan, work, owns) = match element {
             Element::Proof(proof) => (
                 Kind::Proof {
                     how: proof.how.clone(),
@@ -225,6 +225,7 @@ pub(crate) fn collect(
                 proof.meets.clone(),
                 None,
                 None,
+                Vec::new(),
             ),
             Element::Slice(slice) => {
                 let plan = file_hash(git, &plan_file).ok().map(|key| Plan {
@@ -239,6 +240,7 @@ pub(crate) fn collect(
                     slice.meets.clone(),
                     plan,
                     work_of(git, common, base_ref, &branch, (goal, &name))?,
+                    slice.owns.clone(),
                 )
             }
         };
@@ -255,6 +257,7 @@ pub(crate) fn collect(
             work,
             entries,
             changes,
+            owns,
         });
     }
     Ok((all, flags_of(git, at, &history, &held)))

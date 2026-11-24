@@ -7,7 +7,7 @@ use crate::pure::repo_path::RepoPath;
 use crate::pure::rules::{Parsed, Problem};
 use crate::pure::setup::{
     AGENTS_KEYS, AGENTS_OPTIONAL, GATE_KEYS, GATE_OPTIONAL, OWNER_KEYS, OWNER_OPTIONAL, PACKS_KEYS,
-    SETUP_PATH, TOP_KEYS,
+    REVIEW_OPTIONAL, SETUP_PATH, TOP_KEYS, TOP_OPTIONAL,
 };
 
 // A setup file as the comparison sees it: the base it names, and every key kept raw, so the
@@ -101,6 +101,7 @@ fn schema_of(table: &str) -> Vec<&'static str> {
             .collect(),
         "packs" => PACKS_KEYS.to_vec(),
         "owner" => OWNER_KEYS.iter().chain(&OWNER_OPTIONAL).copied().collect(),
+        "review" => REVIEW_OPTIONAL.to_vec(),
         _ => Vec::new(),
     }
 }
@@ -120,7 +121,8 @@ fn table_changes(name: &str, base: &Table, branch: &Table, changes: &mut Vec<Str
 pub(crate) fn setup_changes(base: &Table, branch: &Table) -> Vec<String> {
     let none = Table::new();
     let mut changes = Vec::new();
-    for key in ordered_keys(&TOP_KEYS, base, branch) {
+    let top: Vec<&str> = TOP_KEYS.iter().chain(&TOP_OPTIONAL).copied().collect();
+    for key in ordered_keys(&top, base, branch) {
         match (base.get(&key), branch.get(&key)) {
             (Some(Value::Table(a)), Some(Value::Table(b))) => {
                 table_changes(&key, a, b, &mut changes);
@@ -233,7 +235,7 @@ mod tests {
 
     // Every field path of the schema, then one unknown key inside `gate` (placed after its
     // schema keys) and one at the top; `zzz` is a top-level table with no keys.
-    const PATHS: [&str; 19] = [
+    const PATHS: [&str; 22] = [
         "version",
         "gate.base",
         "gate.max_files",
@@ -252,6 +254,9 @@ mod tests {
         "owner.max_lines",
         "owner.status_update_max_lines",
         "owner.example_max_lines",
+        "review.full_paths",
+        "review.light_max_files",
+        "review.lock_files",
         "extra",
     ];
 
