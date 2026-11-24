@@ -778,9 +778,9 @@ check_run_modes() {
   local root=$1 file rows block marked bad=0
   five_skills "$root" || return 1
   file=$(skill_file "$root" shipit-roadmap)
-  rows=$(section "$file" 'How slices run' | grep -E '^\| ' | tail -n +2 | cut -d'|' -f2 | sed -e 's/^ *//' -e 's/ *$//' | paste -sd, -)
+  rows=$(section "$file" 'How slices run' | grep -E '^\| ' | tail -n +2 | cut -d'|' -f2 | sed -e 's/^ *//' -e 's/ *$//' -e 's/`//g' | paste -sd, -)
   [[ $rows == 'same session,subagents,one session per slice,Claude Code workflow' ]] || { echo "shipit-roadmap: the ways are not the four, in order: $rows"; bad=1; }
-  section "$file" 'How slices run' | grep -E '^\| Claude Code workflow \|' | cut -d'|' -f4 | grep -qF 'not yet tried' || { echo "shipit-roadmap: the workflow row does not say not yet tried"; bad=1; }
+  section "$file" 'How slices run' | grep -E '^\| `Claude Code workflow` \|' | cut -d'|' -f4 | grep -qF 'not yet tried' || { echo "shipit-roadmap: the workflow row does not say not yet tried"; bad=1; }
   step_line "$file" 9 | grep -qF 'recommends exactly one' || { echo "shipit-roadmap: step 9 does not say recommends exactly one"; bad=1; }
   step_line "$file" 9 | grep -qF 'the owner picks' || { echo "shipit-roadmap: step 9 does not say the owner picks"; bad=1; }
   block=$(section "$file" 'How slices run' | awk '/^```example$/ { on = 1; next } /^```$/ { on = 0 } on')
