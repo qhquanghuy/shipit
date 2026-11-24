@@ -119,10 +119,10 @@ prints the names of each wave, in roadmap order.
 
 **A new version.** With `--goal`, `shipit validate roadmap` (and so `shipit store put roadmap`) compares the draft with
 the goal's newest stored roadmap version once the draft's form is valid; with no stored version only the `split_into`
-rule below runs, and with `--goal-file` nothing runs. An entry is the comment lines right above a `[[slice]]` or
+rule below runs, and with `--goal-file` nothing runs (a `split_into` is not checked there; `--goal` is). An entry is the comment lines right above a `[[slice]]` or
 `[[proof]]` header and its table, up to the next entry; a comment with a blank line before the next header belongs to
 the entry above it; the lines before the first entry are no entry. An entry is the same when its words (comment markers
-and whitespace aside), keys and values are; its place and its whitespace never count. A slice or proof step is started
+and whitespace aside), keys and values are; its place and its whitespace never count. Comment lines above, inside and below the table count; an end-of-line comment does not. A slice or proof step is started
 or shipped when the goal's logbook has a start or shipped entry for it. A shipped one cannot change or go; a started one
 cannot go, and may change only by gaining `split_into`, its table otherwise equal; one that has not started may change,
 move or go. A slice may carry `split_into` only when the logbook says it has started and not shipped, or when its stored

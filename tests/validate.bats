@@ -244,3 +244,16 @@ delta_repo() {
   [ "$stderr" = 'shipit: road.md is not a valid roadmap:
   road.md: cannot tell the entries of the Slices block apart; write each header as a plain [[slice]] or [[proof]] line' ]
 }
+
+@test "validate: with no stored roadmap, split_into on a slice that has not started is refused" {
+  make_slice_repo
+  cp "$SHIPIT_SRC/tests/fixtures/goal.md" "$(store)/goals/demo/goal.v1.md"
+  rm "$(store)/goals/demo/roadmap.v1.md"
+  write_roadmap d.md
+  sed -i '/^name = "gamma"$/a split_into = ["gamma-a"]' d.md
+  add_slice d.md gamma-a src/gamma.rs
+  run --separate-stderr "$SHIPIT_BIN" validate roadmap d.md --goal demo
+  [ "$status" -eq 1 ]
+  [ "$stderr" = 'shipit: d.md is not a valid roadmap:
+  slice gamma cannot gain split_into: only a started slice that has not shipped splits, into slices the stored roadmap does not have' ]
+}

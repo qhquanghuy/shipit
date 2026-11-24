@@ -211,11 +211,7 @@ fn frozen(logbook: &[Logged], name: &SliceName) -> Option<Frozen> {
 
 fn only_gains_split(stored: &RoadmapEntry, draft: &RoadmapEntry) -> bool {
     let mut rest = draft.table.clone();
-    stored.kind == draft.kind
-        && stored.words == draft.words
-        && !stored.table.contains_key(SPLIT)
-        && rest.remove(SPLIT).is_some()
-        && rest == stored.table
+    stored.words == draft.words && rest.remove(SPLIT).is_some() && rest == stored.table
 }
 
 fn split_list(entry: &RoadmapEntry) -> Option<&Value> {
@@ -647,16 +643,6 @@ mod tests {
         }
     }
 
-    fn raw(name: &str, split: Option<&str>) -> Raw {
-        Raw {
-            name: name.to_owned(),
-            proof: false,
-            words: Vec::new(),
-            items: vec!["a.rs".to_owned()],
-            split: split.map(|part| vec![part.to_owned()]),
-        }
-    }
-
     fn change(kind: EntryKind, name: &str, frozen: Frozen, change: Change) -> Refusal {
         Refusal::Frozen {
             kind,
@@ -667,46 +653,49 @@ mod tests {
     }
 
     #[test]
-    fn a_frozen_entry_and_a_split_are_refused_as_the_owner_said() {
-        let names = ["alpha", "beta", "gamma", "delta", "omega"];
-        let stored: Vec<Raw> = names.iter().map(|name| raw(name, None)).collect();
-        let draft = vec![
-            raw("alpha", Some("alpha-a")),
-            raw("beta-two", None),
-            raw("gamma", Some("gamma-a")),
-            raw("delta", Some("delta-a")),
-            raw("omega", Some("alpha")),
-        ];
-        let book = logbook_of(&stored, &[2, 1, 1, 0, 1]);
-        let got = refusals(&read(&stored), &read(&draft), &book);
+    fn each_refusal_form_says_its_exact_line() {
+        let said = |refusal: Refusal| refusal.to_string();
         assert_eq!(
-            got,
-            [
-                change(EntryKind::Slice, "alpha", Frozen::Shipped, Change::Changed),
-                change(EntryKind::Slice, "beta", Frozen::Started, Change::Removed),
-                Refusal::Split {
-                    name: slice_name("delta")
-                },
-                Refusal::Split {
-                    name: slice_name("omega")
-                },
-            ]
+            said(change(
+                EntryKind::Slice,
+                "alpha",
+                Frozen::Shipped,
+                Change::Changed
+            )),
+            "slice alpha has shipped: its entry cannot change"
         );
-        let lone = vec![raw("beta", None), raw("gamma", None)];
-        let split = vec![raw("beta", Some("beta-a")), raw("gamma", Some("gamma-a"))];
-        let book = logbook_of(&lone, &[1, 0]);
         assert_eq!(
-            refusals(&[], &read(&split), &book),
-            [Refusal::Split {
+            said(change(
+                EntryKind::Slice,
+                "alpha",
+                Frozen::Started,
+                Change::Changed
+            )),
+            "slice alpha has started: its entry may only gain split_into"
+        );
+        assert_eq!(
+            said(change(
+                EntryKind::Slice,
+                "beta",
+                Frozen::Started,
+                Change::Removed
+            )),
+            "slice beta has started: its entry cannot be removed"
+        );
+        assert_eq!(
+            said(change(
+                EntryKind::Proof,
+                "gate",
+                Frozen::Shipped,
+                Change::Removed
+            )),
+            "proof step gate has shipped: its entry cannot be removed"
+        );
+        assert_eq!(
+            said(Refusal::Split {
                 name: slice_name("gamma")
-            }]
-        );
-        assert_eq!(
-            got.iter().map(ToString::to_string).collect::<Vec<_>>()[..2],
-            [
-                "slice alpha has shipped: its entry cannot change",
-                "slice beta has started: its entry cannot be removed",
-            ]
+            }),
+            "slice gamma cannot gain split_into: only a started slice that has not shipped splits, into slices the stored roadmap does not have"
         );
     }
 
@@ -739,7 +728,7 @@ mod tests {
     #[test]
     fn a_split_that_cannot_be_trusted_is_refused() {
         let apart = Err(say(ENTRIES_APART, &[("file", &"road.md")]));
-        let quoted_header = "goal = \"g\"\n\n[[slice]]\nname = \"a\"\nafter = []\nmeets = []\nowns = [\"a/\"]\ntest_drive = false\n\n[[\"slice\"]]\nname = \"b\"\nafter = []\nmeets = []\nowns = [\"b/\"]\ntest_drive = false\n";
+        let quoted_header = "goal = \"g\"\n\n[[\"slice\"]]\nname = \"a\"\nafter = []\nmeets = []\nowns = [\"a/\"]\ntest_drive = false\n\n[[slice]]\nname = \"b\"\nafter = []\nmeets = []\nowns = [\"b/\"]\ntest_drive = false\n";
         assert_eq!(entries("road.md", &wrap(quoted_header)), apart);
         let in_string = "goal = \"g\"\n\n[[proof]]\nname = \"p\"\nafter = []\nmeets = []\nhow = \"\"\"\nrun it\n[[proof]]\n\"\"\"\n";
         assert_eq!(entries("road.md", &wrap(in_string)), apart);
