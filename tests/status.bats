@@ -55,6 +55,16 @@ READY="owner: ship it, then shipit log alpha shipped --merge <merge commit> --go
   [ "$(the_line beta)" = "demo/beta: build plan ready. Next: lead: start it with shipit start beta --goal demo" ]
 }
 
+@test "status: a light slice is ready to ship with the informed review alone" {
+  suite_repo
+  plan_ready alpha
+  mapped_work alpha DW1
+  check_here
+  "$SHIPIT_BIN" receipt informed-review alpha --author sonnet:high --by opus:high --result approve
+  st
+  [ "$(the_line alpha)" = "demo/alpha: ready to ship. Next: $READY. Started without shipit start." ]
+}
+
 @test "status: a reviewed slice stays checked until each done-when item is confirmed" {
   make_slice_repo
   plan_ready alpha
