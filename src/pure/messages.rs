@@ -47,6 +47,17 @@ messages! {
     UNKNOWN_AFTER = "no slice or proof step named \"<name>\"";
     CYCLE = "after makes a cycle: <names>";
     OVERLAP = "\"<path>\" is also owned by <name>, which runs in parallel";
+    SPLIT_ARRAY = "must be a non-empty array of slice names";
+    SPLIT_ITEM = "must be a slice name";
+    SELF_SPLIT = "\"<name>\" cannot be split into itself";
+    UNKNOWN_SPLIT = "no slice named \"<name>\"";
+    SPLIT_UNHELD = "\"<path>\" is not owned by a slice it is split into";
+
+    ENTRY_SHIPPED = "<what> <name> has shipped: its entry cannot change";
+    ENTRY_SPLIT_ONLY = "<what> <name> has started: its entry may only gain split_into";
+    ENTRY_REMOVED = "<what> <name> has <state>: its entry cannot be removed";
+    ENTRIES_APART = "<file>: cannot tell the entries of the Slices block apart; write each header as a plain [[slice]] or [[proof]] line";
+    SPLIT_REFUSED = "slice <name> cannot gain split_into: only a started slice that has not shipped splits, into slices the stored roadmap does not have";
 
     MAP_KEY = "must be a done-when id such as \"DW4\"";
     MAP_ARRAY = "must be an array of non-empty strings";

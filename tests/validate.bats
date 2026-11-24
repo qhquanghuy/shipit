@@ -2,6 +2,7 @@
 
 bats_require_minimum_version 1.5.0
 load helpers
+load slice-helpers
 
 # write_message <file> <extra line>...: a valid decision point, then the extra lines.
 write_message() {
@@ -161,4 +162,99 @@ bigger_goal() {
   run --separate-stderr "$SHIPIT_BIN" validate roadmap road.md --goal nonesuch
   [ "$status" -eq 2 ]
   [ "$stderr" = 'shipit: no goal "nonesuch" in the store' ]
+}
+
+# add_slice <file> <name> <path>: a slice after alpha, owning <path>, before the proof step.
+add_slice() {
+  sed -i "/^\[\[proof\]\]\$/i [[slice]]\nname = \"$2\"\nafter = [\"alpha\"]\nmeets = []\nowns = [\"$3\"]\ntest_drive = false\n" "$1"
+}
+
+# delta_repo: a stored roadmap v1 whose alpha has shipped and whose beta has started.
+delta_repo() {
+  make_slice_repo
+  cp "$SHIPIT_SRC/tests/fixtures/goal.md" "$(store)/goals/demo/goal.v1.md"
+  ship_entry alpha
+  logged_start beta
+}
+
+@test "validate: a roadmap that changes a started or shipped slice's entry is refused by validate and store put, one line each" {
+  delta_repo
+  write_roadmap a.md
+  sed -i -e '/^name = "alpha"$/a # a new note' -e 's/"beta"/"beta-two"/g' -e 's|src/gamma.rs|src/gamma/|' a.md
+  run --separate-stderr "$SHIPIT_BIN" validate roadmap a.md --goal demo
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+  [ "${stderr_lines[0]}" = 'shipit: a.md is not a valid roadmap:' ]
+  [ "${#stderr_lines[@]}" -eq 3 ]
+  [[ "${stderr_lines[1]}" == "  slice alpha has shipped"* ]]
+  [[ "${stderr_lines[2]}" == "  slice beta has started"* ]]
+  run --separate-stderr "$SHIPIT_BIN" store put roadmap a.md --goal demo
+  [ "$status" -eq 1 ]
+  [ "${#stderr_lines[@]}" -eq 3 ]
+  [ ! -e "$(store)/goals/demo/roadmap.v2.md" ]
+  write_roadmap b.md
+  sed -i -e '/^name = "beta"$/a split_into = ["beta-a", "beta-b"]' -e 's|"src/beta.rs"\]|"src/beta.rs", "src/beta2.rs"]|' b.md
+  add_slice b.md beta-a src/beta.rs
+  add_slice b.md beta-b src/beta2.rs
+  run --separate-stderr "$SHIPIT_BIN" validate roadmap b.md --goal demo
+  [ "$status" -eq 1 ]
+  [ "${#stderr_lines[@]}" -eq 2 ]
+  [[ "${stderr_lines[1]}" == "  slice beta has started"* ]]
+}
+
+@test "validate: a started slice may gain split_into naming its parts, and the version is stored" {
+  delta_repo
+  write_roadmap c.md
+  sed -i '/^name = "beta"$/a split_into = ["beta-a", "beta-b"]' c.md
+  add_slice c.md beta-a src/beta.rs
+  add_slice c.md beta-b src/beta/
+  run --separate-stderr "$SHIPIT_BIN" validate roadmap c.md --goal demo
+  [ "$status" -eq 0 ]
+  [ "$output" = 'valid roadmap: ready-for-review' ]
+  run --separate-stderr "$SHIPIT_BIN" store put roadmap c.md --goal demo
+  [ "$status" -eq 0 ]
+  [ "$output" = "stored $(store)/goals/demo/roadmap.v2.md" ]
+}
+
+@test "validate: a goal with no stored roadmap compares no entry, even with a shipped slice" {
+  repo=$(make_repo)
+  cd "$repo"
+  mkdir -p "$(store)/goals/demo"
+  cp "$SHIPIT_SRC/tests/fixtures/goal.md" "$(store)/goals/demo/goal.v1.md"
+  ship_entry alpha
+  write_roadmap road.md
+  sed -i 's|, "docs/alpha/"||' road.md
+  run --separate-stderr "$SHIPIT_BIN" validate roadmap road.md --goal demo
+  [ "$status" -eq 0 ]
+  [ "$output" = 'valid roadmap: ready-for-review' ]
+}
+
+@test "validate: entries that cannot be told apart stop a stored roadmap with exit 2 and refuse a draft with exit 1" {
+  make_slice_repo
+  cp "$SHIPIT_SRC/tests/fixtures/goal.md" "$(store)/goals/demo/goal.v1.md"
+  sed -i 's/^\[\[slice\]\]$/[["slice"]]/' "$(store)/goals/demo/roadmap.v1.md"
+  write_roadmap road.md
+  run --separate-stderr "$SHIPIT_BIN" validate roadmap road.md --goal demo
+  [ "$status" -eq 2 ]
+  [ "$stderr" = "shipit: $(store)/goals/demo/roadmap.v1.md: cannot tell the entries of the Slices block apart; write each header as a plain [[slice]] or [[proof]] line" ]
+  cp "$SHIPIT_SRC/tests/fixtures/roadmap.md" "$(store)/goals/demo/roadmap.v1.md"
+  sed -i 's/^\[\[slice\]\]$/[["slice"]]/' road.md
+  run --separate-stderr "$SHIPIT_BIN" validate roadmap road.md --goal demo
+  [ "$status" -eq 1 ]
+  [ "${stderr_lines[0]}" = 'shipit: road.md is not a valid roadmap:' ]
+  [ "${#stderr_lines[@]}" -eq 2 ]
+}
+
+@test "validate: with no stored roadmap, split_into on a slice that has not started is refused" {
+  make_slice_repo
+  cp "$SHIPIT_SRC/tests/fixtures/goal.md" "$(store)/goals/demo/goal.v1.md"
+  rm "$(store)/goals/demo/roadmap.v1.md"
+  write_roadmap d.md
+  sed -i '/^name = "gamma"$/a split_into = ["gamma-a"]' d.md
+  add_slice d.md gamma-a src/gamma.rs
+  run --separate-stderr "$SHIPIT_BIN" validate roadmap d.md --goal demo
+  [ "$status" -eq 1 ]
+  [ "${stderr_lines[0]}" = 'shipit: d.md is not a valid roadmap:' ]
+  [ "${#stderr_lines[@]}" -eq 2 ]
+  [[ "${stderr_lines[1]}" == "  slice gamma cannot gain"* ]]
 }
