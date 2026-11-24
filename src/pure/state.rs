@@ -234,7 +234,8 @@ fn known_issue_names(facts: &Facts, item: &QualifiedDoneWhen) -> bool {
         | Entry::Answer { .. }
         | Entry::ShippedMerge { .. }
         | Entry::ShippedProof { .. }
-        | Entry::Started { .. } => false,
+        | Entry::Started { .. }
+        | Entry::Raise { .. } => false,
     })
 }
 
@@ -286,7 +287,8 @@ pub(crate) fn merge_note(entries: &[Logged]) -> Option<String> {
         | Entry::KnownIssue { .. }
         | Entry::Answer { .. }
         | Entry::ShippedProof { .. }
-        | Entry::Started { .. } => None,
+        | Entry::Started { .. }
+        | Entry::Raise { .. } => None,
     })
 }
 
@@ -297,7 +299,8 @@ pub(crate) fn is_shipped(entries: &[Logged]) -> bool {
         | Entry::Note { .. }
         | Entry::KnownIssue { .. }
         | Entry::Answer { .. }
-        | Entry::Started { .. } => false,
+        | Entry::Started { .. }
+        | Entry::Raise { .. } => false,
     })
 }
 
@@ -320,7 +323,8 @@ fn rounds_used(entries: &[Logged]) -> u64 {
             | Entry::Answer { .. }
             | Entry::ShippedMerge { .. }
             | Entry::ShippedProof { .. }
-            | Entry::Started { .. } => None,
+            | Entry::Started { .. }
+            | Entry::Raise { .. } => None,
         })
         .collect();
     u64::try_from(trees.len()).unwrap_or(u64::MAX)
@@ -476,6 +480,30 @@ fn confirmed_items(
     (items, unconfirmed)
 }
 
+// The diff decides once the version is checked; before, the owns give an estimate. The slice's
+// raises come last, in logbook order.
+fn review_of(facts: &Facts, setup: &Setup) -> Risk {
+    let raised: Vec<String> = facts
+        .entries
+        .iter()
+        .filter(|logged| logged.slice == facts.name)
+        .filter_map(|logged| match &logged.entry {
+            Entry::Raise { reason } => Some(reason.clone()),
+            Entry::Receipt { .. }
+            | Entry::Note { .. }
+            | Entry::KnownIssue { .. }
+            | Entry::Answer { .. }
+            | Entry::ShippedMerge { .. }
+            | Entry::ShippedProof { .. }
+            | Entry::Started { .. } => None,
+        })
+        .collect();
+    match facts.work.as_ref().and_then(|work| work.checked.as_ref()) {
+        Some(diff) => judged(setup, diff, &raised),
+        None => estimate(setup, &facts.owns, &raised),
+    }
+}
+
 // The chain of conditions, each reached only with all before it; `shipped` overrides.
 #[expect(
     clippy::too_many_lines,
@@ -484,12 +512,8 @@ fn confirmed_items(
 pub(crate) fn view(facts: &Facts, policy: &Policy<'_>) -> View {
     let shipped = is_shipped(&facts.entries);
     let test_drive = matches!(facts.kind, Kind::Slice { test_drive: true });
-    let review = (!shipped && matches!(facts.kind, Kind::Slice { .. })).then(|| {
-        match facts.work.as_ref().and_then(|work| work.checked.as_ref()) {
-            Some(diff) => judged(policy.setup, diff),
-            None => estimate(policy.setup, &facts.owns),
-        }
-    });
+    let review = (!shipped && matches!(facts.kind, Kind::Slice { .. }))
+        .then(|| review_of(facts, policy.setup));
     let full = review
         .as_ref()
         .is_none_or(|risk| risk.level() == Level::Full);
@@ -1658,6 +1682,7 @@ mod tests {
         view.review = Some(estimate(
             &setup_with(&[("review", Value::Table(risky))]),
             &owns,
+            &[],
         ));
         let mut checked = facts(&Given {
             plan_file: true,
@@ -1704,7 +1729,7 @@ mod tests {
             ]
         );
         if let Some(view) = shown.views.first_mut() {
-            view.review = Some(estimate(&setup_with(&[]), &owns));
+            view.review = Some(estimate(&setup_with(&[]), &owns, &[]));
         }
         assert_eq!(
             render(&[&shown], &[], (1, 3), None),
@@ -1756,6 +1781,65 @@ mod tests {
                 let named = if class == Class::NiceToFix { "second-opinion" } else { "second-opinion F1" };
                 prop_assert!(seen.next.contains(named), "{}", seen.next);
             }
+        }
+
+        #[test]
+        fn raises_are_read_from_the_slice_entries(
+            mixed in proptest::collection::vec((0_u8..3, "[a-z ]{1,8}"), 0..8),
+            checked in any::<bool>(),
+        ) {
+            let mut facts = facts(&Given {
+                plan_file: true,
+                plan_ok: true,
+                made: true,
+                checked,
+                informed: true,
+                second: false,
+                drive: false,
+                test_drive: false,
+                shipped: false,
+                full: false,
+            });
+            let raises: Vec<&String> = mixed
+                .iter()
+                .filter(|(kind, _)| *kind == 0)
+                .map(|(_, text)| text)
+                .take(3)
+                .collect();
+            let mut left = 3_usize;
+            for (kind, text) in &mixed {
+                let entry = match kind {
+                    0 if left > 0 => {
+                        left -= 1;
+                        Entry::Raise { reason: text.clone() }
+                    }
+                    0 => continue,
+                    1 => Entry::Note { text: text.clone() },
+                    _ => Entry::Receipt {
+                        kind: "informed-review".to_owned(),
+                        key: "patch".to_owned(),
+                        tree: Some("tree".to_owned()),
+                        commit: None,
+                        result: "approve".to_owned(),
+                        findings: 0,
+                        author: "sonnet:high".to_owned(),
+                        by: "opus:high".to_owned(),
+                        rank: "tier".to_owned(),
+                    },
+                };
+                facts.entries.push(Logged { slice: name("beta"), entry });
+            }
+            let seen = judged(&facts, &[]);
+            let shown = serde_json::to_value(&seen.review).expect("json");
+            let reasons: Vec<String> = shown["reasons"]
+                .as_array()
+                .expect("reasons")
+                .iter()
+                .filter_map(|reason| reason.as_str().map(str::to_owned))
+                .collect();
+            let wanted: Vec<String> = raises.iter().map(|text| format!("raised: {text}")).collect();
+            prop_assert_eq!(reasons, wanted);
+            prop_assert_eq!(&shown["level"], if raises.is_empty() { "light" } else { "full" });
         }
     }
 }

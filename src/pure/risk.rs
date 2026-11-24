@@ -109,6 +109,7 @@ pub(crate) enum Reason {
     UnreadableMaps(Vec<String>),
     BaseGiven(String),
     OtherBase { checked: String, policy: String },
+    Raised(String),
 }
 
 // At most three names, then how many more.
@@ -142,6 +143,7 @@ impl Reason {
             Self::OtherBase { checked, policy } => {
                 format!("checked against {checked}, not {policy}")
             }
+            Self::Raised(reason) => format!("raised: {reason}"),
         }
     }
 }
@@ -243,13 +245,19 @@ fn path_reasons(setup: &Setup, names: &[String], count: u64) -> Vec<Reason> {
     reasons
 }
 
+// A raise only adds a reason, so no entry can lower the level.
+fn with_raises(mut reasons: Vec<Reason>, raised: &[String]) -> Vec<Reason> {
+    reasons.extend(raised.iter().cloned().map(Reason::Raised));
+    reasons
+}
+
 // Before the work: owns name files and folders, not tests, so no mapped test can count here.
-pub(crate) fn estimate(setup: &Setup, owns: &[RepoPath]) -> Risk {
+pub(crate) fn estimate(setup: &Setup, owns: &[RepoPath], raised: &[String]) -> Risk {
     let names: Vec<String> = owns.iter().map(ToString::to_string).collect();
     let count = u64::try_from(owns.len()).unwrap_or(u64::MAX);
     Risk {
         basis: Basis::Owns,
-        reasons: path_reasons(setup, &names, count),
+        reasons: with_raises(path_reasons(setup, &names, count), raised),
     }
 }
 
@@ -267,7 +275,7 @@ pub(crate) struct DiffFacts {
 
 // After `shipit check`: the changed names, the receipt's file count, and what status could not
 // judge, each make the slice full.
-pub(crate) fn judged(setup: &Setup, diff: &DiffFacts) -> Risk {
+pub(crate) fn judged(setup: &Setup, diff: &DiffFacts, raised: &[String]) -> Risk {
     let mut reasons = path_reasons(setup, &diff.names, diff.files);
     if !diff.mapped.is_empty() {
         reasons.push(Reason::MappedTests(diff.mapped.clone()));
@@ -286,7 +294,7 @@ pub(crate) fn judged(setup: &Setup, diff: &DiffFacts) -> Risk {
     }
     Risk {
         basis: Basis::Diff,
-        reasons,
+        reasons: with_raises(reasons, raised),
     }
 }
 
@@ -561,9 +569,10 @@ mod tests {
         fn the_estimate_names_each_reason_from_owns(
             owns in proptest::sample::subsequence(UNIVERSE.to_vec(), 0..=UNIVERSE.len()),
             light in 0_u64..6,
+            raised in proptest::collection::vec("[a-z ]{1,6}", 0..=3),
         ) {
             let paths: Vec<RepoPath> = owns.iter().map(|(path, _, _)| RepoPath::parse(path).unwrap()).collect();
-            let risk = estimate(&test_setup(light), &paths);
+            let risk = estimate(&test_setup(light), &paths, &raised);
             let mut expected = Vec::new();
             let risky: Vec<String> = owns.iter().filter(|(_, risky, _)| *risky).map(|(path, _, _)| shown(path)).collect();
             if !risky.is_empty() {
@@ -577,10 +586,11 @@ mod tests {
             if count > light {
                 expected.push(Reason::Files { count, light });
             }
+            expected.extend(raised.iter().cloned().map(Reason::Raised));
             let level = if expected.is_empty() { Level::Light } else { Level::Full };
             prop_assert_eq!(risk.level(), level);
             prop_assert_eq!(risk, Risk { basis: Basis::Owns, reasons: expected });
-            let light = estimate(&test_setup(10), &[RepoPath::parse("src/a.rs").unwrap()]);
+            let light = estimate(&test_setup(10), &[RepoPath::parse("src/a.rs").unwrap()], &[]);
             prop_assert_eq!(light.level(), Level::Light);
             prop_assert_eq!(light.reasons_text(), "");
         }
@@ -664,6 +674,7 @@ mod tests {
             .text(),
             "checked against side, not main"
         );
+        assert_eq!(Reason::Raised("x".to_owned()).text(), "raised: x");
     }
 
     // One test block of a file: its kind (0 Rust-like, 1 bats-like, 2 indent-only), its name,
@@ -851,6 +862,7 @@ mod tests {
             unreadable in proptest::collection::vec("[a-z]{1,4}", 0..=4),
             given in any::<bool>(),
             other in any::<bool>(),
+            raised in proptest::collection::vec("[a-z ]{1,6}", 0..=3),
         ) {
             let diff = DiffFacts {
                 names: universe_names(&names),
@@ -860,7 +872,7 @@ mod tests {
                 given_base: given.then(|| "main".to_owned()),
                 other_base: other.then(|| ("side".to_owned(), "main".to_owned())),
             };
-            let risk = judged(&test_setup(light), &diff);
+            let risk = judged(&test_setup(light), &diff, &raised);
             let mut expected = Vec::new();
             let risky: Vec<String> = names.iter().filter(|(_, risky, _)| *risky).map(|(path, _, _)| shown(path)).collect();
             if !risky.is_empty() {
@@ -885,6 +897,7 @@ mod tests {
             if other {
                 expected.push(Reason::OtherBase { checked: "side".to_owned(), policy: "main".to_owned() });
             }
+            expected.extend(raised.iter().cloned().map(Reason::Raised));
             let level = if expected.is_empty() { Level::Light } else { Level::Full };
             prop_assert_eq!(risk.level(), level);
             prop_assert_eq!(risk, Risk { basis: Basis::Diff, reasons: expected });
@@ -896,7 +909,7 @@ mod tests {
                     unreadable: Vec::new(),
                     given_base: given_base.map(str::to_owned),
                     other_base: other_base.map(|(a, b)| (a.to_owned(), b.to_owned())),
-                })
+                }, &[])
             };
             let lock = plain(&["src/a.rs", "Cargo.lock"], None, None);
             prop_assert_eq!((lock.level(), lock.reasons_text()), (Level::Full, "lock file Cargo.lock".to_owned()));

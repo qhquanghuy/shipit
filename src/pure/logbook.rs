@@ -58,6 +58,10 @@ pub(crate) enum Entry {
     Started {
         branch: String,
     },
+    // Lifts the slice to the full review; no entry lowers it.
+    Raise {
+        reason: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -138,6 +142,9 @@ fn parse_entry(object: &Map<String, Value>) -> Option<Entry> {
         },
         "started" => Entry::Started {
             branch: field("branch")?,
+        },
+        "raise" => Entry::Raise {
+            reason: field("reason")?,
         },
         "shipped" => Entry::ShippedProof {
             note: field("note")?,
@@ -270,7 +277,8 @@ pub(crate) fn closed(entries: &[Logged], slice: &SliceName, kind: &str, key: &st
             | Entry::Note { .. }
             | Entry::ShippedMerge { .. }
             | Entry::ShippedProof { .. }
-            | Entry::Started { .. } => None,
+            | Entry::Started { .. }
+            | Entry::Raise { .. } => None,
         })
         .collect()
 }
@@ -337,6 +345,7 @@ mod tests {
             ),
             text().prop_map(|note| Entry::ShippedProof { note }),
             text().prop_map(|branch| Entry::Started { branch }),
+            text().prop_map(|reason| Entry::Raise { reason }),
         ]
     }
 
@@ -374,6 +383,10 @@ mod tests {
             prop_assert_eq!(
                 read_entries(&broken),
                 Err(format!("line {} is not a logbook entry", at + 1))
+            );
+            prop_assert_eq!(
+                read_entries("{\"slice\":\"beta\",\"event\":\"raise\",\"time\":\"t\",\"tool\":\"shipit\"}\n"),
+                Err("line 1 is not a logbook entry".to_owned())
             );
         }
 

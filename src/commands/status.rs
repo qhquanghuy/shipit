@@ -615,7 +615,8 @@ fn known_issues(reading: &Reading<'_>) -> (Vec<Known>, Vec<Answered>) {
             | Entry::Note { .. }
             | Entry::ShippedMerge { .. }
             | Entry::ShippedProof { .. }
-            | Entry::Started { .. } => {}
+            | Entry::Started { .. }
+            | Entry::Raise { .. } => {}
         }
     }
     (known, answers)
@@ -709,7 +710,8 @@ fn stand_ins_of(fact: &Facts) -> Vec<String> {
             | Entry::Answer { .. }
             | Entry::ShippedMerge { .. }
             | Entry::ShippedProof { .. }
-            | Entry::Started { .. } => None,
+            | Entry::Started { .. }
+            | Entry::Raise { .. } => None,
         })
         .flatten()
         .filter(|worker| worker.contains('@'))
