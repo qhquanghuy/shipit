@@ -20,6 +20,7 @@ use crate::pure::receipt::Oid;
 use crate::pure::review::{ReceiptKind, stored_findings, tool};
 use crate::pure::roadmap::{Element, SliceName};
 use crate::pure::setup::{HEAD, Setup};
+use crate::pure::text::comma_list;
 
 pub(crate) const HIDDEN: bool = false;
 pub(crate) const NEEDS_SETUP: bool = true;
@@ -27,7 +28,7 @@ pub(crate) const USAGE: &str = "usage: shipit log <slice> <note|known-issue|answ
 pub(crate) const SUMMARY: &str = "Appends one event to the goal's logbook.";
 pub(crate) const EXITS: [&str; 4] = [
     "logged",
-    "refused: no receipt of that kind for this version, no such finding, already closed, or a shipped entry that does not match the merge",
+    "refused: no receipt of that kind for this version, no such finding, already closed, a shipped entry that does not match the merge, or a proof step whose slices have not all shipped",
     "usage, setup, goal or logbook error",
     "",
 ];
@@ -397,6 +398,23 @@ fn refuse_second_shipping(entries: &[Logged], slice: &SliceName) -> Result<(), F
     Ok(())
 }
 
+fn refuse_before_its_slices(
+    entries: &[Logged],
+    (slice, after): (&SliceName, &[SliceName]),
+) -> Result<(), Failure> {
+    let waiting: Vec<&SliceName> = after
+        .iter()
+        .filter(|name| !is_shipped_by(entries, name))
+        .collect();
+    if waiting.is_empty() {
+        return Ok(());
+    }
+    Err(Failure::no(format!(
+        "{slice} is not ready: wait for {} to ship",
+        comma_list(waiting)
+    )))
+}
+
 // With no patch id match the owner's word stands, but the commit must still come after the point
 // where the reviewed change left the base: the root commit is nobody's merge of it.
 fn refuse_a_commit_before_the_change(
@@ -502,8 +520,9 @@ fn entry_for(
                 "\"{slice}\" is a proof step: it has no receipts"
             )));
         }
-        (Event::ShippedProof { note }, Element::Proof(_)) => {
+        (Event::ShippedProof { note }, Element::Proof(proof)) => {
             refuse_second_shipping(entries, slice)?;
+            refuse_before_its_slices(entries, (slice, &proof.after))?;
             Entry::ShippedProof { note }
         }
         (Event::ShippedProof { .. }, Element::Slice(_)) => {

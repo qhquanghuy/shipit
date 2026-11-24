@@ -27,17 +27,19 @@ a_review() {
   [ "$output" = "logged known-issue for beta" ]
   lg beta answer --kind second-opinion --finding F2 --text "because" --by sonnet:high
   [ "$status" -eq 0 ]
+  ship_entry beta
+  ship_entry gamma
   lg proof shipped --note "run by the owner"
   [ "$status" -eq 0 ]
   [ "$output" = "logged shipped for proof" ]
-  [ "$(wc -l <"$book")" -eq 5 ]
+  [ "$(wc -l <"$book")" -eq 7 ]
   [ "$(jq -r '[.slice, .event] | join(" ")' "$book" | tr '\n' ',')" = \
-    "beta receipt,beta note,beta known-issue,beta answer,proof shipped," ]
+    "beta receipt,beta note,beta known-issue,beta answer,beta shipped,gamma shipped,proof shipped," ]
   [ "$(jq -r 'select(.event == "known-issue") | [.kind, .finding, .reason, .by] | join(" ")' "$book")" = \
     "second-opinion F1 later sonnet:high" ]
   head -n 2 "$book" >"$BATS_TEST_TMPDIR/first-two"
   lg beta note --text "one more"
-  [ "$(wc -l <"$book")" -eq 6 ]
+  [ "$(wc -l <"$book")" -eq 8 ]
   cmp <(head -n 2 "$book") "$BATS_TEST_TMPDIR/first-two"
 }
 
@@ -168,8 +170,24 @@ a_review() {
   [ "$(sed -n 1p <<<"$output")" = "### ShipIt: beta is shipped (merge not matched: line three moved)" ]
 }
 
+@test "log: a proof step ships only after every slice it follows has shipped" {
+  make_slice_repo
+  lg proof shipped --note "too early"
+  [ "$status" -eq 1 ]
+  [ "$stderr" = "shipit: proof is not ready: wait for beta, gamma to ship" ]
+  ship_entry beta
+  lg proof shipped --note "still early"
+  [ "$status" -eq 1 ]
+  [ "$stderr" = "shipit: proof is not ready: wait for gamma to ship" ]
+  ship_entry gamma
+  lg proof shipped --note "now"
+  [ "$status" -eq 0 ]
+}
+
 @test "log: a proof step ships with its evidence" {
   make_slice_repo
+  ship_entry beta
+  ship_entry gamma
   lg proof shipped --note "the owner ran it"
   [ "$status" -eq 0 ]
   lg proof shipped --merge HEAD
@@ -211,12 +229,13 @@ a_review() {
   lg beta shipped --merge HEAD --unmatched --note "again"
   [ "$status" -eq 1 ]
   [ "$stderr" = "shipit: beta is already shipped" ]
+  ship_entry gamma
   lg proof shipped --note "once"
   [ "$status" -eq 0 ]
   lg proof shipped --note "twice"
   [ "$status" -eq 1 ]
   [ "$stderr" = "shipit: proof is already shipped" ]
-  [ "$(jq -r 'select(.event == "shipped") | .slice' "$(store)/goals/demo/logbook.jsonl" | wc -l)" -eq 2 ]
+  [ "$(jq -r 'select(.event == "shipped") | .slice' "$(store)/goals/demo/logbook.jsonl" | wc -l)" -eq 3 ]
 }
 
 @test "log: --unmatched still needs a commit on the base, after the reviewed change left it" {
