@@ -3,7 +3,50 @@
 
 use crate::pure::machine_notes::Notes;
 use crate::pure::shell_words::{Parse, parse, program, raw_words_unquoted};
-use crate::pure::ship_gate::{INTERPRETERS, interpreter_strings, runs_as};
+
+const INTERPRETERS: [&str; 12] = [
+    "sh", "bash", "zsh", "dash", "ksh", "fish", "python", "python3", "perl", "ruby", "node",
+    "script",
+];
+
+// A short flag cluster such as `-ix` holds the letter.
+fn cluster_has(word: &str, letters: &[char]) -> bool {
+    word.strip_prefix('-')
+        .is_some_and(|rest| !rest.starts_with('-') && rest.chars().any(|c| letters.contains(&c)))
+}
+
+// A word runs a program by its name or by a path to it; a branch such as `slice/v1/watch` is neither.
+fn runs_as(word: &str, names: &[&str]) -> bool {
+    let base = if word.starts_with('/') || word.starts_with("./") || word.starts_with("../") {
+        program(word)
+    } else {
+        word
+    };
+    names.contains(&base)
+}
+
+// A flag that hands the interpreter its program as a string: `-c`, `-e`, `-lc`, `-euc`.
+fn is_string_flag(word: &str) -> bool {
+    cluster_has(word, &['c', 'e'])
+}
+
+// For each interpreter in a segment that is given a string to run, the string (None when the
+// flag is the last word).
+fn interpreter_strings(words: &[String]) -> Vec<Option<&str>> {
+    let mut found = Vec::new();
+    for (at, word) in words.iter().enumerate() {
+        if !runs_as(word, &INTERPRETERS) {
+            continue;
+        }
+        let later = words.get(at + 1..).unwrap_or_default();
+        for (offset, flag) in later.iter().enumerate() {
+            if is_string_flag(flag) {
+                found.push(later.get(offset + 1).map(String::as_str));
+            }
+        }
+    }
+    found
+}
 
 // `-S` is also in `-Syu`, but never in `--S…`.
 fn matches_word(pattern: &str, word: &str) -> bool {

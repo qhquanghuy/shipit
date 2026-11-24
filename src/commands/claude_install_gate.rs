@@ -3,20 +3,18 @@ use std::io::Write;
 
 use serde_json::Value;
 
-use crate::commands::claude_ship_gate::{gate_folder, input_folder};
 use crate::edge::home::machine_notes;
-use crate::edge::hook_process::run_gate;
-use crate::pure::claude_hook::HookInput;
+use crate::edge::hook_process::{gate_folder, input_folder, run_gate};
+use crate::pure::claude_hook::{Answer, HookInput};
 use crate::pure::failure::Failure;
 use crate::pure::install_gate::install_refusal;
 use crate::pure::machine_notes::parse_notes;
-use crate::pure::ship_gate::Answer;
 
 pub(crate) const HIDDEN: bool = true;
 pub(crate) const NEEDS_SETUP: bool = false;
 pub(crate) const USAGE: &str =
     "usage: shipit claude-install-gate (the hook input is read from stdin)";
-pub(crate) const SUMMARY: &str = "A Claude Code hook; reads one JSON event from stdin and prints nothing or one ask or deny decision; it allows everything outside a ShipIt project.";
+pub(crate) const SUMMARY: &str = "A Claude Code hook; reads one JSON event from stdin and prints nothing or one deny decision; it allows everything outside a ShipIt project.";
 pub(crate) const EXITS: [&str; 4] = [
     "no decision, or one decision printed",
     "",

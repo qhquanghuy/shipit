@@ -1,5 +1,5 @@
-// A reader for the part of shell syntax that ShipIt can judge. Anything outside it is Complex,
-// and a gate that meets Complex text asks: reading too little must never read as safe.
+// A reader for the part of shell syntax that ShipIt can judge. Anything outside it is Complex, and
+// the install gate judges Complex text by its raw words: reading too little must never read as safe.
 
 use std::mem;
 
@@ -68,30 +68,6 @@ pub(crate) fn leading_program<'a>(mut words: impl Iterator<Item = &'a str>) -> O
     words.find(|word| !is_assignment(word)).map(program)
 }
 
-// The value after a message flag is text, not a command, whatever it says: but only when the
-// segment's own program is the one that takes the message. `sh -c '$2' git -m x` is a shell.
-pub(crate) fn message_values(words: &[String]) -> Vec<bool> {
-    let owner = leading_program(words.iter().map(String::as_str));
-    let git = owner == Some("git");
-    let gh = owner == Some("gh");
-    words
-        .iter()
-        .enumerate()
-        .map(|(at, word)| {
-            let after_flag = at
-                .checked_sub(1)
-                .and_then(|prior| words.get(prior))
-                .is_some_and(|flag| {
-                    (git && MESSAGE_FLAGS_GIT.contains(&flag.as_str()))
-                        || (gh && MESSAGE_FLAGS_GH.contains(&flag.as_str()))
-                });
-            let glued = (git && word.starts_with("--message="))
-                || (gh && (word.starts_with("--body=") || word.starts_with("--title=")));
-            after_flag || glued
-        })
-        .collect()
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Unreadable {
     Expansion,
@@ -104,29 +80,6 @@ pub(crate) enum Unreadable {
     Heredoc,
     Redirect,
     Folder,
-}
-
-impl Unreadable {
-    pub(crate) const fn text(self) -> &'static str {
-        match self {
-            Self::Expansion => "a `$` or a backquote other than `$?`",
-            Self::Group => {
-                "a subshell, a group or a shell keyword (`(`, `{`, `!`, `if`, `for`, `while`, `case`, `function` and the like)"
-            }
-            Self::Tilde => "a `~` other than in `cd ~/<folder>`",
-            Self::Comment => "a comment (a word that starts with `#`)",
-            Self::Braces => "a brace expansion (`{a,b}` or `{1..3}`)",
-            Self::Backslash => "a backslash outside quotes",
-            Self::Unclosed => "a quote or a heredoc that is not closed",
-            Self::Heredoc => {
-                "a heredoc ShipIt does not read (`<<<`, no delimiter, or an unquoted delimiter whose text has `$`, a backquote or a backslash)"
-            }
-            Self::Redirect => "a redirect ShipIt does not read (`<(`, `>|`, `<>` or no target)",
-            Self::Folder => {
-                "a folder ShipIt does not follow (`cd` alone, with `-`, an option, a glob, `$?` or two folders, a `cd` that may not run, `pushd`, `popd`, or a git `-C`, `--git-dir` or `--work-tree` that holds `$?`)"
-            }
-        }
-    }
 }
 
 type Read<T> = Result<T, Unreadable>;
@@ -854,31 +807,6 @@ mod tests {
             prop_assert!(is_complex(&text));
             let owned = format!("A=1 B=2 git {flag} \"$(cat <<'EOF'\nx\nEOF\n)\"");
             prop_assert!(!is_complex(&owned));
-        }
-
-        #[test]
-        fn a_message_is_data_only_for_the_program_that_takes_it(
-            before in prop_oneof![Just(""), Just("A=1 "), Just("A=1 B=2 "), Just("/usr/bin/")],
-            text in "[a-z ]{1,10}",
-        ) {
-            let to_words = |command: String| match parse(&command) {
-                Parse::Plain { mut segments, .. } => segments.remove(0).words,
-                Parse::Complex(_) => Vec::new(),
-            };
-            let git = to_words(format!("{before}git commit -m '{text}' --message='{text}'"));
-            prop_assert_eq!(message_values(&git).iter().filter(|data| **data).count(), 2);
-            let gh = to_words(format!("{before}gh pr create --title '{text}' --body='{text}'"));
-            prop_assert_eq!(message_values(&gh).iter().filter(|data| **data).count(), 2);
-            for wrapped in [
-                format!("sh -c '$2' git -m '{text}'"),
-                format!("env git commit -m '{text}'"),
-                format!("echo gh --title '{text}'"),
-                format!("git --title '{text}'"),
-                format!("gh -m '{text}'"),
-            ] {
-                let words = to_words(wrapped);
-                prop_assert!(message_values(&words).iter().all(|data| !data));
-            }
         }
 
         #[test]

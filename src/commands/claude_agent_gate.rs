@@ -1,28 +1,28 @@
 use std::ffi::{OsStr, OsString};
 use std::io::Write;
 
-use crate::commands::claude_ship_gate::{base_names, gate_folder, on_slice_branch};
 use crate::commands::setup::load_setup_table;
 use crate::commands::verify::verify_at;
 use crate::edge::agent_store::Ledger;
 use crate::edge::clock::now_utc;
 use crate::edge::git::Git;
-use crate::edge::hook_process::{exists, run_gate};
+use crate::edge::hook_process::{base_names, exists, gate_folder, on_slice_branch, run_gate};
 use crate::edge::slice_git::load_policy;
 use crate::pure::agent_ledger::{Change, Entry, admit, seconds};
 use crate::pure::base::BranchName;
 use crate::pure::branch::is_slice_branch;
-use crate::pure::claude_hook::{HookInput, Target, agent_call, review_target, safe_field};
+use crate::pure::claude_hook::{
+    Answer, HookInput, NO_SLICE_FOLDER, Target, agent_call, maker_rank, maker_start, review_target,
+    safe_field,
+};
 use crate::pure::failure::{Exit, Failure};
-use crate::pure::made_by::{NO_SLICE_FOLDER, maker_rank, maker_start};
 use crate::pure::setup::{HEAD, SETUP_PATH, Setup};
-use crate::pure::ship_gate::Answer;
 
 pub(crate) const HIDDEN: bool = true;
 pub(crate) const NEEDS_SETUP: bool = false;
 pub(crate) const USAGE: &str =
     "usage: shipit claude-agent-gate (the hook input is read from stdin)";
-pub(crate) const SUMMARY: &str = "A Claude Code hook; reads one JSON event from stdin and prints nothing or one ask or deny decision; it allows everything outside a ShipIt project.";
+pub(crate) const SUMMARY: &str = "A Claude Code hook; reads one JSON event from stdin and prints nothing or one deny decision; it allows everything outside a ShipIt project.";
 pub(crate) const EXITS: [&str; 4] = [
     "no decision, or one decision printed",
     "",

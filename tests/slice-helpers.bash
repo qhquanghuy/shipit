@@ -44,7 +44,7 @@ make_work() {
     printf '%s\n' "$1 $i" >"${1##*/}-$i"
   done
   git add -A
-  git commit -q -m "work on $1" --trailer "ShipIt-Made-By: shipit:maker"
+  git commit -q -m "work on $1"
 }
 
 # rec <args>: run shipit receipt, stdout in $output, stderr in $stderr.
@@ -124,7 +124,7 @@ commit_map() {
   mkdir -p ".shipit/coverage/$1"
   printf '%s\n' "$3" >".shipit/coverage/$1/$2.toml"
   git add .shipit
-  git commit -q -m "a map" --trailer "ShipIt-Made-By: shipit:maker"
+  git commit -q -m "a map"
 }
 
 # fake_gh: a gh first on PATH. It logs `issue create <title>` for each call to $GH_LOG and prints

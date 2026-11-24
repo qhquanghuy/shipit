@@ -1,10 +1,9 @@
 use std::ffi::OsString;
 use std::io::Write;
 
-use crate::commands::claude_ship_gate::settle_project;
 use crate::edge::agent_store::{Ledger, remove_stale};
 use crate::edge::clock::now_utc;
-use crate::edge::hook_process::read_hook_input;
+use crate::edge::hook_process::{read_hook_input, settle_project};
 use crate::pure::agent_ledger::{Change, Entry, on_failure, on_start, on_stop, reconcile, seconds};
 use crate::pure::claude_hook::{HookInput, parse_input, safe_field};
 use crate::pure::failure::Failure;

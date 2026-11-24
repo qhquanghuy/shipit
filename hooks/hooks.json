@@ -45,38 +45,7 @@
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/shipit",
-            "args": ["claude-ship-gate"],
-            "timeout": 10,
-            "onFailure": "block"
-          },
-          {
-            "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/shipit",
             "args": ["claude-install-gate"],
-            "timeout": 10,
-            "onFailure": "block"
-          }
-        ]
-      },
-      {
-        "matcher": "Edit|Write|NotebookEdit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/shipit",
-            "args": ["claude-ship-gate"],
-            "timeout": 10,
-            "onFailure": "block"
-          }
-        ]
-      },
-      {
-        "matcher": "^mcp__",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/shipit",
-            "args": ["claude-ship-gate"],
             "timeout": 10,
             "onFailure": "block"
           }

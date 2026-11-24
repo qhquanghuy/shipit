@@ -20,7 +20,7 @@ load helpers
 # prefix, receipt fields, store paths and default values.
 
 # Flags of git, gh, nix, cargo and claude (--allowed reads the start of --allowedTools; --add-dir) that the docs mention; any other flag must be one of shipit's.
-EXTERNAL_FLAGS=(--all-targets --branch --check --command --ignore-submodules --print-build-logs --release --pager --pre --short --template --numstat --separate-git-dir --stat --target-directory --body-file --allowed --add-dir --title --git-common-dir --name-status --comments --detach --format --git-dir --work-tree --settings --permission-mode)
+EXTERNAL_FLAGS=(--all-targets --branch --check --command --ignore-submodules --print-build-logs --release --pager --pre --short --template --numstat --separate-git-dir --stat --target-directory --body-file --allowed --add-dir --title --git-common-dir --name-status --comments --detach --format --git-dir --work-tree --settings --permission-mode --admin)
 
 # files_in <root>: README.md, every file in docs/ and every skill under <root>.
 files_in() {

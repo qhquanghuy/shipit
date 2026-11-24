@@ -7,14 +7,6 @@ use crate::pure::roadmap::SliceName;
 // writer's line.
 const MAX_LINE: usize = 4096;
 
-#[expect(
-    clippy::trivially_copy_pass_by_ref,
-    reason = "serde passes the field by reference"
-)]
-fn is_false(flag: &bool) -> bool {
-    !flag
-}
-
 // The two kinds of `shipped` share one event name; a slice ships with the commit that merged it,
 // a proof step with its evidence, so no entry holds both or neither.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -63,8 +55,6 @@ pub(crate) enum Entry {
     },
     Started {
         branch: String,
-        #[serde(skip_serializing_if = "is_false")]
-        author_rule: bool,
     },
 }
 
@@ -146,7 +136,6 @@ fn parse_entry(object: &Map<String, Value>) -> Option<Entry> {
         },
         "started" => Entry::Started {
             branch: field("branch")?,
-            author_rule: object.get("author_rule").and_then(Value::as_bool) == Some(true),
         },
         "shipped" => Entry::ShippedProof {
             note: field("note")?,
@@ -172,21 +161,6 @@ pub(crate) fn read_entries(text: &str) -> Result<Vec<Logged>, String> {
             parse_line(line).ok_or_else(|| format!("line {} is not a logbook entry", index + 1))
         })
         .collect()
-}
-
-// A slice is under the author rule when its start entry says so, whatever its branch went through
-// since: the mark is on the start and not on a commit.
-pub(crate) fn under_author_rule(entries: &[Logged], slice: &SliceName) -> bool {
-    entries.iter().any(|logged| {
-        logged.slice == *slice
-            && matches!(
-                logged.entry,
-                Entry::Started {
-                    author_rule: true,
-                    ..
-                }
-            )
-    })
 }
 
 pub(crate) fn is_shipped_by(entries: &[Logged], slice: &SliceName) -> bool {
@@ -231,6 +205,7 @@ pub(crate) fn closed(entries: &[Logged], slice: &SliceName, kind: &str, key: &st
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;
+    use serde_json::json;
 
     use super::*;
 
@@ -288,10 +263,7 @@ mod tests {
                 }
             ),
             text().prop_map(|note| Entry::ShippedProof { note }),
-            (text(), any::<bool>()).prop_map(|(branch, author_rule)| Entry::Started {
-                branch,
-                author_rule
-            }),
+            text().prop_map(|branch| Entry::Started { branch }),
         ]
     }
 
@@ -329,6 +301,22 @@ mod tests {
             prop_assert_eq!(
                 read_entries(&broken),
                 Err(format!("line {} is not a logbook entry", at + 1))
+            );
+        }
+
+        #[test]
+        fn a_start_line_with_the_old_author_mark_still_reads(
+            branch in "slice/[a-z]{1,5}/[a-z]{1,5}",
+            mark in prop_oneof![Just(json!(true)), Just(json!(false)), Just(json!("x"))],
+        ) {
+            let text = json!({
+                "slice": "beta", "event": "started", "branch": branch, "author_rule": mark,
+                "time": "2026-11-21T10:00:00Z", "tool": "shipit 0.1.0",
+            })
+            .to_string();
+            prop_assert_eq!(
+                read_entries(&text),
+                Ok(vec![Logged { slice: slice("beta"), entry: Entry::Started { branch } }])
             );
         }
 
