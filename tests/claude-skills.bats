@@ -138,13 +138,10 @@ uncovered_commands() {
   grep -v '"Bash(git push' "$doc" >"$broken"
   run uncovered_commands "$SKILLS" "$broken"
   [[ $output == *"no allow rule for: git push -u origin slice/v1/demo"* ]]
-  grep -v '^- Asks: the store copy' "$doc" >"$broken"
-  run uncovered_commands "$SKILLS" "$broken"
-  [[ $output == *"no allow rule for: mkdir -p"* ]]
   grep -v '^- Asks: the review' "$doc" >"$broken"
   run uncovered_commands "$SKILLS" "$broken"
   [[ $output == *"no allow rule for: printf"* ]]
-  sed 's/^- Asks: the store copy (`mkdir -p` and `cp`)/- Asks: the store copy (`mkdir -p`, `cp` and `xyzzy`)/' "$doc" >"$broken"
+  sed 's/its `printf`/its `printf` and `xyzzy`/' "$doc" >"$broken"
   run uncovered_commands "$SKILLS" "$broken"
   [[ $output == *"stale asks entry: xyzzy"* ]]
   sed 's/"Bash(sha256sum \*)",//' "$doc" >"$broken"

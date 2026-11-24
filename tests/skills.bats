@@ -250,7 +250,7 @@ check_docs_name_skills() {
   five_skills "$root" || return 1
   # shellcheck disable=SC2046
   for word in $(grep -ohE 'shipit-[a-z]+(-[a-z]+)*' "$root/README.md" "$root"/docs/*.md | sort -u); do
-    [[ $word == shipit-branch || -d $root/skills/$word ]] || { echo "a doc names a skill that does not exist: $word"; bad=1; }
+    [[ $word == shipit-branch || $word == shipit-makers || -d $root/skills/$word ]] || { echo "a doc names a skill that does not exist: $word"; bad=1; }
   done
   return "$bad"
 }

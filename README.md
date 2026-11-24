@@ -37,8 +37,13 @@ The skills run commands and write files. In a headless run (`claude -p`) every q
       "Bash(git fetch *)",
       "Bash(git grep *)",
       "Bash(git worktree add *)",
+      "Bash(git worktree list *)",
+      "Bash(git worktree remove .claude/worktrees/*)",
+      "Bash(git branch -d worktree-agent-*)",
       "Bash(git switch -c *)",
       "Bash(git checkout -b *)",
+      "Bash(git switch slice/*)",
+      "Bash(git checkout slice/*)",
       "Bash(git add *)",
       "Bash(git commit *)",
       "Bash(git push -u origin slice/*)",
@@ -57,19 +62,18 @@ The skills run commands and write files. In a headless run (`claude -p`) every q
 
 A skill makes its drafts folder inside the project, `.shipit/td/<name>` (`<name>` is the slice, or the goal for the roadmap), with `mkdir -p .shipit/td/<name>`, and writes the one line `*` to the `.gitignore` in it, so that git ignores the folder. The test drive has its own folder, `.shipit/drive/<slice>`, made the same way with `mkdir -p .shipit/drive/<slice>`, so that the tester sees only the built result, its docs and sample data, not the drafts. A folder inside the project is one the session may read, write and run commands in, so it needs no `--add-dir`.
 
-**Editing files and branches.** The list has no `Edit` rule. Add `--permission-mode acceptEdits` to each headless run (`claude -p --permission-mode acceptEdits ...`), which lets the session edit the files of the project, its worktree and `.shipit/td/`, and nothing outside them; in an interactive session the owner accepts the edits. The list holds `git switch -c` and `git checkout -b`, so that an agent can make an adoption branch (`adopt/setup`, `adopt/ci`, `adopt/settings`); `shipit start` makes the slice branches itself.
+**Editing files and branches.** The list has no `Edit` rule. Add `--permission-mode acceptEdits` to each headless run (`claude -p --permission-mode acceptEdits ...`), which lets the session edit the files of the project, its worktree and `.shipit/td/`, and nothing outside them; in an interactive session the owner accepts the edits. The list holds `git switch -c` and `git checkout -b`, so that an agent can make an adoption branch (`adopt/setup`, `adopt/ci`, `adopt/settings`); `shipit start` makes the slice branches itself. `git switch slice/*` and `git checkout slice/*` are for an isolated maker: it switches its new worktree to its slice branch, and carries the files of a slice that was over the cap onto a new part. `git worktree list`, `git worktree remove .claude/worktrees/*` and `git branch -d worktree-agent-*` let the lead find and free the worktree of a finished maker.
 
 **Running the result.** The test drive runs the built program, and a maker runs the project's own check: give each a rule like the one for `./test.sh`, for example `Bash(./greet.sh *)` for a program `greet.sh`. They run from the worktree or from `.shipit/drive/<slice>`, both inside the project.
 
-**The worktree.** `shipit start` prints `git worktree add <path> <branch>`, with the absolute path `.shipit/wt/<slice>` under the top of the main working copy, whatever folder or worktree it ran in: the worktree sits inside the project, where the session may read, write and run commands, so no `--add-dir` is needed (it needs a folder that exists, and the worktree is made later). `shipit start` adds `/.shipit/wt/` to `<git common dir>/info/exclude`, so git, and the search tools that read git's ignore rules, skip it in every working copy; nothing is committed. A tool of the project that walks the folder without git's rules (a test runner, a linter) may still see it: add `.shipit/wt` to its own ignore list.
+**The worktree.** `shipit start` prints `git worktree add <path> <branch>`, with the absolute path `.shipit/wt/<slice>` under the top of the main working copy, whatever folder or worktree it ran in: the worktree sits inside the project, where the session may read, write and run commands, so no `--add-dir` is needed (it needs a folder that exists, and the worktree is made later). `shipit start` adds `/.shipit/wt/` to `<git common dir>/info/exclude`, so git, and the search tools that read git's ignore rules, skip it in every working copy; nothing is committed. A tool of the project that walks the folder without git's rules (a test runner, a linter) may still see it: add `.shipit/wt` to its own ignore list. An isolated maker needs no such worktree, and none may hold its slice branch (Parallel makers in docs/claude-code.md).
 
-**The store.** The harness asks for a write under the git folder and a headless run refuses it, whatever the allow rules say; `shipit store put` writes build plans, plan reviews and reviews instead, and `Bash(shipit *)` allows it. A goal or roadmap version is the owner's decision: its copy asks.
+**The store.** The harness asks for a write under the git folder and a headless run refuses it, whatever the allow rules say; `shipit store put` writes build plans, plan reviews and reviews instead, and `Bash(shipit *)` allows it. A goal or roadmap version is the owner's decision: once the owner approves it, the owner or the lead stores it with `shipit store put goal` or `shipit store put roadmap`, and every put is recorded (docs/store.md).
 
 **Trust and headless runs.** Claude Code reads the project's `.claude/settings.json` only in a folder that was trusted, and a headless run never shows the trust question, so there the list above is not read. Trust the folder once in an interactive session (`claude` in the project folder) before the first headless run.
 
 These commands are not in the list; they ask:
 
-- Asks: the store copy (`mkdir -p` and `cp`): only for a goal or roadmap version, the owner's decision; the lead copies it, or hands the owner the exact commands.
 - Asks: the review's link hash, once per link: its `printf`, piped to the hash.
 
 ## Run it
@@ -157,7 +161,7 @@ and no file system monitor (`core.fsmonitor=false`); the counts and lists of cha
 
 Needs git 2.39 or newer. Adoption is one command and three small pull requests: the permission list, the setup, the CI job.
 
-1. Run `shipit init` in the project, on the base branch. It writes the starting setup and adds the pre-push hook; it never overwrites a file, and its Next lines are steps 2 to 4 below.
+1. Run `shipit init` in the project, on the base branch. It writes the starting setup and adds the pre-push and pre-commit hooks; it never overwrites a file, and its Next lines are steps 2 to 4 below.
    A new repository needs a first commit on the base branch and a push of it.
    A branch with no commits beyond the base exits 2 in `shipit check`: commit first, or pass `--base <base>`.
 2. Pull request 1 is the permission list alone: the agent prints the list under Start here, the owner creates `.claude/settings.json` with it (an agent cannot write that file), and the agent commits it on `adopt/settings`; the owner pushes it, opens the pull request and merges it. Tracked from the start, it never leaves the tree dirty for `shipit check`. The owner pushes the adoption branches (`adopt/settings`, `adopt/setup`, `adopt/ci`). Adoption branches are not named `slice/...`: a `slice/...` branch counts toward the cap of started slices.

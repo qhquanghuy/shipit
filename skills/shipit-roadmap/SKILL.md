@@ -50,6 +50,6 @@ Wave 1: alpha, beta (parallel), then gamma.
 ```
 ## Store files
 - The store is `<git common dir>/shipit`. Find it with `git rev-parse --git-common-dir`, run alone. A skill never spells the git folder itself.
-- Write: draft with the file tools in a drafts folder made with `mkdir -p .shipit/td/<goal>` and validate the draft there. A goal or roadmap version is stored only after the owner approves it in chat: `shipit store put goal <draft> --goal <goal>` or `shipit store put roadmap <draft> --goal <goal>`; each put is recorded (docs/store.md). The hand copy, `mkdir -p <git common dir>/shipit/goals/<goal> && cp <draft> <git common dir>/shipit/goals/<goal>/goal.v<N>.md` (`roadmap.v<N>.md` for a roadmap), stays a fallback only; status shows a version stored that way as not recorded. A store file is never edited in place: a changed goal is `goal.vN.md`, a changed roadmap `roadmap.vN.md`.
+- Write: draft with the file tools in a drafts folder made with `mkdir -p .shipit/td/<goal>` and validate the draft there. A goal or roadmap version is stored only after the owner approves it in chat: `shipit store put goal <draft> --goal <goal>` or `shipit store put roadmap <draft> --goal <goal>`; each put is recorded (docs/store.md). A store file is never edited in place: a changed goal is `goal.vN.md`, a changed roadmap `roadmap.vN.md`.
 - Read: `shipit store show <kind> --goal <goal> [--slice <slice>] [--round <k>] --copy`, from any working copy, then the Read tool on the path it prints.
-- If the copy asks or is refused (a headless run refuses), stop and give the owner the exact `mkdir -p` and `cp` commands to run.
+- If `shipit store put` refuses, report its message and stop.
