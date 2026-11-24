@@ -34,12 +34,18 @@ start_maker() {
 launched() {
   run_hook claude-agent-count "$(maker_call "$1" "$3" |
     jq -c --arg agent "$2" '.hook_event_name = "PostToolUse" | .tool_response = {status: "async_launched", agentId: $agent}')" "$REPO"
+  [ -z "$output" ]
 }
 
 # maker_started <agent_id> <cwd>: the agent starts, or is started again, in that folder.
 maker_started() {
   run_hook claude-agent-count "$(hook_input "$(jq -cn --arg cwd "$2" --arg agent "$1" \
     '{hook_event_name: "SubagentStart", cwd: $cwd, agent_id: $agent, agent_type: "shipit:maker"}')")" "$REPO"
+}
+
+# the record the agent hooks write, in the git common dir.
+makers_log() {
+  git -C "$REPO" rev-parse --path-format=absolute --git-common-dir | sed 's|$|/shipit-makers.jsonl|'
 }
 
 # agent_tree <agent_id>: the worktree Claude Code makes for the agent, on its own branch; its path is printed.
@@ -60,6 +66,7 @@ commit_here() {
   start_maker t1 slice/v1/x
   tree=$(agent_tree a1)
   maker_started a1 "$tree"
+  [ -z "$output" ]
   launched t1 a1 slice/v1/x
   cd "$tree"
   head=$(git rev-parse HEAD)
@@ -94,7 +101,60 @@ commit_here() {
   [ "$status" -eq 0 ]
   [ "$stderr" = "shipit: not checked: no maker record names this worktree, but a maker was started for slice/v1/x (docs/claude-code.md, Parallel makers)" ]
   cd "$REPO"
+  launched t2 a2 slice/v1/x
   maker_started a2 "$REPO"
   [ "$(jq -r '.hookSpecificOutput.hookEventName' <<<"$output")" = SubagentStart ]
   [ "$(jq -r '.hookSpecificOutput.additionalContext' <<<"$output")" = "ShipIt: not checked: agent a2 is an isolated shipit:maker started again outside its worktree; stop and tell the lead to start a new maker (docs/claude-code.md, Parallel makers)" ]
+}
+
+@test "pre-commit: a known maker on a detached HEAD is warned, not refused" {
+  local tree
+  start_maker t4 slice/v1/x
+  tree=$(agent_tree a4)
+  maker_started a4 "$tree"
+  launched t4 a4 slice/v1/x
+  cd "$tree"
+  git switch -q --detach
+  commit_here rebase-stop
+  [ "$status" -eq 0 ]
+  [ "$stderr" = "shipit: not checked: HEAD is detached in this maker's worktree, so its commit cannot be matched to its slice branch slice/v1/x (docs/claude-code.md, Parallel makers)" ]
+}
+
+@test "pre-commit: a maker started outside an agent worktree is no record, and its resume prints nothing" {
+  local call
+  call=$(agent_input "$REPO" shipit:maker "work" '{"model":"sonnet","effort":"high","run_in_background":true}' | jq -c '.tool_use_id = "t5"')
+  run_hook claude-agent-count "$(jq -c '.hook_event_name = "PostToolUse" | .tool_response = {status: "async_launched", agentId: "n1"}' <<<"$call")" "$REPO"
+  [ -z "$output" ]
+  mkdir -p "$REPO/.shipit/wt/x"
+  maker_started n1 "$REPO/.shipit/wt/x"
+  [ -z "$output" ]
+  maker_started n1 "$REPO/.shipit/wt/x"
+  [ -z "$output" ]
+  [ ! -e "$(makers_log)" ] || ! grep -q 'n1' "$(makers_log)"
+}
+
+@test "pre-commit: a launch that failed no longer leaves its start unpaired" {
+  local tree
+  start_maker t6 slice/v1/x
+  run_hook claude-agent-count "$(maker_call t6 slice/v1/x | jq -c '.hook_event_name = "PostToolUseFailure"')" "$REPO"
+  [ -z "$output" ]
+  tree=$(agent_tree a6)
+  cd "$tree"
+  git switch -q slice/v1/x
+  commit_here after-failure
+  [ "$status" -eq 0 ]
+  [ -z "$stderr" ]
+}
+
+@test "pre-commit: the self-check says so when the worktree's pre-commit hook has no shipit line" {
+  local tree
+  tree=$(agent_tree a7)
+  cd "$tree"
+  run --separate-stderr "$SHIPIT_BIN" pre-commit
+  [ "$status" -eq 0 ]
+  [ -z "$stderr" ]
+  git config core.hooksPath .no-hooks
+  run --separate-stderr "$SHIPIT_BIN" pre-commit
+  [ "$status" -eq 0 ]
+  [ "$stderr" = "shipit: not checked: the pre-commit hook of this worktree has no shipit pre-commit line, so a commit here may not be checked (docs/claude-code.md, Parallel makers)" ]
 }

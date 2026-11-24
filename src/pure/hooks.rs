@@ -501,9 +501,15 @@ pub(crate) fn follow_up(manager: &Manager, step: &HookStep) -> Vec<String> {
             file,
             ..
         } => vec![format!("commit it: {file} is tracked")],
-        Manager::HooksPath { tracked: false, .. } | Manager::PreCommit | Manager::Plain { .. } => {
-            Vec::new()
-        }
+        Manager::HooksPath {
+            tracked: false,
+            inside_project: true,
+            file,
+            ..
+        } if matches!(step, HookStep::Write { .. }) => vec![format!(
+            "commit it: {file} is new, and an agent's worktree has it only once it is committed"
+        )],
+        Manager::HooksPath { .. } | Manager::PreCommit | Manager::Plain { .. } => Vec::new(),
         Manager::Lefthook { local, ignored, .. } => {
             let mut lines = vec!["run lefthook install".to_owned()];
             if let (false, Some((name, _hook))) = (ignored, local) {
@@ -588,6 +594,32 @@ mod tests {
             prop_assert_eq!(append_safety(GitHook::Push, true, false, false, &script), Err(Unsafe::NotExecutable));
             prop_assert_eq!(append_safety(GitHook::Push, true, true, false, &script), Ok(()));
             prop_assert_eq!(append_safety(GitHook::Push, false, false, false, &script), Err(Unsafe::OutsideProject));
+        }
+
+        #[test]
+        fn a_new_file_in_a_hooks_folder_of_the_project_is_to_be_committed(
+            file in "[a-z]{1,6}/pre-(push|commit)",
+            tracked in any::<bool>(),
+            text in "[a-z ]{0,10}",
+        ) {
+            let manager = Manager::HooksPath {
+                file: file.clone(),
+                inside_project: true,
+                tracked,
+                hook: HookFile::Missing,
+            };
+            let write = HookStep::Write { path: file.clone(), text: text.clone() };
+            let told = follow_up(&manager, &write);
+            prop_assert_eq!(told.len(), 1);
+            prop_assert!(told.iter().all(|line| line.starts_with("commit it: ") && line.contains(&file)));
+            let outside = Manager::HooksPath {
+                file: file.clone(),
+                inside_project: false,
+                tracked: false,
+                hook: HookFile::Missing,
+            };
+            prop_assert!(follow_up(&outside, &write).is_empty());
+            prop_assert!(follow_up(&manager, &HookStep::Nothing(text)).is_empty());
         }
 
         #[test]

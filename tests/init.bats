@@ -431,6 +431,7 @@ same_except() {
   [[ ${lines[0]} == "added to $PWD/hooks/pre-push: $GUARDED" ]]
   [[ ${lines[1]} == "commit it: $PWD/hooks/pre-push is tracked" ]]
   [[ ${lines[2]} == "wrote $PWD/hooks/pre-commit" ]]
+  [[ ${lines[3]} == "commit it: $PWD/hooks/pre-commit is new, and an agent's worktree has it only once it is committed" ]]
   [ "$(grep -cxF "$GUARDED" hooks/pre-push)" -eq 1 ]
   [ -x hooks/pre-push ]
   same_except hooks/pre-push hooks/pre-commit
@@ -579,9 +580,11 @@ same_except() {
   [ "$status" -eq 0 ]
   [[ ${lines[0]} == "not added to .pre-commit-config.yaml ("*"add this entry under repos:); add it yourself:" ]]
   [[ $output == *"id: shipit"* ]]
+  [[ $output == *"id: shipit-commit"* ]]
   [[ $output == *"# pre-commit runs it once per push, for one ref"* ]]
   same_except
   [ ! -e "$(hook_file)" ]
+  [ ! -e "$(commit_hook_file)" ]
 }
 
 @test "non-interactive: the machine notes are printed, never written" {

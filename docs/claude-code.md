@@ -94,11 +94,11 @@ only a nudge. Names with a middle dot must be quoted in a typed `@` mention.
 
 ## Parallel makers
 
-One lead session runs the makers of several slices at once. Each maker works in a worktree of its own, which Claude Code makes, and a git hook keeps its commits on its slice branch.
+One lead session runs the makers of several slices at once. Each maker works in a worktree of its own, which Claude Code makes, and a git hook checks the commits made in that worktree against its slice branch.
 
 1. The lead runs `shipit start` for each slice and makes no slice worktree: git refuses a branch that two worktrees hold.
 2. The lead starts each maker with `isolation: "worktree"`, `run_in_background: true` and a first prompt line `shipit-branch: slice/<goal>/<slice>`. Several makers may start in one message.
-3. The maker runs `git switch slice/<goal>/<slice>`, then `shipit pre-commit`. If git refuses, or `shipit pre-commit` prints a line that starts `shipit: not checked`, the maker reports and stops.
+3. The maker runs `git switch slice/<goal>/<slice>`, then `shipit pre-commit`. If git refuses, the maker reports and stops. If `shipit pre-commit` prints a line that starts `shipit: not checked`, the maker waits a few seconds, runs it once more (a launch is recorded a moment after the agent is up), and reports and stops if the line comes again.
 4. The maker's last step runs `shipit check` in its worktree.
 5. After a maker ends, the lead finds its worktree with `git worktree list`, then runs `git worktree remove .claude/worktrees/agent-<id>` and `git branch -d worktree-agent-<id>` from the main working copy, each alone in its call, before the next maker of that slice starts.
 
@@ -110,25 +110,36 @@ Never resume an isolated maker: start a new one. A resumed agent works in the se
 |---|---|---|
 | `{"event":"start","session":…,"call":…,"branch":…}` | `shipit claude-agent-gate` | before the Agent tool starts an isolated `shipit:maker` whose prompt names a local slice branch |
 | `{"event":"launched","session":…,"call":…,"agent":…}` | `shipit claude-agent-count` | after the same call, with the new agent's id |
-| `{"event":"maker","session":…,"agent":…}` | `shipit claude-agent-count` | when a `shipit:maker` agent starts or resumes |
+| `{"event":"maker","session":…,"agent":…}` | `shipit claude-agent-count` | when a `shipit:maker` agent starts in its own worktree |
+| `{"event":"failed","session":…,"call":…}` | `shipit claude-agent-count` | when the Agent call of an isolated `shipit:maker` fails, so its `start` line claims nothing |
 
 The call id pairs a `launched` line with its `start` line, in any order of the lines.
 
-**The commit hook.** `shipit init` adds a pre-commit hook next to the pre-push hook, with the same guards: `shipit pre-commit` runs only where ShipIt is installed. In a worktree Claude Code made for an agent (`<project>/.claude/worktrees/agent-<id>`), it reads the record. It refuses only a commit of a known maker that is not on its slice branch, and every other commit passes. The refusal, after `shipit: `:
+**The commit hook.** `shipit init` adds a pre-commit hook next to the pre-push hook, with the same guards: `shipit pre-commit` runs only where ShipIt is installed. In a worktree Claude Code made for an agent (`<project>/.claude/worktrees/agent-<id>`), it reads the record. It refuses only a commit of a known maker on a branch that is not its slice's, and every other commit passes. A detached HEAD (a rebase stop, an amend) is a warning, not a refusal. The refusal, after `shipit: `:
 
 - `this worktree is shipit:maker's for <branch>; commit there: git switch <branch> (docs/claude-code.md, Parallel makers)`
 
-Where the slice is not known, the commit passes with a warning on stderr:
+Where the commit cannot be judged, it passes with a warning on stderr:
 
 - `shipit: not checked: this maker's slice branch is not known; start it again with run_in_background (docs/claude-code.md, Parallel makers)`
+  A maker started in the foreground: its launch is recorded only when it ends.
 - `shipit: not checked: no maker record names this worktree, but a maker was started for <branch> (docs/claude-code.md, Parallel makers)`
+  A worktree that no record names, on a branch that an unclaimed start names: the `maker` line was lost.
+- `shipit: not checked: HEAD is detached in this maker's worktree, so its commit cannot be matched to its slice branch <branch> (docs/claude-code.md, Parallel makers)`
+  A known maker on a detached HEAD.
 
-The second line is a maker started in the foreground: its start is paired only when it ends. When `shipit claude-agent-count` sees a known maker start again outside its own worktree, it tells the agent as SubagentStart context: `ShipIt: not checked: agent <id> is an isolated shipit:maker started again outside its worktree; stop and tell the lead to start a new maker (docs/claude-code.md, Parallel makers)`.
+When `shipit pre-commit` runs in an agent worktree whose pre-commit hook file (the one git resolves, `core.hooksPath` included) is missing or has no `shipit pre-commit` line, it warns too, so the maker's own check does not pass in silence where the hook is off:
+
+- `shipit: not checked: the pre-commit hook of this worktree has no shipit pre-commit line, so a commit here may not be checked (docs/claude-code.md, Parallel makers)`
+
+When `shipit claude-agent-count` sees a launched maker start again outside its own worktree, it tells the agent as SubagentStart context: `ShipIt: not checked: agent <id> is an isolated shipit:maker started again outside its worktree; stop and tell the lead to start a new maker (docs/claude-code.md, Parallel makers)`.
 
 **Limits.**
 - A guardrail, not security: an agent can skip the hook with git's no-verify option, or edit the record file. The reviews and the receipt still judge the commits.
-- A foreground maker's slice is not known until it ends, so its commits pass with the second warning above. The skills start every isolated maker in the background.
+- A foreground maker's slice is not known until it ends, so its commits pass with the first warning above. The skills start every isolated maker in the background.
 - The record is never pruned.
+- The hooks that `shipit init` adds are off in an agent worktree when they are not there. A `lefthook-local.yml` lives only in the main working copy (it is per person and untracked). A new hooks file that is not committed is missing from the worktree, which Claude Code makes from the commits; `shipit init` says so. husky's `.husky/_` is generated by `husky install`, so a worktree has none. The maker's own `shipit pre-commit` warns in these cases.
+- The hook sees only a commit made in the agent worktree itself. `git -C <main working copy>`, a `cd` to the main working copy, `git worktree move` and `-c core.hooksPath=…` all go round it.
 - A hook that `shipit init` cannot add safely (a lefthook setup it does not write, a hook with `exit` or `exec`, a hooks folder outside the project) is printed with its reason, not written; until the owner adds it, the commit check is off there.
 - The worktree path `.claude/worktrees/agent-<id>` is Claude Code's behaviour, measured on 2.1.327, not a contract.
 

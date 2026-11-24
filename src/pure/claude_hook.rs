@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use serde_json::{Value, json};
 
-use crate::pure::agent_ledger::safe_id;
+use crate::pure::agent_ledger::{branch_line, safe_id};
 use crate::pure::rank::effort_name;
 use crate::pure::setup::Setup;
 
@@ -116,34 +116,13 @@ pub(crate) fn review_target(input: &HookInput) -> Target {
     if !agent_call(input) {
         return Target::NotGated;
     }
-    let mut named: Vec<&str> = Vec::new();
-    for line in text("prompt").unwrap_or_default().lines() {
-        let Some(rest) = line.trim().strip_prefix(BRANCH_LINE) else {
-            continue;
-        };
-        // A branch name cannot end in a full stop, so a sentence's own is not part of it.
-        let word = rest
-            .split_whitespace()
-            .next()
-            .map(|word| word.trim_end_matches('.'))
-            .filter(|word| !word.is_empty());
-        let Some(word) = word else {
-            return Target::Bad("the shipit-branch line names no branch".to_owned());
-        };
-        if !named.contains(&word) {
-            named.push(word);
-        }
-    }
-    match named.as_slice() {
-        [] => Target::Gated {
-            role: role.to_owned(),
-            branch: None,
-        },
-        [branch] => Target::Gated {
-            role: role.to_owned(),
-            branch: Some((*branch).to_owned()),
-        },
-        [_, _, ..] => Target::Bad("the prompt names two branches".to_owned()),
+    let branch = match branch_line(text("prompt").unwrap_or_default()) {
+        Ok(branch) => branch.map(str::to_owned),
+        Err(why) => return Target::Bad(why.to_owned()),
+    };
+    Target::Gated {
+        role: role.to_owned(),
+        branch,
     }
 }
 

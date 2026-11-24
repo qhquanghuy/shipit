@@ -22,12 +22,12 @@ use crate::pure::setup::HEAD;
 use crate::pure::state::{StartFacts, State, start_refusal};
 
 // Anchored and ending in a slash: it never matches `.shipit/coverage/`.
-const WORKTREES: &str = "/.shipit/wt/";
+const WORKTREES: [&str; 2] = ["/.shipit/wt/", "/.claude/worktrees/"];
 
 pub(crate) const HIDDEN: bool = false;
 pub(crate) const NEEDS_SETUP: bool = true;
 pub(crate) const USAGE: &str = "usage: shipit start <slice> [--goal <name>]";
-pub(crate) const SUMMARY: &str = "Makes the slice's branch and logs it, refused at the parallel cap, which counts all goals; fetch first, since a goal that another clone has not pushed is not seen, and two starts at the same moment can both pass the cap. It adds /.shipit/wt/ to the git common dir's info/exclude, so the worktree it names stays out of git.";
+pub(crate) const SUMMARY: &str = "Makes the slice's branch and logs it, refused at the parallel cap, which counts all goals; fetch first, since a goal that another clone has not pushed is not seen, and two starts at the same moment can both pass the cap. It adds /.shipit/wt/ and /.claude/worktrees/ to the git common dir's info/exclude, so the worktree it names and the worktrees of isolated agents stay out of git.";
 pub(crate) const EXITS: [&str; 4] = [
     "started",
     "refused: build plan not ready, an earlier slice not shipped, the branch exists, or the cap is reached",
@@ -138,7 +138,9 @@ pub(crate) fn run(
         }
     }
 
-    write::append_line(&common.join("info").join("exclude"), WORKTREES)?;
+    for folder in WORKTREES {
+        write::append_line(&common.join("info").join("exclude"), folder)?;
+    }
     let branch = slice_branch(&goal, &slice);
     create_branch(&git, &branch, &base_ref)?;
     let entry = Entry::Started {

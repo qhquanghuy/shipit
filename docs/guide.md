@@ -76,7 +76,7 @@ The lead session is named by `shipit session-name <goal>`; a slice session by `s
 - **One session per slice:** the lead (or you) writes the build plan and starts the slice in the main working copy; that prints the slice's worktree, and the owner opens a new session in the worktree: `cd <path> && claude -n "$(shipit session-name <goal> <slice>)"`.
 - **Claude Code workflow:** a script the lead writes; not yet tried with ShipIt, so it is never recommended.
 
-A maker in a worktree of its own switches to its slice branch first, and a git hook refuses its commits on any other branch (docs/claude-code.md, Parallel makers).
+A maker in a worktree of its own switches to its slice branch first, and a git hook refuses a commit made in that worktree on any other branch; it sees only the commits made there (docs/claude-code.md, Parallel makers).
 
 ## Words you may meet
 

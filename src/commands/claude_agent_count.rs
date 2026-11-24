@@ -9,8 +9,8 @@ use crate::edge::files::read_text;
 use crate::edge::hook_process::{input_folder, read_hook_input, settle_project};
 use crate::edge::records::append_line;
 use crate::pure::agent_ledger::{
-    Change, Entry, MAKERS_LOG, MakerRecord, on_failure, on_start, on_stop, reconcile, record_line,
-    resumed_away, seconds, subagent_context,
+    Change, Entry, MAKERS_LOG, MakerRecord, agent_of_worktree, on_failure, on_start, on_stop,
+    reconcile, record_line, resumed_away, seconds, subagent_context,
 };
 use crate::pure::claude_hook::{HookInput, MAKER, agent_call, parse_input, safe_field};
 use crate::pure::failure::Failure;
@@ -90,9 +90,24 @@ fn resume_warning(agent: &str) -> String {
 }
 
 // The lines the commit hook reads, written whether or not the session has a ledger. A start of a
-// maker that is already known and is not in its own worktree is a resume: it works outside the
-// check's sight, and the warning is the text returned.
+// launched maker that is not in its own worktree is a resume: it works outside the check's sight,
+// and the warning is the text returned. Only a maker in its own worktree is recorded as one: a
+// maker started in any other folder never had a worktree to check.
 fn record_maker(input: &HookInput) -> Result<Option<String>, String> {
+    let isolated_call = || {
+        let tool_input = input.tool_input.as_ref().filter(|_| agent_call(input))?;
+        let text = |key: &str| tool_input.get(key).and_then(Value::as_str);
+        (text("subagent_type") == Some(MAKER) && text("isolation") == Some("worktree"))
+            .then_some(())
+    };
+    let wanted = match input.event.as_str() {
+        "PostToolUse" | "PostToolUseFailure" => isolated_call().is_some(),
+        "SubagentStart" => input.agent_type.as_deref() == Some(MAKER),
+        _ => false,
+    };
+    if !wanted {
+        return Ok(None);
+    }
     let Some(git) = input_folder(input) else {
         return Ok(None);
     };
@@ -106,13 +121,7 @@ fn record_maker(input: &HookInput) -> Result<Option<String>, String> {
     };
     match input.event.as_str() {
         "PostToolUse" => {
-            let Some(tool_input) = input.tool_input.as_ref().filter(|_| agent_call(input)) else {
-                return Ok(None);
-            };
-            let text = |key: &str| tool_input.get(key).and_then(Value::as_str);
-            let isolated_maker =
-                text("subagent_type") == Some(MAKER) && text("isolation") == Some("worktree");
-            let Some(agent) = input.launched_agent.as_deref().filter(|_| isolated_maker) else {
+            let Some(agent) = input.launched_agent.as_deref() else {
                 return Ok(None);
             };
             append(&MakerRecord::Launched {
@@ -122,16 +131,25 @@ fn record_maker(input: &HookInput) -> Result<Option<String>, String> {
             })?;
             Ok(None)
         }
-        "SubagentStart" if input.agent_type.as_deref() == Some(MAKER) => {
+        "PostToolUseFailure" => {
+            append(&MakerRecord::Failed {
+                session: session.to_owned(),
+                call: safe_field(input.tool_use_id.as_deref(), "tool_use_id")?.to_owned(),
+            })?;
+            Ok(None)
+        }
+        "SubagentStart" => {
             let agent = safe_field(input.agent_id.as_deref(), "agent_id")?;
             let warning = read_text(&log)
                 .ok()
                 .filter(|text| resumed_away(text, agent, &input.cwd))
                 .map(|_text| resume_warning(agent));
-            append(&MakerRecord::Maker {
-                session: session.to_owned(),
-                agent: agent.to_owned(),
-            })?;
+            if agent_of_worktree(&input.cwd).as_deref() == Some(agent) {
+                append(&MakerRecord::Maker {
+                    session: session.to_owned(),
+                    agent: agent.to_owned(),
+                })?;
+            }
             Ok(warning)
         }
         _ => Ok(None),

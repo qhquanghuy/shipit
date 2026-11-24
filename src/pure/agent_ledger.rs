@@ -249,6 +249,11 @@ pub(crate) enum MakerRecord {
         session: String,
         agent: String,
     },
+    // The call returned an error: nothing was launched, so its start claims no worktree.
+    Failed {
+        session: String,
+        call: String,
+    },
 }
 
 pub(crate) fn record_line(record: &MakerRecord) -> String {
@@ -318,9 +323,10 @@ pub(crate) fn maker_slice(log: &str, agent: &str) -> MakerSlice {
             call,
             agent: launched,
         } if launched == agent => Some((session, call)),
-        MakerRecord::Launched { .. } | MakerRecord::Start { .. } | MakerRecord::Maker { .. } => {
-            None
-        }
+        MakerRecord::Launched { .. }
+        | MakerRecord::Start { .. }
+        | MakerRecord::Maker { .. }
+        | MakerRecord::Failed { .. } => None,
     });
     if let Some((launched_session, launched_call)) = launched {
         let start = records.iter().find_map(|record| match record {
@@ -331,7 +337,8 @@ pub(crate) fn maker_slice(log: &str, agent: &str) -> MakerSlice {
             } if session == launched_session && call == launched_call => Some(branch),
             MakerRecord::Start { .. }
             | MakerRecord::Launched { .. }
-            | MakerRecord::Maker { .. } => None,
+            | MakerRecord::Maker { .. }
+            | MakerRecord::Failed { .. } => None,
         });
         return start.map_or(MakerSlice::Unknown, |branch| {
             MakerSlice::Known(branch.clone())
@@ -347,14 +354,16 @@ pub(crate) fn maker_slice(log: &str, agent: &str) -> MakerSlice {
     }
 }
 
-// A SubagentStart of an agent the log already knows as a maker, outside its own worktree: a resume.
+// A SubagentStart of an agent the log knows as a launched isolated maker, outside its own
+// worktree: a resume. A maker with no launch line may be one that never had a worktree of its own.
 pub(crate) fn resumed_away(log: &str, agent: &str, cwd: &Path) -> bool {
-    maker_slice(log, agent) != MakerSlice::NoRecord
-        && agent_of_worktree(cwd).as_deref() != Some(agent)
+    records(log).iter().any(
+        |record| matches!(record, MakerRecord::Launched { agent: launched, .. } if launched == agent),
+    ) && agent_of_worktree(cwd).as_deref() != Some(agent)
 }
 
-// A start that no launch has claimed: a foreground maker, whose launch is told only when it ends,
-// or a start whose launch line was lost.
+// A start that no launch or failure has claimed: a foreground maker, whose launch is told only
+// when it ends, or a start whose launch line was lost.
 fn unpaired_start(log: &str, branch: &str) -> bool {
     let records = records(log);
     records.iter().any(|record| match record {
@@ -363,11 +372,12 @@ fn unpaired_start(log: &str, branch: &str) -> bool {
             call,
             branch: named,
         } if named == branch => !records.iter().any(|other| {
-            matches!(other, MakerRecord::Launched { session: s, call: c, .. } if s == session && c == call)
+            matches!(other, MakerRecord::Launched { session: s, call: c, .. } | MakerRecord::Failed { session: s, call: c } if s == session && c == call)
         }),
-        MakerRecord::Start { .. } | MakerRecord::Launched { .. } | MakerRecord::Maker { .. } => {
-            false
-        }
+        MakerRecord::Start { .. }
+        | MakerRecord::Launched { .. }
+        | MakerRecord::Maker { .. }
+        | MakerRecord::Failed { .. } => false,
     })
 }
 
@@ -386,27 +396,46 @@ fn refusal(branch: &str) -> String {
     )
 }
 
+fn detached(branch: &str) -> String {
+    format!(
+        "not checked: HEAD is detached in this maker's worktree, so its commit cannot be matched to its slice branch {branch} (docs/claude-code.md, Parallel makers)"
+    )
+}
+
+const NO_COMMIT_LINE: &str = "not checked: the pre-commit hook of this worktree has no shipit pre-commit line, so a commit here may not be checked (docs/claude-code.md, Parallel makers)";
+
 fn unpaired(branch: &str) -> String {
     format!(
         "not checked: no maker record names this worktree, but a maker was started for {branch} (docs/claude-code.md, Parallel makers)"
     )
 }
 
-// The only refusal is a known maker's worktree off its known slice branch; every doubt passes,
-// silent or with a warning.
+// The only refusal is a known maker's worktree on a branch that is not its slice's; every doubt
+// passes, silent or with a warning. A detached HEAD is a rebase stop or an amend, no switch away.
 pub(crate) fn commit_verdict(top: &Path, branch: Option<&str>, log: Option<&str>) -> CommitVerdict {
     let (Some(agent), Some(log)) = (agent_of_worktree(top), log) else {
         return CommitVerdict::Pass;
     };
     match maker_slice(log, &agent) {
-        MakerSlice::Known(slice) if branch == Some(slice.as_str()) => CommitVerdict::Pass,
-        MakerSlice::Known(slice) => CommitVerdict::Refuse(refusal(&slice)),
+        MakerSlice::Known(slice) => match branch {
+            Some(named) if named == slice => CommitVerdict::Pass,
+            Some(_other) => CommitVerdict::Refuse(refusal(&slice)),
+            None => CommitVerdict::Warn(detached(&slice)),
+        },
         MakerSlice::Unknown => CommitVerdict::Warn(UNKNOWN_SLICE.to_owned()),
         MakerSlice::NoRecord => match branch.filter(|named| unpaired_start(log, named)) {
             Some(named) => CommitVerdict::Warn(unpaired(named)),
             None => CommitVerdict::Pass,
         },
     }
+}
+
+// The self-check in an agent worktree finds a hook file that never runs the check: a hooks folder
+// that is generated or not committed is missing there.
+pub(crate) fn missing_commit_line(top: &Path, hook: Option<&str>) -> Option<String> {
+    agent_of_worktree(top)?;
+    hook.is_none_or(|text| !text.contains("shipit pre-commit"))
+        .then(|| NO_COMMIT_LINE.to_owned())
 }
 
 pub(crate) fn subagent_context(text: &str) -> String {
@@ -425,6 +454,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+    use crate::pure::hooks::COMMIT_LINE;
 
     // 0000-01-01T00:00:00Z and 9999-12-31T23:59:59Z.
     const FIRST: i64 = -62_167_219_200;
@@ -675,6 +705,7 @@ mod tests {
                 agent
             }),
             (word(), word()).prop_map(|(session, agent)| MakerRecord::Maker { session, agent }),
+            (word(), word()).prop_map(|(session, call)| MakerRecord::Failed { session, call }),
         ]
     }
 
@@ -774,6 +805,7 @@ mod tests {
                 }
             }),
             (session(), agent()).prop_map(|(session, agent)| MakerRecord::Maker { session, agent }),
+            (session(), call()).prop_map(|(session, call)| MakerRecord::Failed { session, call }),
         ]
     }
 
@@ -869,19 +901,35 @@ mod tests {
             ] {
                 prop_assert_eq!(agent_of_worktree(&top(&other)), None, "{}", other);
             }
-            // a resume is a known maker whose folder is not its own worktree
+            // a resume is a launched maker whose folder is not its own worktree; a maker that only
+            // started is not one: it may be a maker that never had a worktree of its own
             let launched = [
                 MakerRecord::Start { session: "s".to_owned(), call: "c".to_owned(), branch: "slice/g/x".to_owned() },
                 MakerRecord::Launched { session: "s".to_owned(), call: "c".to_owned(), agent: id.clone() },
             ];
             let made = [MakerRecord::Maker { session: "s".to_owned(), agent: id.clone() }];
-            for log in [log_of(&launched), log_of(&made)] {
-                prop_assert!(!resumed_away(&log, &id, &own));
-                prop_assert!(resumed_away(&log, &id, Path::new(&parent)));
-                prop_assert!(resumed_away(&log, &id, &top(".claude/worktrees/agent-other.")));
-            }
+            let log = log_of(&launched);
+            prop_assert!(!resumed_away(&log, &id, &own));
+            prop_assert!(resumed_away(&log, &id, Path::new(&parent)));
+            prop_assert!(resumed_away(&log, &id, &top(".claude/worktrees/agent-other.")));
+            prop_assert!(!resumed_away(&log_of(&made), &id, Path::new(&parent)));
             prop_assert!(!resumed_away("", &id, Path::new(&parent)));
             prop_assert!(!resumed_away(&log_of(&launched), "nobody", Path::new(&parent)));
+        }
+
+        #[test]
+        fn the_self_check_finds_a_hook_that_has_no_commit_line(
+            parent in "(/[a-z]{1,6}){1,3}",
+            id in "[a-z0-9]{1,8}",
+            text in "[a-z #!/]{0,30}",
+        ) {
+            let own = PathBuf::from(format!("{parent}/.claude/worktrees/agent-{id}"));
+            let with_line = format!("{text}\n{COMMIT_LINE}\n");
+            prop_assert_eq!(missing_commit_line(&own, Some(&with_line)), None);
+            prop_assert!(missing_commit_line(&own, Some(&text)).is_some());
+            prop_assert!(missing_commit_line(&own, None).is_some());
+            prop_assert_eq!(missing_commit_line(Path::new(&parent), None), None);
+            prop_assert_eq!(missing_commit_line(Path::new(&parent), Some(&text)), None);
         }
 
         #[test]
@@ -902,25 +950,36 @@ mod tests {
                     matches!(other, MakerRecord::Launched { session: s, call: c, .. } if s == session && c == call)
                 })
             };
+            let failed_for = |session: &String, call: &String| {
+                records.iter().flatten().any(|other| {
+                    matches!(other, MakerRecord::Failed { session: s, call: c } if s == session && c == call)
+                })
+            };
             let names_unpaired = |wanted: &str| {
                 records.iter().flatten().any(|record| {
                     matches!(record, MakerRecord::Start { session, call, branch }
-                        if branch == wanted && !launched_for(session, call))
+                        if branch == wanted && !launched_for(session, call) && !failed_for(session, call))
                 })
             };
             let slice = agent_of_worktree(&top)
                 .zip(log.as_deref())
                 .map(|(agent, log)| maker_slice(log, &agent));
-            let refuse = matches!(&slice, Some(MakerSlice::Known(b)) if branch != Some(b.as_str()));
+            let refuse = matches!(&slice, Some(MakerSlice::Known(b)) if branch.is_some_and(|named| named != b.as_str()));
+            let detached = matches!(&slice, Some(MakerSlice::Known(_))) && branch.is_none();
             let warn = match &slice {
                 Some(MakerSlice::Unknown) => true,
                 Some(MakerSlice::NoRecord) => branch.is_some_and(names_unpaired),
-                Some(MakerSlice::Known(_)) | None => false,
+                Some(MakerSlice::Known(_)) => detached,
+                None => false,
             };
             match (&verdict, &slice) {
                 (CommitVerdict::Refuse(text), Some(MakerSlice::Known(b))) => {
                     prop_assert!(refuse);
                     prop_assert_eq!(text.matches(b.as_str()).count(), 2);
+                }
+                (CommitVerdict::Warn(text), Some(MakerSlice::Known(b))) => {
+                    prop_assert!(detached);
+                    prop_assert!(text.contains(b.as_str()));
                 }
                 (CommitVerdict::Warn(_), _) => prop_assert!(warn),
                 (CommitVerdict::Pass, _) => prop_assert!(!refuse && !warn),

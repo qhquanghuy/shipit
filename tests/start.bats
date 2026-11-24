@@ -154,11 +154,13 @@ sh_start() {
   [ "$status" -eq 0 ]
   common=$(git rev-parse --path-format=absolute --git-common-dir)
   [ "$(grep -cxF '/.shipit/wt/' "$common/info/exclude")" -eq 1 ]
+  [ "$(grep -cxF '/.claude/worktrees/' "$common/info/exclude")" -eq 1 ]
   git worktree add -q .shipit/wt/alpha slice/demo/alpha
   [ -z "$(git status --porcelain --ignore-submodules=none)" ]
   run bash -c 'cd .shipit/wt/alpha && "$SHIPIT_BIN" start gamma'
   [ "$status" -eq 0 ]
   [ "$(grep -cxF '/.shipit/wt/' "$common/info/exclude")" -eq 1 ]
+  [ "$(grep -cxF '/.claude/worktrees/' "$common/info/exclude")" -eq 1 ]
   mkdir -p .shipit/coverage/demo
   touch .shipit/coverage/demo/alpha.toml
   run git check-ignore -q .shipit/coverage/demo/alpha.toml
