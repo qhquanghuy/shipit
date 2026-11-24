@@ -9,7 +9,8 @@ use crate::pure::goal::{DoneWhen, GoalName, QualifiedDoneWhen, is_name, parse_do
 use crate::pure::messages::{
     AFTER_ARRAY, AFTER_ITEM, CYCLE, GOAL_NAME, LISTED_TWICE, MEETS_ARRAY, MEETS_ITEM, NO_SLICE,
     NOT_AN_ITEM, NOT_EMPTY, OBJECTS, OBJECTS_NON_EMPTY, OVERLAP, OWNS_ARRAY, OWNS_ITEM, OWNS_NONE,
-    SELF_AFTER, SLICE_NAME, TRUE_OR_FALSE, UNKNOWN_AFTER, USED_TWICE, say,
+    SELF_AFTER, SELF_SPLIT, SLICE_NAME, SPLIT_ARRAY, SPLIT_ITEM, TRUE_OR_FALSE, UNKNOWN_AFTER,
+    UNKNOWN_SPLIT, USED_TWICE, say,
 };
 use crate::pure::repo_path::RepoPath;
 use crate::pure::rules::{
@@ -219,17 +220,38 @@ fn parse_owns(value: &Value, path: &str) -> Parsed<Vec<RepoPath>> {
     )
 }
 
+fn parse_split(value: &Value, path: &str, own: Option<&SliceName>) -> Parsed<Vec<SliceName>> {
+    if value.as_array().is_some_and(Vec::is_empty) {
+        return fail(path, SPLIT_ARRAY);
+    }
+    distinct(
+        value,
+        path,
+        (SPLIT_ARRAY, SPLIT_ITEM),
+        SliceName::parse,
+        |next| (Some(next) == own).then(|| say(SELF_SPLIT, &[("name", next)])),
+    )
+}
+
+// The parts a slice is split into come beside the slice: `Slice` itself does not carry them.
 fn parse_slice(
     value: &Value,
     index: usize,
     goal: Option<&GoalName>,
     names: &mut Vec<SliceName>,
-) -> Parsed<Slice> {
+) -> Parsed<(Slice, Vec<SliceName>)> {
     let path = format!(".slice[{index}]");
     let object = object_at(value, &path)?;
     let mut problems = Problems::default();
-    problems.add(shape(&path, object, &SLICE_KEYS, &[]));
+    problems.add(shape(&path, object, &SLICE_KEYS, &["split_into"]));
     let shared = problems.take(parse_shared(object, &path, goal, names));
+    let split = problems.take(optional(object, "split_into", |value| {
+        parse_split(
+            value,
+            &format!("{path}.split_into"),
+            shared.as_ref().map(|shared| &shared.name),
+        )
+    }));
     let owns = problems.take(present(object, "owns", |value| {
         parse_owns(value, &format!("{path}.owns"))
     }));
@@ -242,13 +264,14 @@ fn parse_slice(
     ));
     problems.finish(|| {
         let Shared { name, after, meets } = shared?;
-        Some(Slice {
+        let slice = Slice {
             name,
             after,
             meets: qualify(goal?, meets),
             owns: owns?,
             test_drive: test_drive?,
-        })
+        };
+        Some((slice, split?.unwrap_or_default()))
     })
 }
 
@@ -333,18 +356,20 @@ pub(crate) fn parse_roadmap(table: &Table) -> Parsed<Roadmap> {
             })
         }))
         .map(Option::unwrap_or_default);
-    let roadmap = problems.finish(|| {
-        let elements = slices?
+    let (roadmap, splits) = problems.finish(|| {
+        let (slices, splits): (Vec<Slice>, Vec<Vec<SliceName>>) = slices?.into_iter().unzip();
+        let elements = slices
             .into_iter()
             .map(Element::Slice)
             .chain(proofs?.into_iter().map(Element::Proof))
             .collect();
-        Some(Roadmap {
+        let roadmap = Roadmap {
             goal: goal?,
             elements,
-        })
+        };
+        Some((roadmap, splits))
     })?;
-    let rest = whole_roadmap_problems(&roadmap);
+    let rest = whole_roadmap_problems(&roadmap, &splits);
     if rest.is_empty() {
         Ok(roadmap)
     } else {
@@ -579,11 +604,27 @@ fn rivals(owners: &BTreeMap<&str, Vec<usize>>, owned: &RepoPath) -> BTreeSet<usi
 }
 
 // The message names the first earlier slice, so the later one is the one to change.
-fn overlap_problems(roadmap: &Roadmap, adjacent: &[Vec<usize>]) -> Vec<Problem> {
+// A slice that names its parts leaves its paths to them, so it takes no part in the check.
+fn overlap_problems(
+    roadmap: &Roadmap,
+    adjacent: &[Vec<usize>],
+    splits: &[Vec<SliceName>],
+) -> Vec<Problem> {
     let labelled = labelled(roadmap);
+    let owned_all: Vec<&[RepoPath]> = labelled
+        .iter()
+        .enumerate()
+        .map(|(position, (_, element))| {
+            if splits.get(position).is_some_and(|parts| !parts.is_empty()) {
+                &[]
+            } else {
+                element.owns()
+            }
+        })
+        .collect();
     let mut owners: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
-    for (position, (_, element)) in labelled.iter().enumerate() {
-        for owned in element.owns() {
+    for (position, owned_here) in owned_all.iter().enumerate() {
+        for owned in *owned_here {
             owners.entry(owned.as_str()).or_default().push(position);
         }
     }
@@ -592,8 +633,9 @@ fn overlap_problems(roadmap: &Roadmap, adjacent: &[Vec<usize>]) -> Vec<Problem> 
         known: BTreeMap::new(),
     };
     let mut problems = Vec::new();
-    for (later, (path, element)) in labelled.iter().enumerate() {
-        for (index, owned) in element.owns().iter().enumerate() {
+    for (later, (path, _)) in labelled.iter().enumerate() {
+        let owned_here = owned_all.get(later).copied().unwrap_or_default();
+        for (index, owned) in owned_here.iter().enumerate() {
             let rival = rivals(&owners, owned)
                 .into_iter()
                 .filter(|earlier| *earlier < later)
@@ -610,16 +652,43 @@ fn overlap_problems(roadmap: &Roadmap, adjacent: &[Vec<usize>]) -> Vec<Problem> 
     problems
 }
 
-// Unknown names first, then a cycle, then overlapping paths: each needs the one before it.
-fn whole_roadmap_problems(roadmap: &Roadmap) -> Vec<Problem> {
+fn split_problems(roadmap: &Roadmap, splits: &[Vec<SliceName>]) -> Vec<Problem> {
+    let known: BTreeSet<&SliceName> = roadmap
+        .elements
+        .iter()
+        .filter(|element| matches!(element, Element::Slice(_)))
+        .map(Element::name)
+        .collect();
+    let mut problems = Vec::new();
+    for (index, parts) in splits.iter().enumerate() {
+        for (part, name) in parts.iter().enumerate() {
+            if !known.contains(name) {
+                problems.push(Problem::new(
+                    format!(".slice[{index}].split_into[{part}]"),
+                    say(UNKNOWN_SPLIT, &[("name", name)]),
+                ));
+            }
+        }
+    }
+    problems
+}
+
+// Unknown names (`after`, then `split_into`) first, then a cycle, then overlapping paths: each
+// needs the one before it.
+fn whole_roadmap_problems(roadmap: &Roadmap, splits: &[Vec<SliceName>]) -> Vec<Problem> {
+    let unknown_splits = split_problems(roadmap, splits);
     let adjacent = match adjacency(roadmap) {
-        Ok(adjacent) => adjacent,
-        Err(problems) => return problems,
+        Ok(adjacent) if unknown_splits.is_empty() => adjacent,
+        Ok(_) => return unknown_splits,
+        Err(mut problems) => {
+            problems.extend(unknown_splits);
+            return problems;
+        }
     };
     if let Some(problem) = cycle_problem(roadmap, &adjacent) {
         return vec![problem];
     }
-    overlap_problems(roadmap, &adjacent)
+    overlap_problems(roadmap, &adjacent, splits)
 }
 
 pub(crate) fn waves(roadmap: &Roadmap) -> Vec<Vec<&SliceName>> {
@@ -1169,5 +1238,66 @@ branch = \"slice/g/pf\"
         let shown = lines(&cycle).remove(0);
         assert!(shown.starts_with(".slice: after makes a cycle: s0, s1, s2, "));
         assert!(shown.ends_with(", s3999, s0"));
+    }
+
+    fn split_slice(name: &str, owns: &str, split: Option<&str>) -> String {
+        let split = split.map_or_else(String::new, |list| format!("split_into = {list}\n"));
+        format!(
+            "[[slice]]\nname = \"{name}\"\nafter = []\nmeets = []\nowns = [\"{owns}\"]\n{split}test_drive = false\n\n"
+        )
+    }
+
+    #[test]
+    fn split_into_problems_name_each_bad_item() {
+        let broken = format!(
+            "{}{}",
+            split_slice("a", "x/", Some("[\"a\", \"b\", \"b\", 3]")),
+            split_slice("b", "y/", Some("[]")),
+        );
+        assert_eq!(
+            lines(&parse(&broken).expect_err("broken")),
+            [
+                ".slice[0].split_into[0]: \"a\" cannot be split into itself",
+                ".slice[0].split_into[2]: \"b\" is listed twice",
+                ".slice[0].split_into[3]: must be a slice name",
+                ".slice[1].split_into: must be a non-empty array of slice names",
+            ]
+        );
+        let unknown = format!(
+            "{}{}[[proof]]\nname = \"p\"\nafter = []\nmeets = []\nhow = \"h\"\n",
+            split_slice("a", "x/", Some("[\"c\", \"p\"]")),
+            split_slice("b", "y/", None),
+        );
+        assert_eq!(
+            lines(&parse(&unknown).expect_err("unknown")),
+            [
+                ".slice[0].split_into[0]: no slice named \"c\"",
+                ".slice[0].split_into[1]: no slice named \"p\"",
+            ]
+        );
+        let proof = "[[slice]]\nname = \"a\"\nafter = []\nmeets = []\nowns = [\"x/\"]\ntest_drive = false\n[[proof]]\nname = \"p\"\nafter = []\nmeets = []\nhow = \"h\"\nsplit_into = [\"a\"]\n";
+        assert_eq!(
+            lines(&parse(proof).expect_err("proof")),
+            [".proof[0].split_into: unknown key"]
+        );
+    }
+
+    #[test]
+    fn a_split_slice_leaves_its_paths_to_its_parts() {
+        let split = format!(
+            "{}{}",
+            split_slice("a", "src/a.rs", Some("[\"b\"]")),
+            split_slice("b", "src/a.rs", None),
+        );
+        assert!(parse(&split).is_ok());
+        let plain = format!(
+            "{}{}",
+            split_slice("a", "src/a.rs", None),
+            split_slice("b", "src/a.rs", None),
+        );
+        assert_eq!(
+            lines(&parse(&plain).expect_err("overlap")),
+            [".slice[1].owns[0]: \"src/a.rs\" is also owned by a, which runs in parallel"]
+        );
     }
 }

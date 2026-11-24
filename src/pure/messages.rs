@@ -47,6 +47,10 @@ messages! {
     UNKNOWN_AFTER = "no slice or proof step named \"<name>\"";
     CYCLE = "after makes a cycle: <names>";
     OVERLAP = "\"<path>\" is also owned by <name>, which runs in parallel";
+    SPLIT_ARRAY = "must be a non-empty array of slice names";
+    SPLIT_ITEM = "must be a slice name";
+    SELF_SPLIT = "\"<name>\" cannot be split into itself";
+    UNKNOWN_SPLIT = "no slice named \"<name>\"";
 
     MAP_KEY = "must be a done-when id such as \"DW4\"";
     MAP_ARRAY = "must be an array of non-empty strings";

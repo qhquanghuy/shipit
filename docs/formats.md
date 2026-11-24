@@ -52,6 +52,7 @@ after = []                # names of slices or proof steps; no repeats; not itse
 meets = ["DW1"]           # done-when ids of this goal: DW1 or demo:DW1; no repeats
 owns = ["src/alpha.rs", "docs/"]   # at least one path, no repeats
 test_drive = false
+split_into = ["alpha-a"]  # optional: the slices that carry this started slice's work (over-cap split)
 
 [[proof]]                 # work outside a slice (an owner's live test, another repository)
 name = "firectl-proof"
@@ -61,7 +62,7 @@ how = "a pull request to firectl, run from the firectl session"
 ```
 
 The top level holds exactly `goal` and `slice` (required, at least one) and `proof` (optional). A slice has exactly the
-keys above; a proof step has `name`, `after`, `meets` and `how`. Names are unique across slices and proof steps. Indexes
+keys above (and may also hold `split_into`); a proof step has `name`, `after`, `meets` and `how`. Names are unique across slices and proof steps. Indexes
 in paths start at 0 (`.slice[2].owns[0]`). Roadmap order is the slices, then the proof steps.
 
 **Goal names.** A roadmap names its goal. A slice's branch is `slice/<goal>/<slice>`; it is derived, never written in the
@@ -76,8 +77,8 @@ path below it (`docs` holds `docs/x.md`; `src/a` does not hold `src/ab.rs`). Cas
 
 A done-when item that no automated test can prove is met by a proof step, never by a slice.
 
-The rules that need the whole roadmap run only when every element is valid on its own, in this order: unknown names,
-then a cycle, then overlapping `owns`.
+The rules that need the whole roadmap run only when every element is valid on its own, in this order: unknown names
+(`after`, then `split_into`), then a cycle, then overlapping `owns`.
 
 | Path | Message |
 |---|---|
@@ -101,13 +102,17 @@ then a cycle, then overlapping `owns`.
 | `.slice[i].after[j]` | `no slice or proof step named "<name>"` |
 | `.slice` | `after makes a cycle: <names>` |
 | `.slice[i].owns[j]` | `"<path>" is also owned by <name>, which runs in parallel` |
+| `.slice[i].split_into` | `must be a non-empty array of slice names` |
+| `.slice[i].split_into[j]` | `must be a slice name` |
+| `.slice[i].split_into[j]` | `"<name>" cannot be split into itself` |
+| `.slice[i].split_into[j]` | `no slice named "<name>"` |
 
-`.meets[j]` and `.owns[j]` also say `"<item>" is listed twice` for a repeat (after the path is normalized). `.proof[i]`
+`.meets[j]`, `.owns[j]` and `.split_into[j]` also say `"<item>" is listed twice` for a repeat (after the path is normalized). `.proof[i]`
 replaces `.slice[i]` for a proof step. A cycle is named from the first element, in order, that lies on one, along the
 shortest way back to itself, following `after`; for a proof step the path is `.proof`.
 
 **Parallel.** Two elements run in parallel when neither reaches the other through `after`, directly or through others.
-Two parallel slices may not own paths that overlap. The message names the earlier slice, at the later one's path.
+Two parallel slices may not own paths that overlap. The message names the earlier slice, at the later one's path. A slice with `split_into` is left out: its parts carry its paths.
 
 **Waves.** An element with no `after` is in wave 1; any other is one wave after the latest of its `after`. The command
 prints the names of each wave, in roadmap order.
