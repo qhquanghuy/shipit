@@ -8,6 +8,11 @@ on:
 permissions:
   contents: read
 
+# Only the latest head of a pull request needs a verdict; every main commit keeps its own.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   check:
     runs-on: ubuntu-latest
