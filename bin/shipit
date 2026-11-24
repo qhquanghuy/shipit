@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Runs the shipit tool built for this plugin folder (scripts/shipit-build). Without a build, the
-# Bash gates of a ShipIt project block with the fix (exit 2); every other hook allows.
+# install gate of a ShipIt project blocks with the fix (exit 2); every other hook allows.
 root=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)
 exe=$root/target/plugin/shipit/bin/shipit
 if [[ -x $exe ]]; then
@@ -12,7 +12,7 @@ in_project() {
   [[ -e $top/.config/shipit.toml ]] || git -C "$top" cat-file -e HEAD:.config/shipit.toml 2>/dev/null
 }
 case ${1:-} in
-  claude-ship-gate | claude-install-gate) in_project || exit 0 ;;
+  claude-install-gate) in_project || exit 0 ;;
   claude-*) exit 0 ;;
 esac
 printf "ShipIt: the shipit tool is not built for this plugin yet (%s). Start a new session, or run: nix build '%s#default' --out-link '%s/target/plugin/shipit'\n" "$exe" "$root" "$root" >&2

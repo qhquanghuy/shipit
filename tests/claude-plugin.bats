@@ -76,28 +76,28 @@ doc_lines() {
     [ -z "$output" ]
     [[ $stderr != *"unknown command"* ]]
   done < <(jq -r '.hooks[][].hooks[] | select(.command | endswith("/bin/shipit")) | .args[0]' "$PLUGIN/hooks/hooks.json" | sort -u)
-  [ "$(jq -r '.hooks[][].hooks[] | select(.command | endswith("/bin/shipit")) | .args[0]' "$PLUGIN/hooks/hooks.json" | sort -u | wc -l)" -eq 4 ]
+  [ "$(jq -r '.hooks[][].hooks[] | select(.command | endswith("/bin/shipit")) | .args[0]' "$PLUGIN/hooks/hooks.json" | sort -u | wc -l)" -eq 3 ]
 }
 
-@test "one call through the launcher asks for a base push" {
+@test "one call through the launcher denies a global install" {
   plugin_copy
   mkdir -p "$COPY/target/plugin/shipit/bin"
   ln -s "$SHIPIT_BIN" "$COPY/target/plugin/shipit/bin/shipit"
   local repo
   repo=$(shipit_repo)
-  run --separate-stderr bash -c 'cd "$1" && exec "$2" claude-ship-gate <<<"$3"' \
-    _ "$BATS_TEST_TMPDIR" "$COPY/bin/shipit" "$(bash_input "$repo" "git push origin main" auto)"
+  run --separate-stderr bash -c 'cd "$1" && exec "$2" claude-install-gate <<<"$3"' \
+    _ "$BATS_TEST_TMPDIR" "$COPY/bin/shipit" "$(bash_input "$repo" "pip install requests" auto)"
   [ "$status" -eq 0 ]
-  [ "$(decision)" = ask ]
+  [ "$(decision)" = deny ]
 }
 
-@test "launcher without a build: the Bash gates of a ShipIt project block, the rest allow" {
+@test "launcher without a build: the install gate of a ShipIt project blocks, the rest allow" {
   plugin_copy
   local repo plain hook
   repo=$(shipit_repo)
   plain="$BATS_TEST_TMPDIR/plain"
   git init -q "$plain"
-  for hook in claude-ship-gate claude-install-gate; do
+  for hook in claude-install-gate; do
     run --separate-stderr bash -c 'cd "$1" && CLAUDE_PROJECT_DIR="$2" exec "$3" "$4" <<<"{}"' \
       _ "$BATS_TEST_TMPDIR" "$repo" "$COPY/bin/shipit" "$hook"
     [ "$status" -eq 2 ]
@@ -110,13 +110,13 @@ doc_lines() {
     [ "$status" -eq 0 ]
     [ -z "$output$stderr" ]
   done
-  for hook in claude-ship-gate claude-install-gate claude-agent-gate claude-agent-count; do
+  for hook in claude-install-gate claude-agent-gate claude-agent-count; do
     run --separate-stderr bash -c 'cd "$1" && CLAUDE_PROJECT_DIR="$2" exec "$3" "$4" <<<"{}"' \
       _ "$BATS_TEST_TMPDIR" "$plain" "$COPY/bin/shipit" "$hook"
     [ "$status" -eq 0 ]
     [ -z "$output$stderr" ]
   done
-  run --separate-stderr bash -c 'cd "$1" && unset CLAUDE_PROJECT_DIR && exec "$2" claude-ship-gate <<<"{}"' \
+  run --separate-stderr bash -c 'cd "$1" && unset CLAUDE_PROJECT_DIR && exec "$2" claude-install-gate <<<"{}"' \
     _ "$repo" "$COPY/bin/shipit"
   [ "$status" -eq 2 ]
   run --separate-stderr "$COPY/bin/shipit" check
@@ -278,24 +278,21 @@ doc_lines() {
   done < <(doc_lines asks)
 }
 
-# The tests feed the gates a tool name; a gate only judges what its matcher routes to it. A
-# matcher of plain names is an exact match, any other is a regular expression.
-@test "the matchers name every tool the gate tests feed" {
-  local name matched
-  matched() {
-    jq -e --arg tool "$1" --arg gate "$2" \
-      '[.hooks.PreToolUse[] | select(.matcher as $m | if ($m | test("^[A-Za-z_|]+$")) then ($tool | test("^(" + $m + ")$")) else ($tool | test($m)) end) | .hooks[].args[0]] | index($gate) != null' \
-      "$PLUGIN/hooks/hooks.json" >/dev/null
-  }
-  while IFS= read -r name; do
-    matched "$name" claude-ship-gate
-  done < <({ grep -ohE 'tool_name: "[^"]+"' "$PLUGIN/tests/claude-ship-gate.bats" "$PLUGIN/tests/claude-helpers.bash" | cut -d'"' -f2 | grep -v '^Agent$'; echo Bash; echo Monitor; } | sort -u)
-  matched Bash claude-install-gate
-  matched Monitor claude-install-gate
-  matched Edit claude-ship-gate
-  matched Write claude-ship-gate
-  matched NotebookEdit claude-ship-gate
-  matched Agent claude-agent-gate
-  matched Task claude-agent-gate
-  run ! matched Read claude-ship-gate
+# hook_table [hooks file]: the PreToolUse table, one line: each matcher with the gates it runs.
+hook_table() {
+  jq -c '[.hooks.PreToolUse[] | [.matcher, [.hooks[].args[0]]]]' "${1:-$PLUGIN/hooks/hooks.json}"
+}
+
+@test "the hook table holds only the agent gate and the install gate before a tool runs, and no hook on an event that can refuse" {
+  local hooks=$PLUGIN/hooks/hooks.json broken=$BATS_TEST_TMPDIR/hooks.json
+  [ "$(hook_table)" = '[["Agent|Task",["claude-agent-gate"]],["Bash|Monitor",["claude-install-gate"]]]' ]
+  # No other event: PermissionRequest, UserPromptSubmit and PostToolUse can refuse or block, and have no hook.
+  [ "$(jq -c '.hooks | keys' "$hooks")" = '["PostToolUseFailure","PreToolUse","SessionStart","Stop","SubagentStart","SubagentStop"]' ]
+  # Stop and SubagentStop can block too: there only the agent count runs, and it never blocks.
+  jq -e '[.hooks.Stop[], .hooks.SubagentStop[] | .hooks[] | .args[0] == "claude-agent-count" and .onFailure == "continue"] | all' "$hooks"
+  # A gate added with no matcher runs on every tool: the table shows it.
+  jq '.hooks.PreToolUse += [{hooks: [{type: "command", command: "x", args: ["claude-form-gate"], timeout: 10, onFailure: "block"}]}]' "$hooks" >"$broken"
+  [ "$(hook_table "$broken")" != '[["Agent|Task",["claude-agent-gate"]],["Bash|Monitor",["claude-install-gate"]]]' ]
+  jq '.hooks.PermissionRequest = [{hooks: [{type: "command", command: "x", args: ["claude-form-gate"], timeout: 10, onFailure: "block"}]}]' "$hooks" >"$broken"
+  [ "$(jq -c '.hooks | keys' "$broken")" != '["PostToolUseFailure","PreToolUse","SessionStart","Stop","SubagentStart","SubagentStop"]' ]
 }
