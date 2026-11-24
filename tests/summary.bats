@@ -28,6 +28,7 @@ load slice-helpers
   [[ $output == *"| informed-review | $key (current) | opus high | sonnet high | tier | approve (must answer 1) |"* ]]
   [[ $output == *"Open findings: must fix 0, must answer 0, nice to fix 1"* ]]
   [[ $output == *"Stand-ins used: none"* ]]
+  [[ $output == *$'\nReview level: light: one ranked review.\n'* ]]
   [[ $output == *"Metrics (outliers from local history): clone-ratio 2.1"* ]]
   [[ $output == *$'Known issues:\n- second-opinion F1 (must fix), logged by sonnet:high: a problem. Reason: later'* ]]
   [[ $output == *$'Known issues (not fixed, nice to fix):\n- second-opinion F2: a detail'* ]]

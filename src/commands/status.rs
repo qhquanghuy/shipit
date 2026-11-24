@@ -745,6 +745,7 @@ fn summary_for(
         unfixed: unfixed(fact),
         answers,
         changes: fact.changes.iter().chain(flags).cloned().collect(),
+        review: judged.review.clone(),
     })
 }
 

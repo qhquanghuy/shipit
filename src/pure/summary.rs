@@ -3,6 +3,7 @@ use std::fmt::Write as _;
 use crate::pure::finding::Class;
 use crate::pure::goal::QualifiedDoneWhen;
 use crate::pure::metric::{Fence, MetricName, MetricValue};
+use crate::pure::risk::{Basis, Level, Risk};
 use crate::pure::roadmap::SliceName;
 use crate::pure::state::{Confirmation, Counts};
 use crate::pure::text::{comma_list, plain};
@@ -75,6 +76,7 @@ pub(crate) struct SummaryInput {
     pub(crate) unfixed: Vec<Unfixed>,
     pub(crate) answers: Vec<Answered>,
     pub(crate) changes: Vec<String>,
+    pub(crate) review: Option<Risk>,
 }
 
 // `opus:high` reads as `opus high`, for people.
@@ -149,6 +151,25 @@ fn section(title: &str, lines: Vec<String>, out: &mut String) {
     }
 }
 
+// The level and why, with its blank line; nothing for a slice with no level.
+fn review_paragraph(review: Option<&Risk>) -> String {
+    let Some(risk) = review else {
+        return String::new();
+    };
+    let label = match risk.basis() {
+        Basis::Owns => "Review level (estimate from owns)",
+        Basis::Diff => "Review level",
+    };
+    let level = match risk.level() {
+        Level::Light => "light: one ranked review".to_owned(),
+        Level::Full => format!(
+            "full: the informed review and a blind second opinion, because {}",
+            plain(&risk.reasons_text())
+        ),
+    };
+    format!("{label}: {level}.\n\n")
+}
+
 pub(crate) fn summary_md(input: &SummaryInput) -> String {
     let mut out = format!("### ShipIt: {} is {}\n\n", input.name, plain(&input.state));
     let items = if input.done_when.is_empty() {
@@ -165,6 +186,7 @@ pub(crate) fn summary_md(input: &SummaryInput) -> String {
     out.push_str(
         "(✓ local: this machine's run; CI's recheck prints the same coverage line on the pull request.)\n\n",
     );
+    out.push_str(&review_paragraph(input.review.as_ref()));
     if !input.changes.is_empty() {
         section(
             "Goal and roadmap versions:",
@@ -256,6 +278,8 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
+    use crate::pure::risk::{DiffFacts, estimate, judged};
+    use crate::pure::testing::setup_with;
 
     fn slice(name: &str) -> SliceName {
         SliceName::parse(name).expect("a slice name")
@@ -339,6 +363,7 @@ mod tests {
             }],
             answers: Vec::new(),
             changes: Vec::new(),
+            review: None,
         }
     }
 
@@ -396,11 +421,27 @@ mod tests {
             "goal v1 -> v3 since start: DW2 reworded, DW3 removed".to_owned(),
             "goal v3: stored by hand, not recorded".to_owned(),
         ];
+        let risky: toml::Table = toml::from_str("full_paths = [\"src/\"]").expect("a table");
+        let setup = setup_with(&[("review", toml::Value::Table(risky))]);
+        shown.review = Some(judged(
+            &setup,
+            &DiffFacts {
+                names: vec!["src/a.rs".to_owned()],
+                files: 14,
+                mapped: Vec::new(),
+                unreadable: Vec::new(),
+                given_base: None,
+                other_base: None,
+            },
+            &[],
+        ));
         let expected = "\
 ### ShipIt: beta is ready to ship
 
 Done-when (.shipit/coverage/v1/beta.toml): v1:DW1 ✓ local (3 tests) · v1:DW2 ✓ proof step shipped · v1:DW3 ✓ test drive passed · v1:DW4 known issue, not proven · v1:DW5 ✗ (record not from a shipit coverage line of the setup) · v1:DW6 ✗ not confirmed for this version
 (✓ local: this machine's run; CI's recheck prints the same coverage line on the pull request.)
+
+Review level: full: the informed review and a blind second opinion, because risky path src/a.rs; 14 files, light allows 10.
 
 Goal and roadmap versions:
 - goal v1 -> v3 since start: DW2 reworded, DW3 removed
@@ -426,5 +467,12 @@ Answers: none
         assert_eq!(summary_md(&shown), expected);
         shown.changes.clear();
         assert!(!summary_md(&shown).contains("Goal and roadmap versions"));
+        shown.review = None;
+        assert!(!summary_md(&shown).contains("Review level"));
+        shown.review = Some(estimate(&setup_with(&[]), &[], &[]));
+        assert!(
+            summary_md(&shown)
+                .contains("\n\nReview level (estimate from owns): light: one ranked review.\n\n")
+        );
     }
 }
