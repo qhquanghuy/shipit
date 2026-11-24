@@ -117,6 +117,35 @@ Two parallel slices may not own paths that overlap. The message names the earlie
 **Waves.** An element with no `after` is in wave 1; any other is one wave after the latest of its `after`. The command
 prints the names of each wave, in roadmap order.
 
+**A new version.** With `--goal`, `shipit validate roadmap` (and so `shipit store put roadmap`) compares the draft with
+the goal's newest stored roadmap version once the draft's form is valid; with no stored version only the `split_into`
+rule below runs, and with `--goal-file` nothing runs. An entry is the comment lines right above a `[[slice]]` or
+`[[proof]]` header and its table, up to the next entry; a comment with a blank line before the next header belongs to
+the entry above it; the lines before the first entry are no entry. An entry is the same when its words (comment markers
+and whitespace aside), keys and values are; its place and its whitespace never count. A slice or proof step is started
+or shipped when the goal's logbook has a start or shipped entry for it. A shipped one cannot change or go; a started one
+cannot go, and may change only by gaining `split_into`, its table otherwise equal; one that has not started may change,
+move or go. A slice may carry `split_into` only when the logbook says it has started and not shipped, or when its stored
+entry already had the same list; a new list names only slices the newest stored roadmap does not have. A shipped
+slice's drift is noted by the plan review, not written into its entry. Until owner-moments ships, `shipit start`,
+`ready`, `complete` and `status` do not know a split slice: the lead stops work on its old branch by hand. Limits:
+"started" means a start entry in the logbook, so a slice branch made without `shipit start`, or a start made on another
+clone, is not seen.
+
+| Message | When |
+|---|---|
+| `<what> <name> has shipped: its entry cannot change` | a shipped entry changed, `split_into` included |
+| `<what> <name> has started: its entry may only gain split_into` | a started entry changed otherwise |
+| `<what> <name> has <state>: its entry cannot be removed` | no entry of that name in the draft; a rename counts |
+| `<file>: cannot tell the entries of the Slices block apart; write each header as a plain [[slice]] or [[proof]] line` | a header the reader cannot see as one, or an entry that is not one table |
+| `slice <name> cannot gain split_into: only a started slice that has not shipped splits, into slices the stored roadmap does not have` | a `split_into` the rule above refuses |
+
+`<what>` is `slice` or `proof step`, `<state>` is `started` or `shipped`; each refusal is a line after
+`<file> is not a valid roadmap:`, exit 1, the frozen entries in the stored roadmap's order and then the `split_into`
+refusals in the draft's order, at most one per name; the `<file>: cannot tell ..` message is exit 2 when it is about the
+newest stored version, and the recovery is to copy in by hand, as the next `roadmap.v<N>.md`, a version whose headers
+are plain lines (status shows it as not recorded).
+
 ## Goal
 
 The goal's done-when items are the lines under a line that is exactly `## Done-when`, up to the next heading, outside

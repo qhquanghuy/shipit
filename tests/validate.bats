@@ -215,3 +215,32 @@ delta_repo() {
   [ "$status" -eq 0 ]
   [ "$output" = "stored $(store)/goals/demo/roadmap.v2.md" ]
 }
+
+@test "validate: a goal with no stored roadmap compares no entry, even with a shipped slice" {
+  repo=$(make_repo)
+  cd "$repo"
+  mkdir -p "$(store)/goals/demo"
+  cp "$SHIPIT_SRC/tests/fixtures/goal.md" "$(store)/goals/demo/goal.v1.md"
+  ship_entry alpha
+  write_roadmap road.md
+  sed -i 's|, "docs/alpha/"||' road.md
+  run --separate-stderr "$SHIPIT_BIN" validate roadmap road.md --goal demo
+  [ "$status" -eq 0 ]
+  [ "$output" = 'valid roadmap: ready-for-review' ]
+}
+
+@test "validate: entries that cannot be told apart stop a stored roadmap with exit 2 and refuse a draft with exit 1" {
+  make_slice_repo
+  cp "$SHIPIT_SRC/tests/fixtures/goal.md" "$(store)/goals/demo/goal.v1.md"
+  sed -i 's/^\[\[slice\]\]$/[["slice"]]/' "$(store)/goals/demo/roadmap.v1.md"
+  write_roadmap road.md
+  run --separate-stderr "$SHIPIT_BIN" validate roadmap road.md --goal demo
+  [ "$status" -eq 2 ]
+  [ "$stderr" = "shipit: $(store)/goals/demo/roadmap.v1.md: cannot tell the entries of the Slices block apart; write each header as a plain [[slice]] or [[proof]] line" ]
+  cp "$SHIPIT_SRC/tests/fixtures/roadmap.md" "$(store)/goals/demo/roadmap.v1.md"
+  sed -i 's/^\[\[slice\]\]$/[["slice"]]/' road.md
+  run --separate-stderr "$SHIPIT_BIN" validate roadmap road.md --goal demo
+  [ "$status" -eq 1 ]
+  [ "$stderr" = 'shipit: road.md is not a valid roadmap:
+  road.md: cannot tell the entries of the Slices block apart; write each header as a plain [[slice]] or [[proof]] line' ]
+}
