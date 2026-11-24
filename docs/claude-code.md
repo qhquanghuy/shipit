@@ -38,10 +38,14 @@ as `shipit`. claude.ai and Cowork do not install a plugin that has a `bin/` fold
   the session no longer lists as running.
 - **Maker start.** `shipit:maker` starts only at the setup's maker rank (its model, and its effort
   when the setup gives one) or the stand-in of its tier, with the `model` and `effort` of the Agent
-  call, and only in a working copy on a slice branch (the session's folder: a `cwd` in the call is
-  not read, because this Claude Code ignores it). The rank is read from the base branch's setup, as
-  the agent cap is. The two refusals:
-  - A start outside a working copy on a slice branch (the Agent tool of this Claude Code has no `cwd` to start it elsewhere): `ShipIt: shipit:maker works in the slice's worktree, and this Claude Code cannot start an agent in another folder: run the slice in a session opened in its worktree (docs/claude-code.md, Sessions).`
+  call, and in one of two places. Started with `isolation: "worktree"`, it works in a new worktree of
+  its own, and its prompt has a line `shipit-branch: <local slice branch>` (Parallel makers). Started
+  without isolation, it works in the folder of the session (a `cwd` in the call is not read, because
+  this Claude Code ignores it), which must be a working copy on a slice branch. The rank is read from
+  the base branch's setup, as the agent cap is. The refusals:
+  - A start without isolation outside a working copy on a slice branch (the Agent tool of this Claude Code has no `cwd` to start it elsewhere): `ShipIt: start shipit:maker with isolation "worktree" and a line "shipit-branch: <slice branch>" in its prompt, or from a session opened in the slice's worktree (docs/claude-code.md, Parallel makers).`
+  - An isolated start whose prompt has no `shipit-branch:` line: `ShipIt: name the slice: add a line "shipit-branch: <branch>" to the prompt of shipit:maker.`
+  - An isolated start whose line names a base branch or another revision, not a local slice branch: `ShipIt: "shipit-branch: <branch>" must name a local slice branch, not a base branch or another revision.`
   - A start at another rank than the setup's maker or its stand-in, with the model and the effort the setup's maker has (`sonnet` and `high` here): `ShipIt: start shipit:maker with model "sonnet" and effort "high", the setup's maker (agents.roles.maker), or its stand-in: the receipts name that rank as the author.`
 
   A review of the work names the setup's maker as `--author`, else `shipit receipt` refuses it:
@@ -82,11 +86,65 @@ not a guard.
 ## Sessions
 
 Start the lead with `claude -n "$(shipit session-name <goal>)"`, and a slice in its own working
-copy with `claude -n "$(shipit session-name <goal> <slice>)"`. The lead (or the owner) starts the slice in the main working copy, and `shipit start` prints the worktree's path; then the owner opens a new session in the worktree. The maker starts in the folder of the session, and works only on a slice branch. A session answers to its name, so a
+copy with `claude -n "$(shipit session-name <goal> <slice>)"`. A slice that the owner runs as one session per slice has its own working copy: the lead (or the owner) starts the slice in the main working copy, `shipit start` prints the worktree's path, and the owner opens a new session in it. The other ways keep the slice in the lead's session, and each maker works in a worktree of its own (Parallel makers). A session answers to its name, so a
 slice session ends with one message to the lead. A lead that is not in bypass mode holds a message
 from a session that is (and the other way round) until the owner approves it, and drops it after
 five minutes. So the lead confirms with `shipit status`, which is the source of truth; a message is
 only a nudge. Names with a middle dot must be quoted in a typed `@` mention.
+
+## Parallel makers
+
+One lead session runs the makers of several slices at once. Each maker works in a worktree of its own, which Claude Code makes, and a git hook checks the commits made in that worktree against its slice branch.
+
+1. The lead runs `shipit start` for each slice and makes no slice worktree: git refuses a branch that two worktrees hold.
+2. The lead starts each maker with `isolation: "worktree"`, `run_in_background: true` and a first prompt line `shipit-branch: slice/<goal>/<slice>`. Several makers may start in one message.
+3. The maker runs `git switch slice/<goal>/<slice>`, then `shipit pre-commit`. If git refuses, the maker reports and stops. If `shipit pre-commit` prints a line that starts `shipit: not checked`, the maker waits a few seconds, runs it once more (a launch is recorded a moment after the agent is up), and reports and stops if the line comes again.
+4. The maker's last step runs `shipit check` in its worktree.
+5. After a maker ends, the lead finds its worktree with `git worktree list`, then runs `git worktree remove .claude/worktrees/agent-<id>` and `git branch -d worktree-agent-<id>` from the main working copy, each alone in its call, before the next maker of that slice starts.
+
+Never resume an isolated maker: start a new one. A resumed agent works in the session's folder, outside its worktree, where the hook cannot see it.
+
+**The record.** The agent hooks write one append-only file, `<git common dir>/shipit-makers.jsonl`, outside the store folder. Every line is one JSON object, written whole, so parallel writers never mix:
+
+| Line | Written by | When |
+|---|---|---|
+| `{"event":"start","session":…,"call":…,"branch":…}` | `shipit claude-agent-gate` | before the Agent tool starts an isolated `shipit:maker` whose prompt names a local slice branch |
+| `{"event":"launched","session":…,"call":…,"agent":…}` | `shipit claude-agent-count` | after the same call, with the new agent's id |
+| `{"event":"maker","session":…,"agent":…}` | `shipit claude-agent-count` | when a `shipit:maker` agent starts in its own worktree |
+| `{"event":"failed","session":…,"call":…}` | `shipit claude-agent-count` | when the Agent call of an isolated `shipit:maker` fails, so its `start` line claims nothing |
+
+The call id pairs a `launched` line with its `start` line, in any order of the lines.
+
+**The commit hook.** `shipit init` adds a pre-commit hook next to the pre-push hook, with the same guards: `shipit pre-commit` runs only where ShipIt is installed. In a worktree Claude Code made for an agent (`<project>/.claude/worktrees/agent-<id>`), it reads the record. It refuses only a commit of a known maker on a branch that is not its slice's, and every other commit passes. A detached HEAD (a rebase stop, an amend) is a warning, not a refusal. The refusal, after `shipit: `:
+
+- `this worktree is shipit:maker's for <branch>; commit there: git switch <branch> (docs/claude-code.md, Parallel makers)`
+
+Where the commit cannot be judged, it passes with a warning on stderr:
+
+- `shipit: not checked: this maker's slice branch is not known; start it again with run_in_background (docs/claude-code.md, Parallel makers)`
+  A maker started in the foreground: its launch is recorded only when it ends.
+- `shipit: not checked: no maker record names this worktree, but a maker was started for <branch> (docs/claude-code.md, Parallel makers)`
+  A worktree that no record names, on a branch that an unclaimed start names: the `maker` line was lost.
+- `shipit: not checked: HEAD is detached in this maker's worktree, so its commit cannot be matched to its slice branch <branch> (docs/claude-code.md, Parallel makers)`
+  A known maker on a detached HEAD.
+
+When `shipit pre-commit` runs in an agent worktree whose pre-commit hook file (the one git resolves, `core.hooksPath` included) is missing or has no `shipit pre-commit` line, it warns too, so the maker's own check does not pass in silence where the hook is off:
+
+- `shipit: not checked: the pre-commit hook of this worktree has no shipit pre-commit line, so a commit here may not be checked (docs/claude-code.md, Parallel makers)`
+
+The pre-commit framework and lefthook generate their hook files, which never hold the line. For those two stubs the check looks for the ShipIt entry in the config the worktree holds (`.pre-commit-config.yaml`, `lefthook.yml` and the other lefthook names), which is what is committed.
+
+When `shipit claude-agent-count` sees a launched maker start again outside its own worktree, it tells the agent as SubagentStart context: `ShipIt: not checked: agent <id> is an isolated shipit:maker started again outside its worktree; stop and tell the lead to start a new maker (docs/claude-code.md, Parallel makers)`.
+
+**Limits.**
+- A guardrail, not security: an agent can skip the hook with git's no-verify option, or edit the record file. The reviews and the receipt still judge the commits.
+- A foreground maker's slice is not known until it ends, so its commits pass with the first warning above. The skills start every isolated maker in the background.
+- The record is never pruned.
+- The hooks that `shipit init` adds are off in an agent worktree when they are not there. A `lefthook-local.yml` lives only in the main working copy (it is per person and untracked). A new hooks file that is not committed is missing from the worktree, which Claude Code makes from the commits; `shipit init` says so. husky's `.husky/_` is generated by `husky install`, so a worktree has none. The maker's own `shipit pre-commit` warns in these cases.
+- The hook sees only a commit made in the agent worktree itself. `git -C <main working copy>`, a `cd` to the main working copy, `git worktree move` and `-c core.hooksPath=…` all go round it.
+- A hook that `shipit init` cannot add safely (a lefthook setup it does not write, a hook with `exit` or `exec`, a hooks folder outside the project) is printed with its reason, not written; until the owner adds it, the commit check is off there.
+- The worktree path `.claude/worktrees/agent-<id>` is Claude Code's behaviour, measured on 2.1.327, not a contract.
+
 
 ## Skills
 
@@ -109,9 +167,13 @@ Only `shipit:slice` may start agents: leaving `Agent` out of `tools` is what sto
 
 **Sessions and messages.** Name a session with `claude -n "$(shipit session-name <goal> <slice>)"` as under Sessions; a slice session ends with one message to the lead, which confirms with `shipit status`.
 
-**How slices run.** The last decision point of `shipit-roadmap` offers one way: one session per slice.
+**How slices run.** The third decision point of `shipit-roadmap` offers four ways, recommends one, and the owner picks:
+- **Same session:** the lead runs `shipit-slice` itself, one slice at a time; each maker is started with isolation "worktree".
+- **Subagents:** the lead runs the slices of a wave together; each maker is started with isolation "worktree". The lead recommends it for two or more slices in a wave.
+- **One session per slice:** the lead (or the owner) writes the build plan and starts the slice in the main working copy; `shipit start` prints the worktree's path; then the owner opens a new session in the worktree (`cd <path> && claude -n "$(shipit session-name <goal> <slice>)"`), which runs the rest of `shipit-slice`. For a slice the owner wants to watch.
+- **Claude Code workflow:** a workflow script the lead writes, each maker started with isolation "worktree". Not yet tried with ShipIt, so never recommended.
 
-The maker works only in a working copy on a slice branch, and the Agent tool of Claude Code 2.1.327 has no `cwd`: an agent it starts works in the folder of the session (measured). So no session in the main working copy can make a slice, and a headless run has one way too. The lead (or the owner) writes the build plan and starts the slice in the main working copy; `shipit start` prints the worktree's path; then the owner opens a new session in the worktree (`cd <path> && claude -n "$(shipit session-name <goal> <slice>)"`), which runs the rest of `shipit-slice`. `shipit:slice` writes and reviews a build plan, and ends.
+The Agent tool of Claude Code 2.1.327 has no `cwd`: an agent it starts works in the folder of the session (measured), unless it is started with isolation. The maker works only in a working copy on a slice branch, or in an isolated worktree on its slice branch, so the owner-run session in the main working copy is never where a maker works. `shipit:slice` writes and reviews a build plan, and ends.
 
 **Nested agents.** Measured with the plugin loaded:
 - The agent cap counts nested agents: an agent started by an agent holds a place, and `agents.parallel.agents` is to be sized for the widest moment of a session.
@@ -119,7 +181,7 @@ The maker works only in a working copy on a slice branch, and the Agent tool of 
 - By default Claude Code allows three layers of agents. Only `shipit:slice` has the `Agent` tool; setting `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH` to 2 closes the third layer for every other agent too.
 - A slice agent cannot ask the owner. A decision point ends it as blocked, its final message carries the decision point, and the lead asks the owner and starts a new slice agent.
 
-**Pushes, pull requests and the store.** A skill pushes only `git push -u origin slice/<goal>/<slice>`, alone in its Bash call. It opens the pull request with `gh pr create --title <title> --body-file <file>`. No hook stops a gh write: the skills' rule, to post to a pull request only when the owner says yes, is prose. Store files are put in with `shipit store put`, because the harness protects the git folder: a file-tool write there, or a Bash command that names a path under it, asks in default mode, goes to the classifier in auto mode, and is refused in a headless run, and an allow rule does not change that; `shipit store put` names no such path, and ShipIt writes the file. A goal or roadmap version is the owner's decision and is still copied with `mkdir -p … && cp …`, which asks.
+**Pushes, pull requests and the store.** A skill pushes only `git push -u origin slice/<goal>/<slice>`, alone in its Bash call. It opens the pull request with `gh pr create --title <title> --body-file <file>`. No hook stops a gh write: the skills' rule, to post to a pull request only when the owner says yes, is prose. Store files are put in with `shipit store put`, because the harness protects the git folder: a file-tool write there, or a Bash command that names a path under it, asks in default mode, goes to the classifier in auto mode, and is refused in a headless run, and an allow rule does not change that; `shipit store put` names no such path, and ShipIt writes the file. A goal or roadmap version is stored the same way, with `shipit store put goal|roadmap`, once the owner approves it.
 
 ### Permissions the skills need
 
@@ -138,8 +200,13 @@ The skills run commands and write files. In a headless run (`claude -p`) every q
       "Bash(git fetch *)",
       "Bash(git grep *)",
       "Bash(git worktree add *)",
+      "Bash(git worktree list *)",
+      "Bash(git worktree remove .claude/worktrees/*)",
+      "Bash(git branch -d worktree-agent-*)",
       "Bash(git switch -c *)",
       "Bash(git checkout -b *)",
+      "Bash(git switch slice/*)",
+      "Bash(git checkout slice/*)",
       "Bash(git add *)",
       "Bash(git commit *)",
       "Bash(git push -u origin slice/*)",
@@ -158,19 +225,18 @@ The skills run commands and write files. In a headless run (`claude -p`) every q
 
 A skill makes its drafts folder inside the project, `.shipit/td/<name>` (`<name>` is the slice, or the goal for the roadmap), with `mkdir -p .shipit/td/<name>`, and writes the one line `*` to the `.gitignore` in it, so that git ignores the folder. The test drive has its own folder, `.shipit/drive/<slice>`, made the same way with `mkdir -p .shipit/drive/<slice>`, so that the tester sees only the built result, its docs and sample data, not the drafts. A folder inside the project is one the session may read, write and run commands in, so it needs no `--add-dir`.
 
-**Editing files and branches.** The list has no `Edit` rule. Add `--permission-mode acceptEdits` to each headless run (`claude -p --permission-mode acceptEdits ...`), which lets the session edit the files of the project, its worktree and `.shipit/td/`, and nothing outside them; in an interactive session the owner accepts the edits. The list holds `git switch -c` and `git checkout -b`, so that an agent can make an adoption branch (`adopt/setup`, `adopt/ci`, `adopt/settings`); `shipit start` makes the slice branches itself.
+**Editing files and branches.** The list has no `Edit` rule. Add `--permission-mode acceptEdits` to each headless run (`claude -p --permission-mode acceptEdits ...`), which lets the session edit the files of the project, its worktree and `.shipit/td/`, and nothing outside them; in an interactive session the owner accepts the edits. The list holds `git switch -c` and `git checkout -b`, so that an agent can make an adoption branch (`adopt/setup`, `adopt/ci`, `adopt/settings`); `shipit start` makes the slice branches itself. `git switch slice/*` and `git checkout slice/*` are for an isolated maker: it switches its new worktree to its slice branch, and carries the files of a slice that was over the cap onto a new part. `git worktree list`, `git worktree remove .claude/worktrees/*` and `git branch -d worktree-agent-*` let the lead find and free the worktree of a finished maker.
 
 **Running the result.** The test drive runs the built program, and a maker runs the project's own check: give each a rule like the one for `./test.sh`, for example `Bash(./greet.sh *)` for a program `greet.sh`. They run from the worktree or from `.shipit/drive/<slice>`, both inside the project.
 
-**The worktree.** `shipit start` prints `git worktree add <path> <branch>`, with the absolute path `.shipit/wt/<slice>` under the top of the main working copy, whatever folder or worktree it ran in: the worktree sits inside the project, where the session may read, write and run commands, so no `--add-dir` is needed (it needs a folder that exists, and the worktree is made later). `shipit start` adds `/.shipit/wt/` to `<git common dir>/info/exclude`, so git, and the search tools that read git's ignore rules, skip it in every working copy; nothing is committed. A tool of the project that walks the folder without git's rules (a test runner, a linter) may still see it: add `.shipit/wt` to its own ignore list.
+**The worktree.** `shipit start` prints `git worktree add <path> <branch>`, with the absolute path `.shipit/wt/<slice>` under the top of the main working copy, whatever folder or worktree it ran in: the worktree sits inside the project, where the session may read, write and run commands, so no `--add-dir` is needed (it needs a folder that exists, and the worktree is made later). `shipit start` adds `/.shipit/wt/` to `<git common dir>/info/exclude`, so git, and the search tools that read git's ignore rules, skip it in every working copy; nothing is committed. A tool of the project that walks the folder without git's rules (a test runner, a linter) may still see it: add `.shipit/wt` to its own ignore list. An isolated maker needs no such worktree, and none may hold its slice branch (Parallel makers in docs/claude-code.md).
 
-**The store.** The harness asks for a write under the git folder and a headless run refuses it, whatever the allow rules say; `shipit store put` writes build plans, plan reviews and reviews instead, and `Bash(shipit *)` allows it. A goal or roadmap version is the owner's decision: its copy asks.
+**The store.** The harness asks for a write under the git folder and a headless run refuses it, whatever the allow rules say; `shipit store put` writes build plans, plan reviews and reviews instead, and `Bash(shipit *)` allows it. A goal or roadmap version is the owner's decision: once the owner approves it, the owner or the lead stores it with `shipit store put goal` or `shipit store put roadmap`, and every put is recorded (docs/store.md).
 
 **Trust and headless runs.** Claude Code reads the project's `.claude/settings.json` only in a folder that was trusted, and a headless run never shows the trust question, so there the list above is not read. Trust the folder once in an interactive session (`claude` in the project folder) before the first headless run.
 
 These commands are not in the list; they ask:
 
-- Asks: the store copy (`mkdir -p` and `cp`): only for a goal or roadmap version, the owner's decision; the lead copies it, or hands the owner the exact commands.
 - Asks: the review's link hash, once per link: its `printf`, piped to the hash.
 
 ## Limits

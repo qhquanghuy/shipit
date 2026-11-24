@@ -1,0 +1,9 @@
+- repo: local
+  hooks:
+    - id: shipit-commit
+      name: shipit pre-commit
+      stages: [pre-commit]
+      language: system
+      pass_filenames: false
+      always_run: true
+      entry: sh -c 'if command -v shipit >/dev/null 2>&1 && shipit help pre-commit >/dev/null 2>&1; then exec shipit pre-commit; fi'

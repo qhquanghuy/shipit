@@ -1,0 +1,6 @@
+DW5 = [
+  "pre-commit: an isolated maker commits only on its slice branch",
+  "a_maker_worktree_is_paired_with_its_start_by_call",
+  "the_commit_verdict_refuses_only_a_known_maker_off_its_branch",
+]
+DW6 = ["skills: the lead offers four ways to run slices, recommends exactly one, and the owner picks"]

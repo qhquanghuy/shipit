@@ -69,7 +69,14 @@ At adoption, at the start of each goal, and whenever you ask, a `shipit:model-sc
 
 ## Sessions and how slices run
 
-The lead session is named by `shipit session-name <goal>`; a slice session by `shipit session-name <goal> <slice>`. Slices run one way: one session per slice. The lead (or you) writes the build plan and starts the slice in the main working copy; that prints the slice's worktree, and the owner opens a new session in the worktree: `cd <path> && claude -n "$(shipit session-name <goal> <slice>)"`. The maker works only there, so no session in the main working copy can make a slice. It is the only way for a headless run too.
+The lead session is named by `shipit session-name <goal>`; a slice session by `shipit session-name <goal> <slice>`. Slices run in one of four ways. At the start of a goal the lead recommends one and says why; you pick.
+
+- **Same session:** the lead makes one slice at a time, and each maker works in a worktree of its own.
+- **Subagents:** the lead makes the slices of a wave together, each maker in a worktree of its own.
+- **One session per slice:** the lead (or you) writes the build plan and starts the slice in the main working copy; that prints the slice's worktree, and the owner opens a new session in the worktree: `cd <path> && claude -n "$(shipit session-name <goal> <slice>)"`.
+- **Claude Code workflow:** a script the lead writes; not yet tried with ShipIt, so it is never recommended.
+
+A maker in a worktree of its own switches to its slice branch first, and a git hook refuses a commit made in that worktree on any other branch; it sees only the commits made there (docs/claude-code.md, Parallel makers).
 
 ## Words you may meet
 

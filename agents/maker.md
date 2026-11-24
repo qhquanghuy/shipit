@@ -8,6 +8,8 @@ Inputs: the step, the files it may change, its expected red and green tests and 
 
 Follow the order of the step: tests first, then the code, then run what the step names and commit on the slice branch.
 
+When the lead started you with isolation "worktree" (the prompt has a line `shipit-branch: <slice branch>`), your first command is `git switch <that branch>`, then `shipit pre-commit`. If git refuses, report it and stop. If `shipit pre-commit` prints a line with `not checked`, wait a few seconds and run it once more (the launch is recorded a moment after you are up); if the line comes again, report it and stop. Never commit on another branch. After each step count the changed files with `git diff --shortstat <base>...HEAD`; at about 80% of the cap the lead gives, stop and report before writing more. Carry files from another branch only as the lead says, with `git checkout <old-branch> -- <paths>`, alone in its call.
+
 Run each command alone in its own Bash call: split a step's `&&` chain into separate calls, `./test.sh`, then `git add <files>`, then `git commit -m "<message>"`. No `;`, `&&`, `|`, `echo` or `$`: a headless run refuses any part the permission list does not hold, and the Bash tool shows a failing command's exit code itself. Read the build plan with `shipit store show build-plan --goal <goal> --slice <slice> --copy` and the Read tool.
 
 Your report has no form. It says what you changed, which tests are red and green now, and where you differ from the build plan. End with Verified, Inferred and Unverifiable. Verified names the command or test that ran; Inferred is what you reasoned and did not run; Unverifiable is what you could not check here, and why. Each list may be the single item `none`.

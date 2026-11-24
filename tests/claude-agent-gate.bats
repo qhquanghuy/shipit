@@ -137,7 +137,7 @@ receipt() {
 
 @test "agent gate: a maker starts on a slice branch at the setup's maker rank" {
   local wt="$BATS_TEST_TMPDIR/wt" rank='"model": "sonnet", "effort": "high"' denied
-  denied='ShipIt: shipit:maker works in the slice'"'"'s worktree, and this Claude Code cannot start an agent in another folder: run the slice in a session opened in its worktree (docs/claude-code.md, Sessions).'
+  denied='ShipIt: start shipit:maker with isolation "worktree" and a line "shipit-branch: <slice branch>" in its prompt, or from a session opened in the slice'"'"'s worktree (docs/claude-code.md, Parallel makers).'
   git checkout -q main
   git worktree add -q -b slice/v1/w "$wt"
   # the call's own cwd is not trusted: this Claude Code ignores it, so only the session's folder counts
@@ -171,4 +171,15 @@ receipt() {
   run_hook claude-agent-gate "$(agent_input "$wt" shipit:maker "Make it." "{$rank}")"
   [ "$(decision)" = deny ]
   [[ $(reason) == 'ShipIt: start shipit:maker with model "fable" and effort "high", '* ]]
+}
+
+@test "agent gate: an isolated maker needs a shipit-branch line naming a local slice branch" {
+  local call='{"model":"sonnet","effort":"high","isolation":"worktree"}'
+  git -C "$REPO" checkout -q main
+  run_hook claude-agent-gate "$(agent_input "$REPO" shipit:maker "Make it." "$call")"
+  [ "$(decision)" = deny ]
+  [ "$(reason)" = 'ShipIt: name the slice: add a line "shipit-branch: <branch>" to the prompt of shipit:maker.' ]
+  run_hook claude-agent-gate "$(agent_input "$REPO" shipit:maker "shipit-branch: main" "$call")"
+  [ "$(decision)" = deny ]
+  [ "$(reason)" = 'ShipIt: "shipit-branch: main" must name a local slice branch, not a base branch or another revision.' ]
 }

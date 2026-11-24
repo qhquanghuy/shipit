@@ -1,18 +1,25 @@
 use std::ffi::OsString;
 use std::io::Write;
 
+use serde_json::Value;
+
 use crate::edge::agent_store::{Ledger, remove_stale};
 use crate::edge::clock::now_utc;
-use crate::edge::hook_process::{read_hook_input, settle_project};
-use crate::pure::agent_ledger::{Change, Entry, on_failure, on_start, on_stop, reconcile, seconds};
-use crate::pure::claude_hook::{HookInput, parse_input, safe_field};
+use crate::edge::files::read_text;
+use crate::edge::hook_process::{input_folder, read_hook_input, settle_project};
+use crate::edge::records::append_line;
+use crate::pure::agent_ledger::{
+    Change, Entry, MAKERS_LOG, MakerRecord, agent_of_worktree, on_failure, on_start, on_stop,
+    reconcile, record_line, resumed_away, seconds, subagent_context,
+};
+use crate::pure::claude_hook::{HookInput, MAKER, agent_call, parse_input, safe_field};
 use crate::pure::failure::Failure;
 
 pub(crate) const HIDDEN: bool = true;
 pub(crate) const NEEDS_SETUP: bool = false;
 pub(crate) const USAGE: &str =
     "usage: shipit claude-agent-count (the hook input is read from stdin)";
-pub(crate) const SUMMARY: &str = "A Claude Code hook; reads one JSON event from stdin and keeps the count of the agents a session runs; it prints nothing, and it never stops the work.";
+pub(crate) const SUMMARY: &str = "A Claude Code hook; reads one JSON event from stdin and keeps the count of the agents a session runs; it prints nothing but a warning to a resumed isolated maker (SubagentStart additionalContext), and it never stops the work.";
 pub(crate) const EXITS: [&str; 4] = [
     "done, or nothing to count (a failure is told on stderr)",
     "",
@@ -76,9 +83,82 @@ fn settle(input: &HookInput) -> Result<(), String> {
     }
 }
 
+fn resume_warning(agent: &str) -> String {
+    format!(
+        "ShipIt: not checked: agent {agent} is an isolated shipit:maker started again outside its worktree; stop and tell the lead to start a new maker (docs/claude-code.md, Parallel makers)"
+    )
+}
+
+// The lines the commit hook reads, written whether or not the session has a ledger. A start of a
+// launched maker that is not in its own worktree is a resume: it works outside the check's sight,
+// and the warning is the text returned. Only a maker in its own worktree is recorded as one: a
+// maker started in any other folder never had a worktree to check.
+fn record_maker(input: &HookInput) -> Result<Option<String>, String> {
+    let isolated_call = || {
+        let tool_input = input.tool_input.as_ref().filter(|_| agent_call(input))?;
+        let text = |key: &str| tool_input.get(key).and_then(Value::as_str);
+        (text("subagent_type") == Some(MAKER) && text("isolation") == Some("worktree"))
+            .then_some(())
+    };
+    let wanted = match input.event.as_str() {
+        "PostToolUse" | "PostToolUseFailure" => isolated_call().is_some(),
+        "SubagentStart" => input.agent_type.as_deref() == Some(MAKER),
+        _ => false,
+    };
+    if !wanted {
+        return Ok(None);
+    }
+    let Some(git) = input_folder(input) else {
+        return Ok(None);
+    };
+    let session = safe_field(input.session_id.as_deref(), "session_id")?;
+    let log = git
+        .common_dir()
+        .map_err(|failure| failure.message)?
+        .join(MAKERS_LOG);
+    let append = |record: &MakerRecord| {
+        append_line(&log, &record_line(record)).map_err(|failure| failure.message)
+    };
+    match input.event.as_str() {
+        "PostToolUse" => {
+            let Some(agent) = input.launched_agent.as_deref() else {
+                return Ok(None);
+            };
+            append(&MakerRecord::Launched {
+                session: session.to_owned(),
+                call: safe_field(input.tool_use_id.as_deref(), "tool_use_id")?.to_owned(),
+                agent: safe_field(Some(agent), "agentId")?.to_owned(),
+            })?;
+            Ok(None)
+        }
+        "PostToolUseFailure" => {
+            append(&MakerRecord::Failed {
+                session: session.to_owned(),
+                call: safe_field(input.tool_use_id.as_deref(), "tool_use_id")?.to_owned(),
+            })?;
+            Ok(None)
+        }
+        "SubagentStart" => {
+            let agent = safe_field(input.agent_id.as_deref(), "agent_id")?;
+            let warning = read_text(&log)
+                .ok()
+                .filter(|text| resumed_away(text, agent, &input.cwd))
+                .map(|_text| resume_warning(agent));
+            if agent_of_worktree(&input.cwd).as_deref() == Some(agent) {
+                append(&MakerRecord::Maker {
+                    session: session.to_owned(),
+                    agent: agent.to_owned(),
+                })?;
+            }
+            Ok(warning)
+        }
+        _ => Ok(None),
+    }
+}
+
 pub(crate) fn run(
     args: &[OsString],
-    _out: &mut dyn Write,
+    out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> Result<(), Failure> {
     if !args.is_empty() {
@@ -88,7 +168,12 @@ pub(crate) fn run(
         .and_then(|bytes| parse_input(&bytes))
         .and_then(|input| {
             let settled = settle(&input);
-            bookkeep(&input).and(settled)
+            let recorded = record_maker(&input).map(|warning| {
+                if let Some(text) = warning {
+                    writeln!(out, "{}", subagent_context(&text)).ok();
+                }
+            });
+            bookkeep(&input).and(settled).and(recorded)
         });
     if let Err(why) = done {
         writeln!(err, "shipit: agent count: {why}").ok();

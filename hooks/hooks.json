@@ -78,6 +78,20 @@
         ]
       }
     ],
+    "PostToolUse": [
+      {
+        "matcher": "Agent|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/shipit",
+            "args": ["claude-agent-count"],
+            "timeout": 10,
+            "onFailure": "continue"
+          }
+        ]
+      }
+    ],
     "PostToolUseFailure": [
       {
         "matcher": "Agent|Task",
