@@ -4,25 +4,8 @@ use crate::pure::finding::Class;
 use crate::pure::goal::QualifiedDoneWhen;
 use crate::pure::metric::{Fence, MetricName, MetricValue};
 use crate::pure::roadmap::SliceName;
-use crate::pure::state::Counts;
+use crate::pure::state::{Confirmation, Counts};
 use crate::pure::text::{comma_list, plain};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Tick {
-    Confirmed(usize),
-    NotInSetup,
-    NotConfirmed,
-}
-
-// A coverage record confirms an item only when the command that wrote it is one of the setup's
-// check lines; the tick is the machine's own run, and CI's recheck is the one that gates.
-pub(crate) fn tick(record_check: Option<&str>, setup_checks: &[&str], tests: usize) -> Tick {
-    match record_check {
-        None => Tick::NotConfirmed,
-        Some(check) if setup_checks.contains(&check) => Tick::Confirmed(tests),
-        Some(_) => Tick::NotInSetup,
-    }
-}
 
 #[derive(Debug)]
 pub(crate) struct CheckRow {
@@ -78,17 +61,11 @@ pub(crate) struct MetricLine {
 }
 
 #[derive(Debug)]
-pub(crate) enum DoneWhen {
-    NoMap,
-    Items(Vec<(QualifiedDoneWhen, Tick)>),
-}
-
-#[derive(Debug)]
 pub(crate) struct SummaryInput {
     pub(crate) name: SliceName,
     pub(crate) state: String,
     pub(crate) map_path: String,
-    pub(crate) done_when: DoneWhen,
+    pub(crate) done_when: Vec<(QualifiedDoneWhen, Confirmation)>,
     pub(crate) check: Option<CheckRow>,
     pub(crate) rows: Vec<Row>,
     pub(crate) open: Counts,
@@ -104,14 +81,19 @@ fn spoken(worker: &str) -> String {
     plain(&worker.replacen(':', " ", 1))
 }
 
-fn tick_text(id: &QualifiedDoneWhen, tick: Tick) -> String {
-    match tick {
-        Tick::Confirmed(tests) => {
+fn tick_text(id: &QualifiedDoneWhen, confirmation: Confirmation) -> String {
+    match confirmation {
+        Confirmation::Tests(tests) => {
             let noun = if tests == 1 { "test" } else { "tests" };
             format!("{id} ✓ local ({tests} {noun})")
         }
-        Tick::NotInSetup => format!("{id} ✗ (record from a command not in the setup)"),
-        Tick::NotConfirmed => format!("{id} ✗ not confirmed for this version"),
+        Confirmation::ProofStep => format!("{id} ✓ proof step shipped"),
+        Confirmation::TestDrive => format!("{id} ✓ test drive passed"),
+        Confirmation::KnownIssue => format!("{id} known issue, not proven"),
+        Confirmation::RecordNotCounted => {
+            format!("{id} ✗ (record not from a shipit coverage line of the setup)")
+        }
+        Confirmation::Missing => format!("{id} ✗ not confirmed for this version"),
     }
 }
 
@@ -168,14 +150,15 @@ fn section(title: &str, lines: Vec<String>, out: &mut String) {
 
 pub(crate) fn summary_md(input: &SummaryInput) -> String {
     let mut out = format!("### ShipIt: {} is {}\n\n", input.name, plain(&input.state));
-    let items = match &input.done_when {
-        DoneWhen::NoMap => "no map committed".to_owned(),
-        DoneWhen::Items(items) if items.is_empty() => "no done-when item".to_owned(),
-        DoneWhen::Items(items) => items
+    let items = if input.done_when.is_empty() {
+        "no done-when item".to_owned()
+    } else {
+        input
+            .done_when
             .iter()
-            .map(|(id, tick)| tick_text(id, *tick))
+            .map(|(id, confirmation)| tick_text(id, *confirmation))
             .collect::<Vec<_>>()
-            .join(" · "),
+            .join(" · ")
     };
     writeln!(out, "Done-when ({}): {items}", input.map_path).ok();
     out.push_str(
@@ -296,10 +279,14 @@ mod tests {
             name: slice("beta"),
             state: "ready to ship".to_owned(),
             map_path: ".shipit/coverage/v1/beta.toml".to_owned(),
-            done_when: DoneWhen::Items(vec![
-                (id("v1:DW4"), Tick::Confirmed(3)),
-                (id("v1:DW5"), Tick::NotConfirmed),
-            ]),
+            done_when: vec![
+                (id("v1:DW1"), Confirmation::Tests(3)),
+                (id("v1:DW2"), Confirmation::ProofStep),
+                (id("v1:DW3"), Confirmation::TestDrive),
+                (id("v1:DW4"), Confirmation::KnownIssue),
+                (id("v1:DW5"), Confirmation::RecordNotCounted),
+                (id("v1:DW6"), Confirmation::Missing),
+            ],
             check: Some(CheckRow {
                 tree: "0123456789ab".to_owned(),
                 files: 24,
@@ -364,21 +351,6 @@ mod tests {
             let table_lines = text.lines().filter(|line| line.starts_with("| ")).count();
             prop_assert_eq!(table_lines, count + 2);
         }
-
-        #[test]
-        fn a_tick_needs_a_record_of_a_setup_check_line(
-            checks in proptest::collection::vec("[a-z ]{1,6}", 0..4),
-            record in proptest::option::of("[a-z ]{1,6}"),
-            tests in 1..9_usize,
-        ) {
-            let lines: Vec<&str> = checks.iter().map(String::as_str).collect();
-            let seen = tick(record.as_deref(), &lines, tests);
-            match &record {
-                None => prop_assert_eq!(seen, Tick::NotConfirmed),
-                Some(check) if checks.contains(check) => prop_assert_eq!(seen, Tick::Confirmed(tests)),
-                Some(_) => prop_assert_eq!(seen, Tick::NotInSetup),
-            }
-        }
     }
 
     #[test]
@@ -413,7 +385,7 @@ mod tests {
         let expected = "\
 ### ShipIt: beta is ready to ship
 
-Done-when (.shipit/coverage/v1/beta.toml): v1:DW4 ✓ local (3 tests) · v1:DW5 ✗ not confirmed for this version
+Done-when (.shipit/coverage/v1/beta.toml): v1:DW1 ✓ local (3 tests) · v1:DW2 ✓ proof step shipped · v1:DW3 ✓ test drive passed · v1:DW4 known issue, not proven · v1:DW5 ✗ (record not from a shipit coverage line of the setup) · v1:DW6 ✗ not confirmed for this version
 (✓ local: this machine's run; CI's recheck prints the same coverage line on the pull request.)
 
 | Receipt | Version | By | Above | Rank | Result |

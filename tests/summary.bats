@@ -51,6 +51,6 @@ load slice-helpers
   run --separate-stderr "$SHIPIT_BIN" status --summary alpha
   [ "$status" -eq 0 ]
   [ "$(sed -n 1p <<<"$output")" = "### ShipIt: alpha is planned" ]
-  [[ $output == *"Done-when (.shipit/coverage/demo/alpha.toml): no map committed"* ]]
+  [[ $output == *"Done-when (.shipit/coverage/demo/alpha.toml): demo:DW1 ✗ not confirmed for this version"* ]]
   [[ $output == *"Known issues: none"* ]]
 }

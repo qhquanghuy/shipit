@@ -19,7 +19,7 @@ use crate::pure::hooks::{
 };
 use crate::pure::init::{
     CI_FILE, CI_KEY, HOOK_KEY, HookMode, InitFacts, LEFTHOOK_KEY, PACK_KEY, PRE_COMMIT_KEY, Start,
-    choose_base, ci_job, embedded, init_plan, next_lines, starting_setup, tools_line,
+    choose_base, ci_job, embedded, init_plan, next_lines, starting_setup, test_check, tools_line,
 };
 use crate::pure::machine::{ToolState, Writability};
 use crate::pure::machine_notes::{
@@ -156,8 +156,8 @@ fn start_of(git: &Git, base: &BranchName, born: bool) -> Start {
     }
 }
 
-fn checked_setup(base: &BranchName) -> Result<String, Failure> {
-    let text = starting_setup(base, embedded_file(PACK_KEY)?);
+fn checked_setup(base: &BranchName, check: Option<&str>) -> Result<String, Failure> {
+    let text = starting_setup(base, embedded_file(PACK_KEY)?, check);
     let table = toml_table(text.as_bytes())
         .map_err(|why| Failure::usage(format!("the starting setup is not TOML: {why}")))?;
     parse_setup(&table)
@@ -389,9 +389,10 @@ pub(crate) fn run(
     };
     let steps = init_plan(&facts, init.mode)?;
     let born = git.commit_of(OsStr::new(HEAD)).is_some();
+    let check = test_check(&config_names(git.top()));
     let setup = if steps.write_setup {
         let base = base_of(&git, init.base, born)?;
-        Some((checked_setup(&base)?, base))
+        Some((checked_setup(&base, check)?, base))
     } else {
         None
     };
@@ -414,7 +415,7 @@ pub(crate) fn run(
         if let Some(line) = tools_line(&tools) {
             writeln!(out, "{line}").ok();
         }
-        for line in next_lines(base, start_of(&git, base, born)) {
+        for line in next_lines(base, start_of(&git, base, born), check.is_some()) {
             writeln!(out, "{line}").ok();
         }
     }

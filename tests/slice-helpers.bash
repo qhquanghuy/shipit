@@ -127,6 +127,13 @@ commit_map() {
   git commit -q -m "a map"
 }
 
+# mapped_work <slice> <id>: slice/demo/<slice> from main with one new file, then the slice's map,
+# which names the suite's test "one" for <id>; the repo needs suite_repo.
+mapped_work() {
+  make_work "slice/demo/$1" 1
+  commit_map demo "$1" "$2 = [\"one\"]"
+}
+
 # fake_gh: a gh first on PATH. It logs `issue create <title>` for each call to $GH_LOG and prints
 # an issue address that carries the number of the call; GH_FAIL_AT=<n> makes the n-th call fail.
 fake_gh() {

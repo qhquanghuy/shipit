@@ -156,11 +156,15 @@ The commands, their usage and their exit codes are printed by `shipit help` and 
 | build plan ready | a build plan exists and has a valid review receipt |
 | made | the slice's branch has commits beyond the base |
 | checked | a valid check receipt exists for the current version |
-| ready to ship | checked, and valid receipts exist for the informed review, the second opinion and, if marked, the test drive; every finding is fixed or is a known issue |
+| ready to ship | checked, and valid receipts exist for the informed review, the second opinion and, if marked, the test drive; every finding is fixed or is a known issue; every done-when item the slice meets is confirmed |
 | shipped | the logbook holds a "shipped" entry naming the owner's merge |
 
 A slice only moves forward by gaining a receipt or a logbook entry. It moves back by itself when
 the work changes: the receipts no longer match, so the computed state drops.
+
+A done-when item is confirmed by the first of: a test the slice's coverage map names that ran in this version, as the coverage record shows, when a `shipit coverage` line of the setup wrote that record; a shipped proof step that meets the item, once every slice it follows has shipped (a proof step is not tied to a version of the work); a passing test drive of this version, for a slice marked for one; a known issue logged against a review or test drive of this version, when the reviewer's finding names the item (`DW2` of the slice's own goal, or `<goal>:DW2`, as a whole word; the lead's reason does not count). A known issue confirms without proving: the status line says `Not proven: <items>.` A proof step that comes after the slice cannot confirm the slice's item. An unconfirmed item keeps the slice checked, and its next step names it: `missing: proof of <goal>:DW<n>`. When the setup has no `shipit coverage` line, the owner adds one as a setup-only change; until it merges, the slice lead asks the informed reviewer for a non-blocking finding that names the item and logs it as a known issue. `shipit init` writes the test run wrapped in `shipit coverage` when it can tell the command (a Cargo project).
+
+`shipit log <proof step> shipped` is refused (exit 1) while a slice the step follows has not shipped: `shipit: <step> is not ready: wait for <slices> to ship`. A shipped slice shows no done-when items in `shipit status --json` or in the summary.
 
 ### 2. The setup file
 

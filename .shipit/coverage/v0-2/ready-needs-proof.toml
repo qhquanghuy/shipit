@@ -1,0 +1,1 @@
+DW2 = ["status: a reviewed slice stays checked until each done-when item is confirmed", "the_state_is_the_longest_chain_that_holds", "an_item_is_confirmed_by_the_first_source_that_holds"]

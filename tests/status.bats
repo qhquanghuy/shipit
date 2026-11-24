@@ -4,11 +4,11 @@ bats_require_minimum_version 1.5.0
 load helpers
 load slice-helpers
 
-# ready <slice>: a counting plan review, work that is checked, and both reviews; the repo is
-# left on the slice's branch.
+# ready <slice> <id>: a counting plan review, work that is checked and confirms <id> through the
+# suite's coverage run, and both reviews; the repo needs suite_repo and is left on the slice's branch.
 ready() {
   plan_ready "$1"
-  make_work "slice/demo/$1" 1
+  mapped_work "$1" "$2"
   check_here
   "$SHIPIT_BIN" receipt informed-review "$1" --author sonnet:high --by opus:high --result approve >/dev/null
   "$SHIPIT_BIN" receipt second-opinion "$1" --author sonnet:high --by opus:high --result approve >/dev/null
@@ -17,7 +17,7 @@ ready() {
 READY="owner: ship it, then shipit log alpha shipped --merge <merge commit> --goal demo"
 
 @test "status: a slice walks from planned to shipped" {
-  make_slice_repo
+  suite_repo
   st
   [ "$status" -eq 0 ]
   [ "$(sed -n 1p <<<"$output")" = "open findings: must fix 0, must answer 0, nice to fix 0 · started: 0 of 3" ]
@@ -34,7 +34,7 @@ READY="owner: ship it, then shipit log alpha shipped --merge <merge commit> --go
   [ "$(sed -n 2p <<<"$output")" = "goal demo: roadmap reviewed" ]
   [ "$(the_line alpha)" = "demo/alpha: build plan ready. Next: lead: start it with shipit start alpha --goal demo" ]
   [ "$(the_line beta)" = "demo/beta: build plan ready. Next: wait for alpha to ship" ]
-  make_work slice/demo/alpha 1
+  mapped_work alpha DW1
   st
   [ "$(the_line alpha)" = "demo/alpha: made. Next: run shipit check on slice/demo/alpha. Started without shipit start." ]
   [[ $output == *"started: 1 of 3"* ]]
@@ -55,9 +55,28 @@ READY="owner: ship it, then shipit log alpha shipped --merge <merge commit> --go
   [ "$(the_line beta)" = "demo/beta: build plan ready. Next: lead: start it with shipit start beta --goal demo" ]
 }
 
-@test "status: deleting each receipt lowers the state" {
+@test "status: a reviewed slice stays checked until each done-when item is confirmed" {
   make_slice_repo
-  ready alpha
+  plan_ready alpha
+  make_work slice/demo/alpha 1
+  check_here
+  "$SHIPIT_BIN" receipt informed-review alpha --author sonnet:high --by opus:high --result approve \
+    --finding "nitpick: DW1 has no test yet" >/dev/null
+  "$SHIPIT_BIN" receipt second-opinion alpha --author sonnet:high --by opus:high --result approve >/dev/null
+  st
+  [ "$status" -eq 0 ]
+  [ "$(the_line alpha)" = "demo/alpha: checked. Next: missing: proof of demo:DW1. Open: nice to fix 1. Started without shipit start." ]
+  st --json
+  [ "$(jq -c '.goals[0].slices[] | select(.name == "alpha") | .unconfirmed' <<<"$output")" = '["demo:DW1"]' ]
+  lg alpha known-issue --kind informed-review --finding F1 --reason "DW1: waits for the owner's run" --by sonnet:high
+  [ "$status" -eq 0 ]
+  st
+  [ "$(the_line alpha)" = "demo/alpha: ready to ship. Next: $READY. Not proven: demo:DW1. Started without shipit start." ]
+}
+
+@test "status: deleting each receipt lowers the state" {
+  suite_repo
+  ready alpha DW1
   st
   [[ $(the_line alpha) == "demo/alpha: ready to ship."* ]]
   local file
@@ -79,8 +98,8 @@ READY="owner: ship it, then shipit log alpha shipped --merge <merge commit> --go
 }
 
 @test "status: a new commit after the reviews drops the state" {
-  make_slice_repo
-  ready alpha
+  suite_repo
+  ready alpha DW1
   printf 'more\n' >>alpha-1
   git commit -q -am "more work"
   st
@@ -91,8 +110,8 @@ READY="owner: ship it, then shipit log alpha shipped --merge <merge commit> --go
 }
 
 @test "status: a rebase with the same change keeps the reviews, not the check" {
-  make_slice_repo
-  ready alpha
+  suite_repo
+  ready alpha DW1
   git checkout -q main
   printf 'unrelated\n' >unrelated.txt
   git add unrelated.txt
@@ -172,8 +191,8 @@ READY="owner: ship it, then shipit log alpha shipped --merge <merge commit> --go
 }
 
 @test "status: writes nothing and creates no folder" {
-  make_slice_repo
-  ready alpha
+  suite_repo
+  ready alpha DW1
   git checkout -q main
   local before after
   before=$(find "$(store)" | sort | xargs stat -c '%n %s %Y' | md5sum)
