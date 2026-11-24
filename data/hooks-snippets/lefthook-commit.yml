@@ -1,0 +1,4 @@
+pre-commit:
+  commands:
+    shipit:
+      run: if command -v shipit >/dev/null 2>&1 && shipit help pre-commit >/dev/null 2>&1; then exec shipit pre-commit; fi

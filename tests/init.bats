@@ -4,6 +4,9 @@ bats_require_minimum_version 1.5.0
 load helpers
 
 GUARDED='if command -v shipit >/dev/null 2>&1; then exec shipit pre-push "$@"; fi'
+COMMIT_GUARDED='if command -v shipit >/dev/null 2>&1 && shipit help pre-commit >/dev/null 2>&1; then exec shipit pre-commit; fi'
+# The pre-push entry as init prints it for lefthook.
+LEFTHOOK_PRINT="$(sed 's/^/  /' "$SHIPIT_SRC/data/hooks-snippets/lefthook.yml")"$'\n'"  # only one command receives git's input when several use use_stdin"
 
 # on_path: shipit on PATH, as the installed hook needs it.
 on_path() {
@@ -66,6 +69,10 @@ hook_file() {
   git rev-parse --path-format=absolute --git-path hooks/pre-push
 }
 
+commit_hook_file() {
+  git rev-parse --path-format=absolute --git-path hooks/pre-commit
+}
+
 # foreign_hook <body>: an executable pre-push hook that ShipIt did not write.
 foreign_hook() {
   printf '%s\n' "$1" >"$(hook_file)"
@@ -81,6 +88,9 @@ foreign_hook() {
   [ -x "$(hook_file)" ]
   [ "$(sed -n 2p "$(hook_file)")" = "# installed by shipit init" ]
   [ "$(sed -n 3p "$(hook_file)")" = "$GUARDED" ]
+  [ -x "$(commit_hook_file)" ]
+  [ "$(sed -n 2p "$(commit_hook_file)")" = "# installed by shipit init" ]
+  [ "$(sed -n 3p "$(commit_hook_file)")" = "$COMMIT_GUARDED" ]
   [[ $output == *"No commits yet: make a first commit on main"* ]]
   [[ $output == *$'No commits yet: '*$'\nNext: '* ]]
   git add -A
@@ -210,9 +220,11 @@ foreign_hook() {
   [[ $stderr == *"a setup file already exists; init never overwrites it (in a new clone, run shipit init --hook-only)"* ]]
   [ "$(cat .config/shipit.toml)" = "mine" ]
   [ ! -e "$(hook_file)" ]
+  [ ! -e "$(commit_hook_file)" ]
   run "$SHIPIT_BIN" init --hook-only
   [ "$status" -eq 0 ]
   [ -x "$(hook_file)" ]
+  [ -x "$(commit_hook_file)" ]
   [ "$(cat .config/shipit.toml)" = "mine" ]
 }
 
@@ -317,7 +329,7 @@ foreign_hook() {
   foreign_hook $'#!/bin/sh\necho foreign'
   run "$SHIPIT_BIN" init --hook-only
   [ "$status" -eq 0 ]
-  [[ $output == "added to $(hook_file): $GUARDED" ]]
+  [[ $output == "added to $(hook_file): $GUARDED"$'\n'"wrote $(commit_hook_file)" ]]
   [ "$(grep -cxF "$GUARDED" "$(hook_file)")" -eq 1 ]
   [ "$(head -n 2 "$(hook_file)")" = $'#!/bin/sh\necho foreign' ]
   cp "$(hook_file)" "$BATS_TEST_TMPDIR/before"
@@ -334,7 +346,7 @@ refuses() {
   cp "$(hook_file)" "$BATS_TEST_TMPDIR/before"
   run "$SHIPIT_BIN" init --hook-only
   [ "$status" -eq 0 ]
-  [[ $output == "not added to $(hook_file) ($3); add this line yourself, before anything reads git's input: $GUARDED" ]]
+  [[ $output == "not added to $(hook_file) ($3); add this line yourself, before anything reads git's input: $GUARDED"$'\n'"wrote $(commit_hook_file)" ]]
   cmp "$(hook_file)" "$BATS_TEST_TMPDIR/before"
 }
 
@@ -373,7 +385,7 @@ refuses() {
   cp "$(hook_file)" "$BATS_TEST_TMPDIR/before"
   run "$SHIPIT_BIN" init --hook-only
   [ "$status" -eq 0 ]
-  [[ $output == "not added to $(hook_file) (it is not executable, so git would skip it); add this line yourself, before anything reads git's input: $GUARDED" ]]
+  [[ $output == "not added to $(hook_file) (it is not executable, so git would skip it); add this line yourself, before anything reads git's input: $GUARDED"$'\n'"wrote $(commit_hook_file)" ]]
   cmp "$(hook_file)" "$BATS_TEST_TMPDIR/before"
 }
 
@@ -394,10 +406,15 @@ sums() {
   find . -path ./.git -prune -o -type f -print0 | sort -z | xargs -0 sha256sum
 }
 
-# same_except [<file>]: the working tree is as `before=$(sums)` found it, but for that file.
+# same_except [<file>...]: the working tree is as `before=$(sums)` found it, but for those files.
 same_except() {
-  local file=${1:-/nonexistent}
-  diff <(grep -vF -- "  ./$file" <<<"$before") <(grep -vF -- "  ./$file" <<<"$(sums)")
+  local kept=$before now file
+  now=$(sums)
+  for file in "$@"; do
+    kept=$(grep -vF -- "  ./$file" <<<"$kept" || true)
+    now=$(grep -vF -- "  ./$file" <<<"$now" || true)
+  done
+  diff <(printf '%s\n' "$kept") <(printf '%s\n' "$now")
 }
 
 @test "core.hooksPath hook: the guarded line is appended once" {
@@ -413,11 +430,12 @@ same_except() {
   [ "$status" -eq 0 ]
   [[ ${lines[0]} == "added to $PWD/hooks/pre-push: $GUARDED" ]]
   [[ ${lines[1]} == "commit it: $PWD/hooks/pre-push is tracked" ]]
+  [[ ${lines[2]} == "wrote $PWD/hooks/pre-commit" ]]
   [ "$(grep -cxF "$GUARDED" hooks/pre-push)" -eq 1 ]
   [ -x hooks/pre-push ]
-  same_except hooks/pre-push
+  same_except hooks/pre-push hooks/pre-commit
   run "$SHIPIT_BIN" init --hook-only
-  [[ $output == "pre-push hook: already installed" ]]
+  [[ $output == $'pre-push hook: already installed\npre-commit hook: already installed' ]]
   [ "$(grep -cxF "$GUARDED" hooks/pre-push)" -eq 1 ]
 }
 
@@ -430,7 +448,7 @@ same_except() {
   before=$(sums)
   run "$SHIPIT_BIN" init --hook-only
   [ "$status" -eq 0 ]
-  [[ $output == "not added to $BATS_TEST_TMPDIR/global-hooks/pre-push (it is outside this project); add this line yourself, before anything reads git's input: $GUARDED" ]]
+  [[ $output == "not added to $BATS_TEST_TMPDIR/global-hooks/pre-push (it is outside this project); add this line yourself, before anything reads git's input: $GUARDED"$'\n'"not added to $BATS_TEST_TMPDIR/global-hooks/pre-commit (it is outside this project); add this line yourself: $COMMIT_GUARDED" ]]
   cmp "$BATS_TEST_TMPDIR/global-hooks/pre-push" "$BATS_TEST_TMPDIR/global-before"
   same_except
   rm "$BATS_TEST_TMPDIR/global-hooks/pre-push"
@@ -459,9 +477,11 @@ same_except() {
   run "$SHIPIT_BIN" init --hook-only
   [ "$status" -eq 0 ]
   [[ ${lines[0]} == "added to $PWD/.husky/pre-push: $GUARDED" ]]
+  [[ ${lines[1]} == "wrote $PWD/.husky/pre-commit" ]]
   [ "$(head -n 1 .husky/pre-push)" = "npm test" ]
   [ "$(tail -n 1 .husky/pre-push)" = "$GUARDED" ]
-  same_except .husky/pre-push
+  [ "$(tail -n 1 .husky/pre-commit)" = "$COMMIT_GUARDED" ]
+  same_except .husky/pre-push .husky/pre-commit
 }
 
 @test "lefthook: lefthook-local.yml is created and lefthook install is printed" {
@@ -475,10 +495,12 @@ same_except() {
   [[ $output == *"add lefthook-local.yml to .gitignore (it is per person)"* ]]
   grep -qF "shipit pre-push {1} {2}" lefthook-local.yml
   grep -qF "use_stdin: true" lefthook-local.yml
+  grep -qF "shipit pre-commit" lefthook-local.yml
+  [ "$(grep -cF "run lefthook install" <<<"$output")" -eq 1 ]
   same_except lefthook-local.yml
   printf 'lefthook-local.yml\n' >.gitignore
   run "$SHIPIT_BIN" init --hook-only
-  [[ $output == "pre-push hook: already installed" ]]
+  [[ $output == $'pre-push hook: already installed\npre-commit hook: already installed' ]]
 }
 
 @test "lefthook with .lefthook.yml: .lefthook-local.yml is created" {
@@ -499,9 +521,10 @@ same_except() {
   before=$(sums)
   run "$SHIPIT_BIN" init --hook-only
   [ "$status" -eq 0 ]
-  [[ ${lines[0]} == "not added to lefthook-local.yml (lefthook-local.yml already has a pre-push entry); add it yourself:" ]]
-  [[ $output == *"  # only one command receives git's input when several use use_stdin"* ]]
-  same_except
+  [ "$output" = "not added to lefthook-local.yml (lefthook-local.yml already has a pre-push entry); add it yourself:"$'\n'"$LEFTHOOK_PRINT"$'\n'"added the pre-commit entry to lefthook-local.yml"$'\n'"run lefthook install"$'\n'"add lefthook-local.yml to .gitignore (it is per person)" ]
+  [ "$(head -n 1 lefthook-local.yml)" = "pre-push:" ]
+  grep -qxF "pre-commit:" lefthook-local.yml
+  same_except lefthook-local.yml
 }
 
 @test "lefthook with the pre-push key spelled another way in the local file: printed, never a second key" {
@@ -513,8 +536,10 @@ same_except() {
     before=$(sums)
     run "$SHIPIT_BIN" init --hook-only
     [ "$status" -eq 0 ]
-    [[ ${lines[0]} == "not added to lefthook-local.yml (lefthook-local.yml already has a pre-push entry); add it yourself:" ]]
-    same_except
+    [ "$output" = "not added to lefthook-local.yml (lefthook-local.yml already has a pre-push entry); add it yourself:"$'\n'"$LEFTHOOK_PRINT"$'\n'"added the pre-commit entry to lefthook-local.yml"$'\n'"run lefthook install"$'\n'"add lefthook-local.yml to .gitignore (it is per person)" ]
+    [ "$(head -n 1 lefthook-local.yml)" = "$spelling" ]
+    grep -qxF "pre-commit:" lefthook-local.yml
+    same_except lefthook-local.yml
   done
 }
 
@@ -525,13 +550,14 @@ same_except() {
   before=$(sums)
   run "$SHIPIT_BIN" init --hook-only
   [ "$status" -eq 0 ]
-  [[ ${lines[0]} == "added the pre-push entry to lefthook-local.yml" ]]
+  [ "$output" = $'added the pre-push entry to lefthook-local.yml\nrun lefthook install\nadd lefthook-local.yml to .gitignore (it is per person)\nadded the pre-commit entry to lefthook-local.yml' ]
   [ "$(head -n 2 lefthook-local.yml)" = $'output:\n  - success' ]
   [ "$(sed -n 3p lefthook-local.yml)" = "pre-push:" ]
+  grep -qxF "pre-commit:" lefthook-local.yml
   same_except lefthook-local.yml
   cp lefthook-local.yml "$BATS_TEST_TMPDIR/before-local"
   run "$SHIPIT_BIN" init --hook-only
-  [[ $output == *"pre-push hook: already installed"* ]]
+  [ "$output" = $'pre-push hook: already installed\npre-commit hook: already installed' ]
   cmp lefthook-local.yml "$BATS_TEST_TMPDIR/before-local"
 }
 

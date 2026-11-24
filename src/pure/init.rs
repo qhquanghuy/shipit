@@ -1,5 +1,6 @@
 use crate::pure::base::BranchName;
 use crate::pure::failure::Failure;
+use crate::pure::hooks::GitHook;
 use crate::pure::machine::ToolState;
 use crate::pure::quote::json_string;
 use crate::pure::setup::SETUP_PATH;
@@ -10,8 +11,19 @@ pub(crate) const CI_KEY: &str = "ci/shipit.yml";
 pub(crate) const HOOK_KEY: &str = "git-hooks/pre-push";
 pub(crate) const LEFTHOOK_KEY: &str = "hooks-snippets/lefthook.yml";
 pub(crate) const PRE_COMMIT_KEY: &str = "hooks-snippets/pre-commit.yml";
+pub(crate) const COMMIT_HOOK_KEY: &str = "git-hooks/pre-commit";
+pub(crate) const LEFTHOOK_COMMIT_KEY: &str = "hooks-snippets/lefthook-commit.yml";
+pub(crate) const PRE_COMMIT_COMMIT_KEY: &str = "hooks-snippets/pre-commit-commit.yml";
 
 pub(crate) const CI_FILE: &str = ".github/workflows/shipit.yml";
+
+// The embedded texts of a hook: the hook file, the lefthook entry, the pre-commit framework entry.
+pub(crate) const fn hook_keys(hook: GitHook) -> [&'static str; 3] {
+    match hook {
+        GitHook::Push => [HOOK_KEY, LEFTHOOK_KEY, PRE_COMMIT_KEY],
+        GitHook::Commit => [COMMIT_HOOK_KEY, LEFTHOOK_COMMIT_KEY, PRE_COMMIT_COMMIT_KEY],
+    }
+}
 
 // The files in `data/`, as the build embeds them.
 pub(crate) fn embedded(key: &str) -> Option<&'static str> {
@@ -349,7 +361,16 @@ mod tests {
 
     #[test]
     fn the_embedded_files_are_there_and_the_hook_is_the_owner_line() {
-        for key in [PACK_KEY, CI_KEY, HOOK_KEY, LEFTHOOK_KEY, PRE_COMMIT_KEY] {
+        for key in [
+            PACK_KEY,
+            CI_KEY,
+            HOOK_KEY,
+            LEFTHOOK_KEY,
+            PRE_COMMIT_KEY,
+            COMMIT_HOOK_KEY,
+            LEFTHOOK_COMMIT_KEY,
+            PRE_COMMIT_COMMIT_KEY,
+        ] {
             assert!(embedded(key).is_some_and(|text| !text.is_empty()), "{key}");
         }
         assert_eq!(embedded("nope"), None);

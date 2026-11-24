@@ -1,11 +1,39 @@
-// What `init` does about the pre-push hook. Nothing here replaces or rewrites a file: a hook is
-// written new, or one line is appended to it, or the line is only printed with the reason.
+// What `init` does about the pre-push and pre-commit hooks. Nothing here replaces or rewrites a
+// file: a hook is written new, or one line is appended to it, or the line is only printed with
+// the reason.
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GitHook {
+    Push,
+    Commit,
+}
+
+impl GitHook {
+    pub(crate) const fn name(self) -> &'static str {
+        match self {
+            Self::Push => "pre-push",
+            Self::Commit => "pre-commit",
+        }
+    }
+
+    pub(crate) const fn guarded_line(self) -> &'static str {
+        match self {
+            Self::Push => GUARDED_LINE,
+            Self::Commit => COMMIT_LINE,
+        }
+    }
+
+    pub(crate) fn already_installed_text(self) -> String {
+        format!("{} hook: already installed", self.name())
+    }
+}
 
 // Guarded, so that a teammate without ShipIt pushes as before; the `&&` form would fail their push.
 pub(crate) const GUARDED_LINE: &str =
     "if command -v shipit >/dev/null 2>&1; then exec shipit pre-push \"$@\"; fi";
 
-pub(crate) const ALREADY_INSTALLED: &str = "pre-push hook: already installed";
+// Guarded twice, so a teammate whose shipit predates the command commits as before.
+pub(crate) const COMMIT_LINE: &str = "if command -v shipit >/dev/null 2>&1 && shipit help pre-commit >/dev/null 2>&1; then exec shipit pre-commit; fi";
 
 // A file that is there but cannot be read as text is its own case, so that no write is planned
 // for it: every refusal is decided before the first file is written.
@@ -111,8 +139,10 @@ fn reads_input(line: &str) -> bool {
 }
 
 // In this order; the first that holds is the reason. A husky file may have no shebang, because
-// husky runs its hooks with sh, and needs no executable bit for the same reason.
+// husky runs its hooks with sh, and needs no executable bit for the same reason. Git gives a
+// pre-commit hook no input, so only the push hook can have it drained.
 pub(crate) fn append_safety(
+    hook: GitHook,
     inside_project: bool,
     husky: bool,
     executable: bool,
@@ -136,30 +166,32 @@ pub(crate) fn append_safety(
     if text.lines().any(ends_early) {
         return Err(Unsafe::EndsEarly);
     }
-    if text.lines().any(reads_input) {
+    if hook == GitHook::Push && text.lines().any(reads_input) {
         return Err(Unsafe::ReadsInput);
     }
     Ok(())
 }
 
-pub(crate) fn already_installed(text: &str) -> bool {
+pub(crate) fn already_installed(hook: GitHook, text: &str) -> bool {
+    let needle = format!("shipit {}", hook.name());
     text.lines()
-        .any(|line| !is_comment(line) && line.contains("shipit pre-push"))
+        .any(|line| !is_comment(line) && line.contains(&needle))
 }
 
 pub(crate) fn plain_hook_plan(
+    git_hook: GitHook,
     path: &str,
     inside_project: bool,
     husky: bool,
-    hook: &HookFile,
+    file: &HookFile,
     new_hook: &str,
 ) -> HookStep {
     let print = |reason: Unsafe| HookStep::Print {
         path: path.to_owned(),
         reason: reason.reason().to_owned(),
-        text: GUARDED_LINE.to_owned(),
+        text: git_hook.guarded_line().to_owned(),
     };
-    match hook {
+    match file {
         HookFile::Missing if inside_project => HookStep::Write {
             path: path.to_owned(),
             text: new_hook.to_owned(),
@@ -167,14 +199,14 @@ pub(crate) fn plain_hook_plan(
         HookFile::Missing => print(Unsafe::OutsideProject),
         HookFile::Unreadable => print(Unsafe::Unreadable),
         HookFile::Present(text) | HookFile::NotExecutable(text) => {
-            let executable = matches!(hook, HookFile::Present(_));
-            if (executable || husky) && already_installed(text) {
-                return HookStep::Nothing(ALREADY_INSTALLED.to_owned());
+            let executable = matches!(file, HookFile::Present(_));
+            if (executable || husky) && already_installed(git_hook, text) {
+                return HookStep::Nothing(git_hook.already_installed_text());
             }
-            match append_safety(inside_project, husky, executable, text) {
+            match append_safety(git_hook, inside_project, husky, executable, text) {
                 Ok(()) => HookStep::Append {
                     path: path.to_owned(),
-                    line: GUARDED_LINE.to_owned(),
+                    line: git_hook.guarded_line().to_owned(),
                 },
                 Err(reason) => print(reason),
             }
@@ -205,7 +237,7 @@ const PRE_COMMIT_NOTE: &str = "pre-commit runs it once per push, for one ref";
 
 // The hook file `core.hooksPath` leads to: husky 9 points the path at its generated `.husky/_`,
 // and the hook a person writes is `.husky/pre-push`.
-pub(crate) fn hooks_file(hooks_path: &str) -> String {
+pub(crate) fn hooks_file(hooks_path: &str, hook: GitHook) -> String {
     let dir = hooks_path.trim_end_matches('/');
     let husky = dir == ".husky/_" || dir.ends_with("/.husky/_");
     let folder = if husky {
@@ -213,11 +245,12 @@ pub(crate) fn hooks_file(hooks_path: &str) -> String {
     } else {
         dir
     };
-    format!("{folder}/pre-push")
+    format!("{folder}/{}", hook.name())
 }
 
-fn is_husky_file(file: &str) -> bool {
-    file.strip_suffix("/pre-push")
+fn is_husky_file(file: &str, hook: GitHook) -> bool {
+    file.strip_suffix(hook.name())
+        .and_then(|dir| dir.strip_suffix('/'))
         .is_some_and(|dir| dir.rsplit('/').next() == Some(".husky"))
 }
 
@@ -235,14 +268,17 @@ pub(crate) fn is_lefthook_local(name: &str) -> bool {
     name.starts_with("lefthook-local.") || name.starts_with(".lefthook-local.")
 }
 
-// A top-level `pre-push` key in any spelling: bare or quoted, with a comment or a flow mapping
+// A top-level key of the hook in any spelling: bare or quoted, with a comment or a flow mapping
 // after the colon. A second one would make lefthook refuse the whole file.
-pub(crate) fn has_pre_push_key(text: &str) -> bool {
+pub(crate) fn has_hook_key(hook: GitHook, text: &str) -> bool {
+    let name = hook.name();
+    let double = format!("\"{name}\"");
+    let single = format!("'{name}'");
     text.trim_start_matches('\u{feff}').lines().any(|line| {
         let key = line
-            .strip_prefix("pre-push")
-            .or_else(|| line.strip_prefix("\"pre-push\""))
-            .or_else(|| line.strip_prefix("'pre-push'"));
+            .strip_prefix(name)
+            .or_else(|| line.strip_prefix(double.as_str()))
+            .or_else(|| line.strip_prefix(single.as_str()));
         key.is_some_and(|rest| rest.trim_start().starts_with(':'))
     })
 }
@@ -349,22 +385,29 @@ pub(crate) struct Texts<'a> {
     pub(crate) pre_commit: &'a str,
 }
 
-fn print_entry(path: &str, reason: &str, snippet: &str, note: &str) -> HookStep {
+// The notes are about git's input, which only the push hook gets.
+fn print_entry(path: &str, reason: &str, snippet: &str, note: Option<&str>) -> HookStep {
+    let text = match note {
+        Some(note) => format!("{snippet}# {note}\n"),
+        None => snippet.to_owned(),
+    };
     HookStep::Print {
         path: path.to_owned(),
         reason: reason.to_owned(),
-        text: format!("{snippet}# {note}\n"),
+        text,
     }
 }
 
 fn lefthook_plan(
+    hook: GitHook,
     main: &str,
     local: Option<&(String, HookFile)>,
     other_local: bool,
     texts: &Texts<'_>,
 ) -> HookStep {
-    let print = |path: &str, reason: &str| print_entry(path, reason, texts.lefthook, LEFTHOOK_NOTE);
-    let Some((name, hook)) = local else {
+    let note = (hook == GitHook::Push).then_some(LEFTHOOK_NOTE);
+    let print = |path: &str, reason: &str| print_entry(path, reason, texts.lefthook, note);
+    let Some((name, file)) = local else {
         return print(
             main,
             "init writes lefthook-local.yml only next to lefthook.yml or .lefthook.yml",
@@ -373,17 +416,19 @@ fn lefthook_plan(
     if other_local {
         return print(name, "another lefthook-local file exists");
     }
-    match hook {
+    match file {
         HookFile::Missing => HookStep::Write {
             path: name.clone(),
             text: texts.lefthook.to_owned(),
         },
         HookFile::Unreadable => print(name, "it cannot be read as text"),
-        HookFile::Present(text) | HookFile::NotExecutable(text) if already_installed(text) => {
-            HookStep::Nothing(ALREADY_INSTALLED.to_owned())
+        HookFile::Present(text) | HookFile::NotExecutable(text)
+            if already_installed(hook, text) =>
+        {
+            HookStep::Nothing(hook.already_installed_text())
         }
-        HookFile::Present(text) | HookFile::NotExecutable(text) if has_pre_push_key(text) => {
-            print(name, &format!("{name} already has a pre-push entry"))
+        HookFile::Present(text) | HookFile::NotExecutable(text) if has_hook_key(hook, text) => {
+            print(name, &format!("{name} already has a {} entry", hook.name()))
         }
         HookFile::Present(_) | HookFile::NotExecutable(_) => HookStep::Append {
             path: name.clone(),
@@ -392,31 +437,55 @@ fn lefthook_plan(
     }
 }
 
-pub(crate) fn hook_plan(manager: &Manager, texts: &Texts<'_>) -> HookStep {
+pub(crate) fn hook_plan(hook: GitHook, manager: &Manager, texts: &Texts<'_>) -> HookStep {
     match manager {
         Manager::HooksPath {
             file,
             inside_project,
             tracked: _,
+            hook: found,
+        } => plain_hook_plan(
             hook,
-        } => plain_hook_plan(file, *inside_project, is_husky_file(file), hook, texts.hook),
+            file,
+            *inside_project,
+            is_husky_file(file, hook),
+            found,
+            texts.hook,
+        ),
         Manager::Plain {
             file,
             inside_project,
-            hook,
-        } => plain_hook_plan(file, *inside_project, false, hook, texts.hook),
+            hook: found,
+        } => plain_hook_plan(hook, file, *inside_project, false, found, texts.hook),
         Manager::Lefthook {
             main,
             local,
             other_local,
             ignored: _,
-        } => lefthook_plan(main, local.as_ref(), *other_local, texts),
+        } => lefthook_plan(hook, main, local.as_ref(), *other_local, texts),
         Manager::PreCommit => print_entry(
             PRE_COMMIT_MAIN,
             "pre-commit hooks are listed in the config file, which init never edits; add this entry under repos:",
             texts.pre_commit,
-            PRE_COMMIT_NOTE,
+            (hook == GitHook::Push).then_some(PRE_COMMIT_NOTE),
         ),
+    }
+}
+
+// Both hooks are planned from the same facts; two new files of one name are one write.
+pub(crate) fn merge_steps(push: HookStep, commit: HookStep) -> Vec<HookStep> {
+    match (push, commit) {
+        (
+            HookStep::Write { path, text },
+            HookStep::Write {
+                path: other,
+                text: more,
+            },
+        ) if path == other => vec![HookStep::Write {
+            path,
+            text: format!("{text}{more}"),
+        }],
+        (push, commit) => vec![push, commit],
     }
 }
 
@@ -450,12 +519,16 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
-    use crate::pure::init::embedded;
+    use crate::pure::init::{embedded, hook_keys};
 
     const SAFE: &str = "#!/bin/sh\necho hello\n";
 
-    fn new_hook() -> &'static str {
-        embedded("git-hooks/pre-push").expect("the hook is embedded")
+    fn new_hook(hook: GitHook) -> &'static str {
+        embedded(hook_keys(hook)[0]).expect("the hook is embedded")
+    }
+
+    fn any_hook() -> impl Strategy<Value = GitHook> {
+        prop_oneof![Just(GitHook::Push), Just(GitHook::Commit)]
     }
 
     fn word() -> impl Strategy<Value = String> {
@@ -498,23 +571,23 @@ mod tests {
             comment in "[a-z ]{0,8}",
         ) {
             let script = format!("{shebang}\n# {comment}\necho hi\n");
-            prop_assert_eq!(append_safety(true, false, true, &script), Ok(()));
+            prop_assert_eq!(append_safety(GitHook::Push, true, false, true, &script), Ok(()));
             let with = format!("{script}{line}\n");
-            prop_assert_eq!(append_safety(true, false, true, &with), Err(reason));
+            prop_assert_eq!(append_safety(GitHook::Push, true, false, true, &with), Err(reason));
             // a comment never counts
             let commented = format!("{script}# {line}\n");
-            prop_assert_eq!(append_safety(true, false, true, &commented), Ok(()));
+            prop_assert_eq!(append_safety(GitHook::Push, true, false, true, &commented), Ok(()));
             // the reasons are tried in the order: project, shell, ends early, input
-            prop_assert_eq!(append_safety(false, false, true, &with), Err(Unsafe::OutsideProject));
+            prop_assert_eq!(append_safety(GitHook::Push, false, false, true, &with), Err(Unsafe::OutsideProject));
             let python = with.replacen(shebang, "#!/usr/bin/python3", 1);
-            prop_assert_eq!(append_safety(true, false, true, &python), Err(Unsafe::NotShell));
+            prop_assert_eq!(append_safety(GitHook::Push, true, false, true, &python), Err(Unsafe::NotShell));
             let both = format!("{script}git lfs pre-push\nexit 0\n");
-            prop_assert_eq!(append_safety(true, false, true, &both), Err(Unsafe::EndsEarly));
+            prop_assert_eq!(append_safety(GitHook::Push, true, false, true, &both), Err(Unsafe::EndsEarly));
             // a hook git would skip is refused before anything is said about its text, and a
             // husky file needs no executable bit
-            prop_assert_eq!(append_safety(true, false, false, &script), Err(Unsafe::NotExecutable));
-            prop_assert_eq!(append_safety(true, true, false, &script), Ok(()));
-            prop_assert_eq!(append_safety(false, false, false, &script), Err(Unsafe::OutsideProject));
+            prop_assert_eq!(append_safety(GitHook::Push, true, false, false, &script), Err(Unsafe::NotExecutable));
+            prop_assert_eq!(append_safety(GitHook::Push, true, true, false, &script), Ok(()));
+            prop_assert_eq!(append_safety(GitHook::Push, false, false, false, &script), Err(Unsafe::OutsideProject));
         }
 
         #[test]
@@ -525,18 +598,19 @@ mod tests {
             }),
         ) {
             let text = format!("echo {body}\n");
-            prop_assert_eq!(append_safety(true, true, true, &text), Ok(()));
-            prop_assert_eq!(append_safety(true, false, true, &text), Err(Unsafe::NotShell));
+            prop_assert_eq!(append_safety(GitHook::Push, true, true, true, &text), Ok(()));
+            prop_assert_eq!(append_safety(GitHook::Push, true, false, true, &text), Err(Unsafe::NotShell));
             let python = format!("#!/usr/bin/python3\n{text}");
-            prop_assert_eq!(append_safety(true, true, true, &python), Err(Unsafe::NotShell));
+            prop_assert_eq!(append_safety(GitHook::Push, true, true, true, &python), Err(Unsafe::NotShell));
         }
     }
 
-    fn texts() -> Texts<'static> {
+    fn texts(hook: GitHook) -> Texts<'static> {
+        let [file, lefthook, pre_commit] = hook_keys(hook);
         Texts {
-            hook: new_hook(),
-            lefthook: embedded("hooks-snippets/lefthook.yml").expect("embedded"),
-            pre_commit: embedded("hooks-snippets/pre-commit.yml").expect("embedded"),
+            hook: embedded(file).expect("embedded"),
+            lefthook: embedded(lefthook).expect("embedded"),
+            pre_commit: embedded(pre_commit).expect("embedded"),
         }
     }
 
@@ -678,8 +752,8 @@ mod tests {
         })]
 
         #[test]
-        fn hook_plan_never_replaces(manager in manager_strategy()) {
-            let step = hook_plan(&manager, &texts());
+        fn hook_plan_never_replaces(manager in manager_strategy(), hook in any_hook()) {
+            let step = hook_plan(hook, &manager, &texts(hook));
             match step {
                 HookStep::Write { .. } => prop_assert_eq!(missing_file(&manager), Some(true)),
                 HookStep::Append { .. } => prop_assert_eq!(missing_file(&manager), Some(false)),
@@ -688,13 +762,13 @@ mod tests {
         }
 
         #[test]
-        fn a_second_plan_never_writes(manager in manager_strategy()) {
-            let first = hook_plan(&manager, &texts());
+        fn a_second_plan_never_writes(manager in manager_strategy(), hook in any_hook()) {
+            let first = hook_plan(hook, &manager, &texts(hook));
             let after = applied(&manager, &first);
-            let second = hook_plan(&after, &texts());
+            let second = hook_plan(hook, &after, &texts(hook));
             match first {
                 HookStep::Write { .. } | HookStep::Append { .. } => {
-                    prop_assert_eq!(second, HookStep::Nothing(ALREADY_INSTALLED.to_owned()));
+                    prop_assert_eq!(second, HookStep::Nothing(hook.already_installed_text()));
                 }
                 HookStep::Print { .. } | HookStep::Nothing(_) => {
                     prop_assert_eq!(&after, &manager);
@@ -775,7 +849,7 @@ mod tests {
                 lefthook_locals: &[],
                 ignored: &[],
             });
-            let step = hook_plan(&found, &texts());
+            let step = hook_plan(GitHook::Push, &found, &texts(GitHook::Push));
             prop_assert_eq!(matches!(step, HookStep::Write { .. }), expected.is_some());
             if let HookStep::Write { path, .. } = step {
                 prop_assert_eq!(Some(path.as_str()), expected);
@@ -802,42 +876,100 @@ mod tests {
             });
             let other_local = matches!(found, Manager::Lefthook { other_local: true, .. });
             prop_assert!(other_local);
-            let printed = matches!(hook_plan(&found, &texts()), HookStep::Print { .. });
+            let printed = matches!(
+                hook_plan(GitHook::Push, &found, &texts(GitHook::Push)),
+                HookStep::Print { .. }
+            );
             prop_assert!(printed);
         }
 
         #[test]
-        fn lefthook_key_detection(before in "[a-z ]{0,8}", after in "[a-z ]{0,8}") {
-            let key_at_column_zero = format!("{before}\npre-push:  \n{after}");
-            let key_indented = format!("  pre-push:\n{before}{after}x\n");
-            prop_assert!(has_pre_push_key("pre-push:\n  commands:\n"));
-            prop_assert!(has_pre_push_key(&key_at_column_zero));
+        fn lefthook_key_detection(
+            hook in any_hook(),
+            before in "[a-z ]{0,8}",
+            after in "[a-z ]{0,8}",
+        ) {
+            let name = hook.name();
+            let key_at_column_zero = format!("{before}\n{name}:  \n{after}");
+            let key_indented = format!("  {name}:\n{before}{after}x\n");
+            let plain = format!("{name}:\n  commands:\n");
+            prop_assert!(has_hook_key(hook, &plain));
+            prop_assert!(has_hook_key(hook, &key_at_column_zero));
             // a file that starts with a byte order mark, as some editors write it
-            let with_mark = "\u{feff}pre-push:\n  commands: {}\n";
-            prop_assert!(has_pre_push_key(with_mark));
+            let with_mark = format!("\u{feff}{name}:\n  commands: {{}}\n");
+            prop_assert!(has_hook_key(hook, &with_mark));
             // every spelling of the same key: a comment, quotes, a flow mapping
             for spelled in [
-                "pre-push: # mine\n  commands: {}\n",
-                "\"pre-push\":\n  commands: {}\n",
-                "'pre-push':\n  commands: {}\n",
-                "pre-push: {commands: {}}\n",
-                "pre-push :\n",
+                format!("{name}: # mine\n  commands: {{}}\n"),
+                format!("\"{name}\":\n  commands: {{}}\n"),
+                format!("'{name}':\n  commands: {{}}\n"),
+                format!("{name}: {{commands: {{}}}}\n"),
+                format!("{name} :\n"),
             ] {
                 let text = format!("{before}\n{spelled}{after}");
-                prop_assert!(has_pre_push_key(&text));
+                prop_assert!(has_hook_key(hook, &text));
             }
-            prop_assert!(!has_pre_push_key(&key_indented));
-            prop_assert!(!has_pre_push_key("# pre-push:\npre-push-other:\n"));
+            prop_assert!(!has_hook_key(hook, &key_indented));
+            let other = format!("# {name}:\n{name}-other:\n");
+            prop_assert!(!has_hook_key(hook, &other));
         }
 
         #[test]
-        fn a_hooks_path_leads_to_the_hook_a_person_writes(dir in "[a-z]{1,6}(/[a-z]{1,6}){0,2}") {
-            prop_assert_eq!(hooks_file(&dir), format!("{dir}/pre-push"));
-            prop_assert_eq!(hooks_file(&format!("{dir}/")), format!("{dir}/pre-push"));
-            prop_assert_eq!(hooks_file(&format!("{dir}/.husky/_")), format!("{dir}/.husky/pre-push"));
-            prop_assert_eq!(hooks_file(".husky/_"), ".husky/pre-push".to_owned());
-            prop_assert_eq!(hooks_file(&format!("{dir}/_")), format!("{dir}/_/pre-push"));
+        fn a_hooks_path_leads_to_the_hook_a_person_writes(
+            hook in any_hook(),
+            dir in "[a-z]{1,6}(/[a-z]{1,6}){0,2}",
+        ) {
+            let name = hook.name();
+            prop_assert_eq!(hooks_file(&dir, hook), format!("{dir}/{name}"));
+            prop_assert_eq!(hooks_file(&format!("{dir}/"), hook), format!("{dir}/{name}"));
+            prop_assert_eq!(hooks_file(&format!("{dir}/.husky/_"), hook), format!("{dir}/.husky/{name}"));
+            prop_assert_eq!(hooks_file(".husky/_", hook), format!(".husky/{name}"));
+            prop_assert_eq!(hooks_file(&format!("{dir}/_"), hook), format!("{dir}/_/{name}"));
         }
+
+        #[test]
+        fn two_new_writes_to_one_file_are_one_write(manager in manager_strategy()) {
+            let push = hook_plan(GitHook::Push, &manager, &texts(GitHook::Push));
+            let commit = hook_plan(GitHook::Commit, &manager, &texts(GitHook::Commit));
+            let merged = merge_steps(push.clone(), commit.clone());
+            let paths: Vec<&str> = merged
+                .iter()
+                .filter_map(|step| match step {
+                    HookStep::Write { path, .. } => Some(path.as_str()),
+                    HookStep::Append { .. } | HookStep::Print { .. } | HookStep::Nothing(_) => None,
+                })
+                .collect();
+            let distinct: std::collections::BTreeSet<&str> = paths.iter().copied().collect();
+            prop_assert_eq!(paths.len(), distinct.len());
+            if let (
+                HookStep::Write { path, text },
+                HookStep::Write { path: other, text: more },
+            ) = (&push, &commit)
+            {
+                if path == other {
+                    prop_assert_eq!(merged.len(), 1);
+                    prop_assert_eq!(merged.first(), Some(&HookStep::Write {
+                        path: path.clone(),
+                        text: format!("{text}{more}"),
+                    }));
+                }
+            } else {
+                prop_assert_eq!(merged, vec![push, commit]);
+            }
+        }
+    }
+
+    #[test]
+    fn reads_input_is_a_reason_only_for_the_push_hook() {
+        let reading = format!("{SAFE}while read line; do :; done\n");
+        assert_eq!(
+            append_safety(GitHook::Push, true, false, true, &reading),
+            Err(Unsafe::ReadsInput)
+        );
+        assert_eq!(
+            append_safety(GitHook::Commit, true, false, true, &reading),
+            Ok(())
+        );
     }
 
     #[test]
@@ -846,8 +978,18 @@ mod tests {
             GUARDED_LINE,
             r#"if command -v shipit >/dev/null 2>&1; then exec shipit pre-push "$@"; fi"#
         );
-        assert!(already_installed(GUARDED_LINE));
-        assert!(!already_installed("# TODO: shipit pre-push\n"));
-        assert!(new_hook().ends_with(&format!("{GUARDED_LINE}\n")));
+        assert!(already_installed(GitHook::Push, GUARDED_LINE));
+        assert!(!already_installed(
+            GitHook::Push,
+            "# TODO: shipit pre-push\n"
+        ));
+        assert!(new_hook(GitHook::Push).ends_with(&format!("{GUARDED_LINE}\n")));
+        assert_eq!(
+            COMMIT_LINE,
+            "if command -v shipit >/dev/null 2>&1 && shipit help pre-commit >/dev/null 2>&1; then exec shipit pre-commit; fi"
+        );
+        assert!(already_installed(GitHook::Commit, COMMIT_LINE));
+        assert!(!already_installed(GitHook::Commit, GUARDED_LINE));
+        assert!(new_hook(GitHook::Commit).ends_with(&format!("{COMMIT_LINE}\n")));
     }
 }
