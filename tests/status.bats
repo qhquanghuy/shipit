@@ -61,7 +61,7 @@ READY="owner: ship it, then shipit log alpha shipped --merge <merge commit> --go
   make_work slice/demo/alpha 1
   check_here
   "$SHIPIT_BIN" receipt informed-review alpha --author sonnet:high --by opus:high --result approve \
-    --finding "nitpick: the first item has no test yet" >/dev/null
+    --finding "nitpick: DW1 has no test yet" >/dev/null
   "$SHIPIT_BIN" receipt second-opinion alpha --author sonnet:high --by opus:high --result approve >/dev/null
   st
   [ "$status" -eq 0 ]
