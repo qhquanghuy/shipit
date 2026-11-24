@@ -1,33 +1,38 @@
 use std::ffi::{OsStr, OsString};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::commands::setup::load_setup_table;
 use crate::commands::status::judge_goals;
 use crate::commands::validate::{Goal, valid_text};
+use crate::edge::clock::now_utc;
+use crate::edge::files::read_text;
 use crate::edge::git::Git;
 use crate::edge::goal_file::newest_goal;
 use crate::edge::records::{
-    Put, Written, copy_text, exists, load_goal, newest_roadmap, put_text, read_store_text,
-    store_dir,
+    Put, Written, append_line, copy_text, exists, load_goal, logbook_path, newest_roadmap,
+    put_text, read_store_text, store_dir,
 };
-use crate::edge::slice_git::load_policy;
+use crate::edge::slice_git::{file_hash, load_policy};
+use crate::edge::store::versions;
 use crate::pure::failure::Failure;
 use crate::pure::flags::{goal_flag, once, unknown_argument};
-use crate::pure::goal::GoalName;
+use crate::pure::goal::{GoalName, goal_items};
 use crate::pure::goal_pick::element_named;
+use crate::pure::logbook::{StoredVersion, stored_line};
+use crate::pure::review::tool;
 use crate::pure::roadmap::Element;
-use crate::pure::setup::HEAD;
+use crate::pure::setup::{HEAD, Setup};
 use crate::pure::state::State;
-use crate::pure::store_path::{Shown, place, shown};
+use crate::pure::store_path::{OwnerFile, Place, PutKind, Shown, put_kind, roadmap_goal, shown};
 
 pub(crate) const HIDDEN: bool = false;
 pub(crate) const NEEDS_SETUP: bool = true;
-pub(crate) const USAGE: &str = "usage: shipit store put <kind> <draft> --goal <name> --slice <name> [--round <n>] | shipit store show <kind> --goal <name> [--slice <name>] [--round <n>] [--copy]";
-pub(crate) const SUMMARY: &str = "Puts a checked build plan, plan review or review into the store at the place docs/store.md names. A build plan and its plan review are replaced only while the slice is not started; a review is never replaced; a link on the way is refused. A goal or roadmap version is the owner's and is copied in by hand; shipit store show prints a goal, roadmap, build plan, plan review or review from the store, or with --copy puts a copy in the drafts folder, from any working copy.";
+pub(crate) const USAGE: &str = "usage: shipit store put goal|roadmap <draft> --goal <name> | shipit store put <kind> <draft> --goal <name> --slice <name> [--round <n>] | shipit store show <kind> --goal <name> [--slice <name>] [--round <n>] [--copy]";
+pub(crate) const SUMMARY: &str = "Puts a checked build plan, plan review or review into the store at the place docs/store.md names. A build plan and its plan review are replaced only while the slice is not started; a review is never replaced; a link on the way is refused. A goal or roadmap version is put as the next version and recorded in the goal's logbook; shipit store show prints a goal, roadmap, build plan, plan review or review from the store, or with --copy puts a copy in the drafts folder, from any working copy.";
 pub(crate) const EXITS: [&str; 4] = [
     "stored, shown or copied",
-    "refused: the draft is not valid, its place in the store is taken, or the file to show is not in the store",
+    "refused: the draft is not valid, a roadmap of another goal, its place in the store is taken, or the file to show is not in the store",
     "usage, setup, goal, roadmap or slice error, a link on the way into the store, or a write that failed",
     "",
 ];
@@ -145,10 +150,82 @@ fn run_put(
     let (setup, _table) = load_setup_table(git, OsStr::new(HEAD))?;
     let (kind, draft, given) = parse_put(args)?;
     let kind = kind.to_string_lossy();
-    let place =
-        place(&kind, given.slice.as_deref(), given.round.as_deref()).map_err(Failure::usage)?;
+    match put_kind(&kind, given.slice.as_deref(), given.round.as_deref()).map_err(Failure::usage)? {
+        PutKind::Owner(owned) => put_owned(git, &setup, owned, draft, &given.goal, out),
+        PutKind::Placed(place) => put_placed(
+            git,
+            setup,
+            (&*kind, draft.as_os_str()),
+            (given.goal, place),
+            (out, err),
+        ),
+    }
+}
+
+// The file is written first: a failed hash or append leaves a version that status then shows
+// as not recorded, which is the truth.
+fn put_owned(
+    git: &Git,
+    setup: &Setup,
+    owned: OwnerFile,
+    draft: &OsStr,
+    goal: &GoalName,
+    out: &mut dyn Write,
+) -> Result<(), Failure> {
     let common = git.common_dir()?;
-    let goal = given.goal;
+    let store = store_dir(&common);
+    let label = draft.to_string_lossy();
+    let text = match owned {
+        OwnerFile::Goal => {
+            let text = read_text(Path::new(draft))?;
+            goal_items(&text)
+                .map_err(|why| Failure::no(format!("{label} is not a valid goal:\n  {why}")))?;
+            text
+        }
+        OwnerFile::Roadmap => {
+            let name = goal.to_string();
+            let (text, _verdict) = valid_text(
+                git,
+                setup,
+                "roadmap",
+                draft,
+                &Goal::Stored(OsStr::new(&name)),
+            )?;
+            if roadmap_goal(&text).as_ref() != Some(goal) {
+                return Err(Failure::no(format!(
+                    "{label} names another goal than \"{goal}\": a roadmap is put under the goal it names"
+                )));
+            }
+            text
+        }
+    };
+    let newest = versions(&store, goal, owned).last().copied();
+    let version = OwnerFile::next(newest);
+    let parts = ["goals".to_owned(), goal.to_string(), owned.name(version)];
+    let (Written::Stored(path) | Written::Replaced(path)) =
+        put_text(&store, &parts, &text, Put::New)?;
+    let hash = file_hash(git, &path)?;
+    let stored = StoredVersion {
+        kind: owned,
+        version,
+        hash,
+    };
+    append_line(
+        &logbook_path(&store, goal),
+        &stored_line(&stored, &now_utc(), &tool()),
+    )?;
+    writeln!(out, "stored {}", path.display()).ok();
+    Ok(())
+}
+
+fn put_placed(
+    git: &Git,
+    setup: Setup,
+    (kind, draft): (&str, &OsStr),
+    (goal, place): (GoalName, Place),
+    (out, err): (&mut dyn Write, &mut dyn Write),
+) -> Result<(), Failure> {
+    let common = git.common_dir()?;
     let roadmap = load_goal(&common, &goal)?;
     let slice = place.slice();
     match element_named(&roadmap, slice) {
@@ -164,7 +241,7 @@ fn run_put(
             )));
         }
     }
-    let (text, _verdict) = valid_text(git, &setup, &kind, draft, &Goal::Nothing)?;
+    let (text, _verdict) = valid_text(git, &setup, kind, draft, &Goal::Nothing)?;
     let store = store_dir(&common);
     let parts: Vec<String> = ["goals".to_owned(), goal.to_string()]
         .into_iter()

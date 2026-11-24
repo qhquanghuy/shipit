@@ -11,8 +11,11 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 use serde_json::Value;
 
+use crate::edge::records::goal_dir;
 use crate::pure::failure::Failure;
+use crate::pure::goal::GoalName;
 use crate::pure::receipt::{Oid, json_values};
+use crate::pure::store_path::OwnerFile;
 
 pub(crate) fn check_receipt_path(common_dir: &Path, tree: &Oid) -> PathBuf {
     common_dir
@@ -64,6 +67,19 @@ pub(crate) fn write_json_atomic(path: &Path, value: &impl Serialize) -> Result<(
     text.push(b'\n');
     fs::create_dir_all(dir).map_err(|_why| cannot())?;
     write_then_move(dir, path, &text).map_err(|_why| cannot())
+}
+
+// The versions of one kind in the goal's folder, lowest first; a missing folder has none.
+pub(crate) fn versions(store: &Path, goal: &GoalName, kind: OwnerFile) -> Vec<u64> {
+    let Ok(entries) = fs::read_dir(goal_dir(store, goal)) else {
+        return Vec::new();
+    };
+    let mut found: Vec<u64> = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| kind.version(entry.file_name().to_str()?))
+        .collect();
+    found.sort_unstable();
+    found
 }
 
 #[cfg(test)]

@@ -182,6 +182,22 @@ draft_roadmap() {
   [ "$(wc -l <<<"$output")" -eq 3 ]
 }
 
+@test "store put: a goal without done-when items, or a roadmap of another goal, is refused" {
+  make_slice_repo
+  printf 'x\n' >g.md
+  put goal g.md --goal demo
+  [ "$status" -eq 1 ]
+  [ "$stderr" = $'shipit: g.md is not a valid goal:\n  goal: no numbered items under "## Done-when"' ]
+  cp "$SHIPIT_SRC/tests/fixtures/goal.md" "$(store)/goals/demo/goal.v1.md"
+  draft_roadmap r.md other
+  put roadmap r.md --goal demo
+  [ "$status" -eq 1 ]
+  [ "$stderr" = 'shipit: r.md names another goal than "demo": a roadmap is put under the goal it names' ]
+  [ ! -e "$(store)/goals/demo/roadmap.v2.md" ]
+  [ ! -e "$(store)/goals/demo/goal.v2.md" ]
+  [ ! -e "$(store)/goals/demo/logbook.jsonl" ]
+}
+
 @test "store put: a slice the roadmap does not name, or a proof step, is refused" {
   make_slice_repo
   draft_plan plan.md
