@@ -407,9 +407,47 @@ fn span(lines: &[Line<'_>], named_at: usize) -> (usize, usize) {
             line.indent == indent && prefix.iter().any(|start| line.text.starts_with(start))
         })
     };
+    // Up over attributes, decorators and comments at the test's indent, the lines of a
+    // multi-line attribute, and blank lines only when such a line sits above them.
+    let opens_attribute = |index: &usize| {
+        at_indent(index, &["#[", "@"])
+            && lines
+                .get(*index)
+                .is_some_and(|line| line.text.ends_with('('))
+    };
     let mut first = at;
-    while first > 0 && at_indent(&(first - 1), &["#[", "@"]) {
-        first -= 1;
+    let mut probe = at;
+    while let Some(above) = probe.checked_sub(1) {
+        let Some(line) = lines.get(above) else {
+            break;
+        };
+        let comment = ["//", "--", "#"]
+            .iter()
+            .any(|start| line.text.starts_with(start));
+        probe = if line.blank() {
+            above
+        } else if line.indent != indent {
+            break;
+        } else if comment || line.text.starts_with('@') {
+            first = above;
+            above
+        } else if line.text.starts_with(')') {
+            let Some(opener) = (0..above)
+                .rev()
+                .find(|index| {
+                    lines
+                        .get(*index)
+                        .is_some_and(|line| !line.blank() && line.indent <= indent)
+                })
+                .filter(opens_attribute)
+            else {
+                break;
+            };
+            first = opener;
+            opener
+        } else {
+            break;
+        };
     }
     let last_text = lines.iter().rposition(|line| !line.blank()).unwrap_or(at);
     let signature = if named.text.ends_with('(') {
@@ -624,6 +662,39 @@ mod tests {
             let light = estimate(&test_setup(10), &[RepoPath::parse("src/a.rs").unwrap()], &[]);
             prop_assert_eq!(light.level(), Level::Light);
             prop_assert_eq!(light.reasons_text(), "");
+        }
+    }
+
+    // The walk up from a test's line passes comments, blank lines between attributes and the
+    // lines of a multi-line attribute, so a switch-off above them still edits the test.
+    #[test]
+    fn a_switch_off_above_comments_blanks_or_a_long_attribute_edits_the_test() {
+        let mapped = BTreeSet::from(["t_one".to_owned()]);
+        let rust = "    #[test]\n    fn t_one() {\n    }\n";
+        let cases = [
+            (
+                "    // why\n    #[test]\n    fn t_one() {\n    }\n",
+                "    #[ignore]\n    // why\n    #[test]\n    fn t_one() {\n    }\n",
+            ),
+            (
+                rust,
+                "    #[ignore]\n\n    #[test]\n    fn t_one() {\n    }\n",
+            ),
+            (
+                rust,
+                "    #[cfg_attr(\n        unix,\n        ignore\n    )]\n    #[test]\n    fn t_one() {\n    }\n",
+            ),
+            (
+                "# why\ndef t_one():\n    x\n",
+                "@pytest.mark.skip\n# why\ndef t_one():\n    x\n",
+            ),
+        ];
+        for (fork, tip) in cases {
+            assert_eq!(
+                touched_tests(fork, tip, &mapped),
+                vec!["t_one".to_owned()],
+                "{tip}"
+            );
         }
     }
 

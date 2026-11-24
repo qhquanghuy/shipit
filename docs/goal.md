@@ -182,14 +182,19 @@ base branch's setup does.
 every unshipped slice `"review": {"level", "from", "reasons"}`, plus `"mapped_tests"` with every
 edited mapped test by its full name when there is one, and the pull-request summary has a
 `Review level` line. The mapped-test rule takes the span of each line that names a mapped test
-(attributes and decorators above it, a braced body, or an indented block; a name on its own
-argument line belongs to the call that opens above it), and counts the test as edited when one of
-its spans at the fork is not found, line for line, at the tip. So switching a test off with
-`#[ignore]`, `@pytest.mark.skip` or `@Disabled` counts. It has four known limits: a line added
-just above a test's first line, other than an attribute or a decorator, does not count; another
-line that names the test (a doc, a fixture) makes its own span; a `}` at the test's indent inside a
-string or heredoc ends a braced span early; a column-0 line inside a string or heredoc cuts a span
-without braces.
+(attributes, decorators and comments above it, also a multi-line attribute and blank lines between
+them, a braced body, or an indented block; a name on its own argument line belongs to the call
+that opens above it), and counts the test as edited when one of its spans at the fork is not
+found, line for line, at the tip. So switching a test off with `#[ignore]`, `@pytest.mark.skip` or
+`@Disabled` counts. It has known limits: a line added just above a test's first line, other than
+an attribute, a decorator or a comment, does not count; another line that names the test (a doc,
+a fixture) makes its own span; a `}` at the test's indent inside a string or heredoc ends a braced
+span early; a column-0 line inside a string or heredoc cuts a span without braces. It also does
+not count a test switched off from outside its span: a mapped test moved unchanged into a scope
+that does not run (such as `#[cfg(any())] mod`), a block comment around a test, an attribute on
+the enclosing mod or class, a module-level `pytestmark`, or a second `def` with the same name
+added later. The coverage check still catches a mapped test that no longer runs, so these are
+covered when the project wraps its tests in `shipit coverage`.
 
 Two limits of running it: the level follows the setup of the checkout where `shipit status` runs
 (its base branch's `[review]`), so the lead reads it from the main checkout; and a ShipIt binary
