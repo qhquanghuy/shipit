@@ -154,8 +154,8 @@ pub(crate) fn run(
     let worktree = main_top.join(".shipit").join("wt").join(slice.to_string());
     writeln!(
         out,
-        "started {slice} on {branch}; make it in its own working copy: git worktree add \
-         {} {branch}",
+        "started {slice} on {branch}; for one session per slice make its working copy: git worktree add \
+         {} {branch}; an isolated maker needs none (it switches to {branch})",
         worktree.display()
     )
     .ok();

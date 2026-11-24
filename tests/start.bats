@@ -23,7 +23,7 @@ sh_start() {
   plan_ready alpha
   sh_start alpha
   [ "$status" -eq 0 ]
-  [ "$output" = "started alpha on slice/demo/alpha; make it in its own working copy: git worktree add $(git rev-parse --show-toplevel)/.shipit/wt/alpha slice/demo/alpha" ]
+  [ "$output" = "started alpha on slice/demo/alpha; for one session per slice make its working copy: git worktree add $(git rev-parse --show-toplevel)/.shipit/wt/alpha slice/demo/alpha; an isolated maker needs none (it switches to slice/demo/alpha)" ]
   [ "$(git rev-parse slice/demo/alpha)" = "$(git rev-parse main)" ]
   [ -z "$(git config --get branch.slice/demo/alpha.remote || true)" ]
   [ "$(jq -r 'select(.event == "started") | [.slice, .branch] | join(" ")' "$(store)/goals/demo/logbook.jsonl")" = "alpha slice/demo/alpha" ]
@@ -174,9 +174,9 @@ sh_start() {
   mkdir -p sub/deeper
   run --separate-stderr bash -c 'cd sub/deeper && "$SHIPIT_BIN" start alpha'
   [ "$status" -eq 0 ]
-  [ "$output" = "started alpha on slice/demo/alpha; make it in its own working copy: git worktree add $top/.shipit/wt/alpha slice/demo/alpha" ]
+  [ "$output" = "started alpha on slice/demo/alpha; for one session per slice make its working copy: git worktree add $top/.shipit/wt/alpha slice/demo/alpha; an isolated maker needs none (it switches to slice/demo/alpha)" ]
   git worktree add -q "$top/.shipit/wt/alpha" slice/demo/alpha
   run --separate-stderr bash -c 'cd .shipit/wt/alpha && "$SHIPIT_BIN" start gamma'
   [ "$status" -eq 0 ]
-  [ "$output" = "started gamma on slice/demo/gamma; make it in its own working copy: git worktree add $top/.shipit/wt/gamma slice/demo/gamma" ]
+  [ "$output" = "started gamma on slice/demo/gamma; for one session per slice make its working copy: git worktree add $top/.shipit/wt/gamma slice/demo/gamma; an isolated maker needs none (it switches to slice/demo/gamma)" ]
 }
