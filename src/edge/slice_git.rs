@@ -10,7 +10,6 @@ use crate::pure::base::BaseRef;
 use crate::pure::branch::slice_branch;
 use crate::pure::failure::Failure;
 use crate::pure::goal::GoalName;
-use crate::pure::made_by::{TRAILER_KEY, unmade};
 use crate::pure::messages::{NO_FILE, say};
 use crate::pure::receipt::{Oid, receipt_validity};
 use crate::pure::review::{ReceiptKind, check_base};
@@ -337,30 +336,4 @@ pub(crate) fn tip_of(git: &Git, common: &Path, commit: Oid) -> Result<Tip, Failu
         tree,
         checked,
     })
-}
-
-// The first commit of the slice's own work that has no maker's or owner's trailer: the commits
-// from the checked fork to the tip, no merges, without what the slices it comes after hold.
-pub(crate) fn made_by(
-    git: &Git,
-    (from, to): (&Oid, &Oid),
-    after: &[Oid],
-) -> Result<Option<String>, Failure> {
-    let format =
-        format!("--format=%H%x09%(trailers:key={TRAILER_KEY},valueonly,unfold,separator=%x2C)");
-    let range = format!("{from}..{to}");
-    let mut args = vec![
-        OsStr::new("log"),
-        OsStr::new("--no-merges"),
-        OsStr::new(&format),
-        OsStr::new(&range),
-    ];
-    if !after.is_empty() {
-        args.push(OsStr::new("--not"));
-        args.extend(after.iter().map(|oid| OsStr::new(oid.as_str())));
-    }
-    let bytes = git
-        .output(&args)
-        .map_err(|_why| Failure::usage(format!("cannot read the commits of {range}")))?;
-    Ok(unmade(&String::from_utf8_lossy(&bytes)))
 }

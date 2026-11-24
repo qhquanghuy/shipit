@@ -180,11 +180,3 @@ sh_start() {
   [ "$status" -eq 0 ]
   [ "$output" = "started gamma on slice/demo/gamma; make it in its own working copy: git worktree add $top/.shipit/wt/gamma slice/demo/gamma" ]
 }
-
-@test "start: the start entry carries the author rule" {
-  make_slice_repo
-  plan_ready alpha
-  sh_start alpha
-  [ "$status" -eq 0 ]
-  [ "$(jq -c 'select(.event == "started") | [.slice, .author_rule]' "$(store)/goals/demo/logbook.jsonl")" = '["alpha",true]' ]
-}

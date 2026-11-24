@@ -1,0 +1,5 @@
+DW4 = [
+  "the hook table holds only the agent gate and the install gate before a tool runs, and no hook on an event that can refuse",
+  "receipt: a commit without a trailer is no refusal",
+  "a_start_line_with_the_old_author_mark_still_reads",
+]
