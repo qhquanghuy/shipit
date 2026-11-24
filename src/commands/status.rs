@@ -7,13 +7,13 @@ use serde::Serialize;
 use crate::commands::setup::load_setup_table;
 use crate::edge::git::Git;
 use crate::edge::records::{
-    build_plan_path, coverage_record_path, kept_metrics, load_goals, metric_records,
-    newest_roadmap, read_logbook, receipt_doc, receipt_path, store_dir,
+    build_plan_path, coverage_record_path, goal_dir, kept_metrics, load_goals, metric_records,
+    newest_roadmap, read_store_text, receipt_doc, receipt_path, store_dir,
 };
 use crate::edge::slice_git::{
     branch_tip, commits_beyond, file_hash, load_policy, slice_branches, tip_of,
 };
-use crate::edge::store::{check_receipt_path, read_json};
+use crate::edge::store::{check_receipt_path, read_history, read_json, versions};
 use crate::pure::base::BaseRef;
 use crate::pure::branch::{parse_slice_branch, slice_branch};
 use crate::pure::failure::Failure;
@@ -21,7 +21,7 @@ use crate::pure::finding::{Class, Outcome};
 use crate::pure::flags::{goal_flag, once, unknown_argument};
 use crate::pure::goal::GoalName;
 use crate::pure::goal_pick::{element_name, element_named, which_goal};
-use crate::pure::logbook::{Entry, Logged, closed};
+use crate::pure::logbook::{Entry, Event, Logged, closed};
 use crate::pure::metric::{history, outlier, read_record};
 use crate::pure::receipt::Oid;
 use crate::pure::review::{
@@ -33,6 +33,8 @@ use crate::pure::state::{
     Counts, Facts, GoalView, Kind, Plan, Policy, Unknown, View, Work, is_shipped, proven, render,
     started_count, view,
 };
+use crate::pure::store_changes::{flag_line, flags, item_changes, span, span_line, started_at};
+use crate::pure::store_path::OwnerFile;
 use crate::pure::summary::{
     Answered, CheckRow, Known, MetricLine, Row, SummaryInput, Unfixed, summary_md,
 };
@@ -121,15 +123,89 @@ fn work_of(
     }))
 }
 
+const OWNER_FILES: [OwnerFile; 2] = [OwnerFile::Goal, OwnerFile::Roadmap];
+
+fn goal_text_of(store: &Path, goal: &GoalName, version: u64) -> Result<String, String> {
+    let parts = [
+        "goals".to_owned(),
+        goal.to_string(),
+        OwnerFile::Goal.name(version),
+    ];
+    read_store_text(store, &parts).map_err(|_why| format!("goal v{version} cannot be read"))
+}
+
+// What the goal's and roadmap's versions in the store say against the logbook: the lines of
+// each version that is not recorded or was changed by hand.
+fn flags_of(
+    git: &Git,
+    (store, goal): (&Path, &GoalName),
+    history: &[Event],
+    held: &[(OwnerFile, Vec<u64>)],
+) -> Vec<String> {
+    held.iter()
+        .flat_map(|(kind, versions)| {
+            let in_store: Vec<(u64, Option<Oid>)> = versions
+                .iter()
+                .map(|version| {
+                    let path = goal_dir(store, goal).join(kind.name(*version));
+                    (*version, file_hash(git, &path).ok())
+                })
+                .collect();
+            flags(history, *kind, &in_store)
+                .into_iter()
+                .map(|(version, flag)| flag_line(*kind, version, flag))
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+// What changed in the goal and the roadmap since the slice started; nothing when no start is
+// logged.
+fn changes_of(
+    (store, goal): (&Path, &GoalName),
+    history: &[Event],
+    held: &[(OwnerFile, Vec<u64>)],
+    slice: &SliceName,
+) -> Vec<String> {
+    let Some(start) = started_at(history, slice) else {
+        return Vec::new();
+    };
+    held.iter()
+        .filter_map(|(kind, versions)| {
+            let (from, to) = span(history, start, *kind, versions)?;
+            let items = match (kind, from) {
+                (OwnerFile::Goal, Some(from)) => Some(
+                    goal_text_of(store, goal, from)
+                        .and_then(|old| item_changes(&old, &goal_text_of(store, goal, to)?)),
+                ),
+                (OwnerFile::Goal, None) | (OwnerFile::Roadmap, _) => None,
+            };
+            Some(span_line(*kind, (from, to), items))
+        })
+        .collect()
+}
+
 // The facts of every element of a goal, read and not judged.
 pub(crate) fn collect(
     git: &Git,
     common: &Path,
     base_ref: &BaseRef,
     (goal, roadmap): (&GoalName, &Roadmap),
-) -> Result<Vec<Facts>, Failure> {
+) -> Result<(Vec<Facts>, Vec<String>), Failure> {
     let store = store_dir(common);
-    let logbook = read_logbook(&store, goal)?;
+    let history = read_history(&store, goal)?;
+    let logbook: Vec<Logged> = history
+        .iter()
+        .filter_map(|event| match event {
+            Event::Logged(logged) => Some(logged.clone()),
+            Event::Stored(_) => None,
+        })
+        .collect();
+    let held: Vec<(OwnerFile, Vec<u64>)> = OWNER_FILES
+        .iter()
+        .map(|kind| (*kind, versions(&store, goal, *kind)))
+        .collect();
+    let at = (store.as_path(), goal);
     let mut all = Vec::new();
     for element in &roadmap.elements {
         let name = element_name(element).clone();
@@ -166,6 +242,7 @@ pub(crate) fn collect(
                 )
             }
         };
+        let changes = changes_of(at, &history, &held, &name);
         all.push(Facts {
             goal: goal.clone(),
             name,
@@ -177,9 +254,10 @@ pub(crate) fn collect(
             plan,
             work,
             entries,
+            changes,
         });
     }
-    Ok(all)
+    Ok((all, flags_of(git, at, &history, &held)))
 }
 
 // Reviewed only by an approval: a roadmap has no slice to log a known issue for.
@@ -205,7 +283,7 @@ pub(crate) fn judge_goals(
 ) -> Result<Vec<GoalView>, Failure> {
     let mut goals = Vec::new();
     for (goal, roadmap) in loaded {
-        let facts = collect(git, common, base_ref, (goal, roadmap))?;
+        let (facts, flags) = collect(git, common, base_ref, (goal, roadmap))?;
         let shipped: Vec<_> = facts
             .iter()
             .filter(|fact| is_shipped(&fact.entries))
@@ -221,6 +299,7 @@ pub(crate) fn judge_goals(
         goals.push(GoalView {
             goal: goal.clone(),
             reviewed: roadmap_reviewed(git, common, policy, goal),
+            flags,
             views,
         });
     }
@@ -493,7 +572,10 @@ fn stand_ins_of(fact: &Facts) -> Vec<String> {
     found
 }
 
-fn summary_for(common: &Path, (goal, fact, judged): (&GoalName, &Facts, &View)) -> String {
+fn summary_for(
+    common: &Path,
+    (goal, fact, judged, flags): (&GoalName, &Facts, &View, &[String]),
+) -> String {
     let reading = Reading { common, fact };
     let (known, answers) = known_issues(&reading);
     let state = match &judged.merge_note {
@@ -513,6 +595,7 @@ fn summary_for(common: &Path, (goal, fact, judged): (&GoalName, &Facts, &View)) 
         known,
         unfixed: unfixed(fact),
         answers,
+        changes: fact.changes.iter().chain(flags).cloned().collect(),
     })
 }
 
@@ -542,7 +625,7 @@ fn summary_command(
             )));
         }
     }
-    let facts = collect(git, common, base_ref, (&goal, roadmap))?;
+    let (facts, flags) = collect(git, common, base_ref, (&goal, roadmap))?;
     let shipped: Vec<SliceName> = facts
         .iter()
         .filter(|fact| is_shipped(&fact.entries))
@@ -561,7 +644,12 @@ fn summary_command(
             proven: &proven,
         },
     );
-    write!(out, "{}", summary_for(common, (&goal, fact, &judged))).ok();
+    write!(
+        out,
+        "{}",
+        summary_for(common, (&goal, fact, &judged, &flags))
+    )
+    .ok();
     Ok(())
 }
 
@@ -582,6 +670,8 @@ struct GoalJson<'a> {
     goal: &'a GoalName,
     roadmap: RoadmapJson,
     open: Counts,
+    #[serde(skip_serializing_if = "<[String]>::is_empty")]
+    version_flags: &'a [String],
     slices: &'a [View],
 }
 
@@ -652,6 +742,7 @@ pub(crate) fn run(
                         reviewed: goal.reviewed,
                     },
                     open: goal.open(),
+                    version_flags: &goal.flags,
                     slices: &goal.views,
                 })
                 .collect(),

@@ -63,7 +63,7 @@ Rules:
 - The slice must be a slice of the goal's newest roadmap, not a proof step.
 - A goal draft needs numbered done-when items. A roadmap draft is checked as `shipit validate roadmap <draft> --goal <goal>` checks it, and must name that goal in its Slices block.
 - Anyone may put a goal or roadmap version, because nothing tells the owner's `!` command from an agent's call (the same file descriptors and environment). An agent puts one only after the owner approves it in chat (the roadmap skill).
-- After the file is written, each put appends `{"event":"stored","kind":"goal","version":3,"hash":"<git hash of the file>","time":"…","tool":"shipit …"}` to the goal's logbook.
+- After the file is written, each put appends `{"event":"stored","kind":"goal","version":3,"hash":"<git hash of the file>","time":"…","tool":"shipit …"}` to the goal's logbook. If the hash or the append fails, the version stays and `shipit status` shows it as not recorded.
 - Names are parsed, so no place leaves `goals/<goal>/`: a round is a number from 1 up.
 - Every level from `<git common dir>/shipit` down to the file's folder is a real folder, never a link; a missing level is made.
 - A new file is written under a temporary name and hard-linked to its place, so a taken name is never replaced, a link there included.
@@ -90,6 +90,17 @@ The refusals, each after `shipit: `:
 - `<draft> names another goal than "<goal>": a roadmap is put under the goal it names`
 - `no goal "<goal>" in the store` (a roadmap put, and no goal version is stored); exit 2
 - `cannot append to <path>`; exit 2
+
+## What status and the summary show about versions
+
+For a slice with a start entry in the logbook, `shipit status` and the pull-request summary (`shipit status --summary`) show what happened to the goal and the roadmap since it started, one line for each kind that changed: `<kind> v<from> -> v<to> since start`, where `<from>` is the newest version recorded before the start (or, with none, the highest version in the store below the first one recorded after it) and `<to>` is the newest in the store; or `<kind> v<to> since start` when no `<from>` is known. For a goal, the line goes on with `: DW<n> reworded, DW<m> removed` (each id in id order; an item is reworded when its text differs, with every run of whitespace read as one space) or `: done-when items not readable` when a version cannot be read. A line for a slice is on its status line after `Changed:`, and first in the part "Goal and roadmap versions:" of the summary.
+
+For every goal, started slice or not, its goal line in `shipit status` and each summary also name:
+
+- `<kind> v<n>: stored by hand, not recorded`: a version above the lowest recorded one that has no stored entry. When no version of that kind is recorded, its newest version, so an old goal shows it on every status until its next put. On an old goal this flag is constant: it cannot show an edit in place of a version that was never recorded, or of any version below the lowest record.
+- `<kind> v<n>: changed by hand after it was stored`: the file's hash is not the one its stored entry holds.
+
+The limits: a stored line typed into the logbook by hand cannot be told from one the tool wrote, and a slice started without `shipit start` has no start to compare with.
 
 ## Store show
 

@@ -11,9 +11,10 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::edge::records::goal_dir;
+use crate::edge::records::{goal_dir, logbook_path};
 use crate::pure::failure::Failure;
 use crate::pure::goal::GoalName;
+use crate::pure::logbook::{self, Event};
 use crate::pure::receipt::{Oid, json_values};
 use crate::pure::store_path::OwnerFile;
 
@@ -80,6 +81,21 @@ pub(crate) fn versions(store: &Path, goal: &GoalName, kind: OwnerFile) -> Vec<u6
         .collect();
     found.sort_unstable();
     found
+}
+
+// A goal without a logbook yet has no events; a damaged line stops the reader, naming it.
+pub(crate) fn read_history(store: &Path, goal: &GoalName) -> Result<Vec<Event>, Failure> {
+    let path = logbook_path(store, goal);
+    let shown = path.display();
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(why) if why.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(_why) => return Err(Failure::usage(format!("cannot read {shown}"))),
+    };
+    let text = String::from_utf8(bytes)
+        .map_err(|_why| Failure::usage(format!("logbook {shown} is not UTF-8 text")))?;
+    logbook::read_history(&text)
+        .map_err(|why| Failure::usage(format!("logbook {shown} {why}; fix that line by hand")))
 }
 
 #[cfg(test)]

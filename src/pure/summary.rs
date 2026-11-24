@@ -74,6 +74,7 @@ pub(crate) struct SummaryInput {
     pub(crate) known: Vec<Known>,
     pub(crate) unfixed: Vec<Unfixed>,
     pub(crate) answers: Vec<Answered>,
+    pub(crate) changes: Vec<String>,
 }
 
 // `opus:high` reads as `opus high`, for people.
@@ -164,6 +165,14 @@ pub(crate) fn summary_md(input: &SummaryInput) -> String {
     out.push_str(
         "(✓ local: this machine's run; CI's recheck prints the same coverage line on the pull request.)\n\n",
     );
+    if !input.changes.is_empty() {
+        section(
+            "Goal and roadmap versions:",
+            input.changes.clone(),
+            &mut out,
+        );
+        out.push('\n');
+    }
     out.push_str("| Receipt | Version | By | Above | Rank | Result |\n|---|---|---|---|---|---|\n");
     if let Some(check) = &input.check {
         writeln!(
@@ -329,6 +338,7 @@ mod tests {
                 text: "a detail".to_owned(),
             }],
             answers: Vec::new(),
+            changes: Vec::new(),
         }
     }
 
@@ -382,11 +392,19 @@ mod tests {
     fn the_summary_for_a_known_walk() {
         let mut shown = input(vec![row("abcdef012345", false)]);
         shown.map_path = ".shipit/coverage/v1/beta.toml".to_owned();
+        shown.changes = vec![
+            "goal v1 -> v3 since start: DW2 reworded, DW3 removed".to_owned(),
+            "goal v3: stored by hand, not recorded".to_owned(),
+        ];
         let expected = "\
 ### ShipIt: beta is ready to ship
 
 Done-when (.shipit/coverage/v1/beta.toml): v1:DW1 ✓ local (3 tests) · v1:DW2 ✓ proof step shipped · v1:DW3 ✓ test drive passed · v1:DW4 known issue, not proven · v1:DW5 ✗ (record not from a shipit coverage line of the setup) · v1:DW6 ✗ not confirmed for this version
 (✓ local: this machine's run; CI's recheck prints the same coverage line on the pull request.)
+
+Goal and roadmap versions:
+- goal v1 -> v3 since start: DW2 reworded, DW3 removed
+- goal v3: stored by hand, not recorded
 
 | Receipt | Version | By | Above | Rank | Result |
 |---|---|---|---|---|---|
@@ -406,5 +424,7 @@ Known issues (not fixed, nice to fix):
 Answers: none
 ";
         assert_eq!(summary_md(&shown), expected);
+        shown.changes.clear();
+        assert!(!summary_md(&shown).contains("Goal and roadmap versions"));
     }
 }
