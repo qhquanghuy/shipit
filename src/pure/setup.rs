@@ -723,7 +723,7 @@ fn parse_review(value: &Value) -> Parsed<Review> {
             RiskPath::parse,
             (
                 SETUP_FILES_ARRAY,
-                "must be a path inside the repository, written like src/ or src/commands/claude_*.rs",
+                "must be a path inside the repository, written like src/ or src/commands/claude_*.rs (no **)",
             ),
         )
     }));
@@ -1036,7 +1036,13 @@ mod tests {
         assert_eq!(
             with("full_paths", Value::Array(vec![int(1)])),
             [
-                ".review.full_paths[0]: must be a path inside the repository, written like src/ or src/commands/claude_*.rs"
+                ".review.full_paths[0]: must be a path inside the repository, written like src/ or src/commands/claude_*.rs (no **)"
+            ]
+        );
+        assert_eq!(
+            with("full_paths", Value::Array(vec![text("src/**/a.rs")])),
+            [
+                ".review.full_paths[0]: must be a path inside the repository, written like src/ or src/commands/claude_*.rs (no **)"
             ]
         );
         assert_eq!(

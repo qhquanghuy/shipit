@@ -430,6 +430,7 @@ mod tests {
                 files: 14,
                 mapped: Vec::new(),
                 unreadable: Vec::new(),
+                unread_files: Vec::new(),
                 given_base: None,
                 other_base: None,
             },

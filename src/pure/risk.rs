@@ -51,7 +51,11 @@ fn part_matches(pattern: &[u8], name: &[u8]) -> bool {
 }
 
 impl RiskPath {
+    // A `**` would read as crossing folders, which a `*` never does, so it is refused.
     pub(crate) fn parse(text: &str) -> Option<Self> {
+        if text.contains("**") {
+            return None;
+        }
         RepoPath::parse(&text.replace('*', "a"))?;
         Some(Self(text.strip_suffix('/').unwrap_or(text).to_owned()))
     }
@@ -107,6 +111,7 @@ pub(crate) enum Reason {
     Files { count: u64, light: u64 },
     MappedTests(Vec<String>),
     UnreadableMaps(Vec<String>),
+    UnreadableFiles(Vec<String>),
     BaseGiven(String),
     OtherBase { checked: String, policy: String },
     Raised(String),
@@ -137,6 +142,11 @@ impl Reason {
             Self::UnreadableMaps(paths) => {
                 let mut text = listed(paths, "coverage map", "coverage maps");
                 text.push_str(" could not be read");
+                text
+            }
+            Self::UnreadableFiles(paths) => {
+                let mut text = listed(paths, "changed file", "changed files");
+                text.push_str(" could not be read at the fork");
                 text
             }
             Self::BaseGiven(name) => format!("check base given by hand: {name}"),
@@ -176,11 +186,14 @@ impl Risk {
     }
 }
 
+// The reasons are short texts; the edited mapped tests are also listed whole, for tools.
 #[derive(Serialize)]
-struct Shown {
+struct Shown<'a> {
     level: Level,
     from: Basis,
     reasons: Vec<String>,
+    #[serde(skip_serializing_if = "<[String]>::is_empty")]
+    mapped_tests: &'a [String],
 }
 
 impl Serialize for Risk {
@@ -189,6 +202,21 @@ impl Serialize for Risk {
             level: self.level(),
             from: self.basis,
             reasons: self.reasons.iter().map(Reason::text).collect(),
+            mapped_tests: self
+                .reasons
+                .iter()
+                .find_map(|reason| match reason {
+                    Reason::MappedTests(names) => Some(names.as_slice()),
+                    Reason::RiskyPaths(_)
+                    | Reason::LockFiles(_)
+                    | Reason::Files { .. }
+                    | Reason::UnreadableMaps(_)
+                    | Reason::UnreadableFiles(_)
+                    | Reason::BaseGiven(_)
+                    | Reason::OtherBase { .. }
+                    | Reason::Raised(_) => None,
+                })
+                .unwrap_or_default(),
         }
         .serialize(serializer)
     }
@@ -269,6 +297,7 @@ pub(crate) struct DiffFacts {
     pub(crate) files: u64,
     pub(crate) mapped: Vec<String>,
     pub(crate) unreadable: Vec<String>,
+    pub(crate) unread_files: Vec<String>,
     pub(crate) given_base: Option<String>,
     pub(crate) other_base: Option<(String, String)>,
 }
@@ -283,6 +312,9 @@ pub(crate) fn judged(setup: &Setup, diff: &DiffFacts, raised: &[String]) -> Risk
     if !diff.unreadable.is_empty() {
         reasons.push(Reason::UnreadableMaps(diff.unreadable.clone()));
     }
+    if !diff.unread_files.is_empty() {
+        reasons.push(Reason::UnreadableFiles(diff.unread_files.clone()));
+    }
     if let Some(name) = &diff.given_base {
         reasons.push(Reason::BaseGiven(name.clone()));
     }
@@ -296,35 +328,6 @@ pub(crate) fn judged(setup: &Setup, diff: &DiffFacts, raised: &[String]) -> Risk
         basis: Basis::Diff,
         reasons: with_raises(reasons, raised),
     }
-}
-
-// The old side of one `git diff -U0` hunk.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Hunk {
-    pub(crate) start: u64,
-    pub(crate) count: u64,
-}
-
-fn number(text: &str) -> Option<u64> {
-    (!text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit()))
-        .then(|| text.parse().ok())
-        .flatten()
-}
-
-fn range(text: &str) -> Option<(u64, u64)> {
-    match text.split_once(',') {
-        Some((start, count)) => Some((number(start)?, number(count)?)),
-        None => Some((number(text)?, 1)),
-    }
-}
-
-pub(crate) fn hunk(line: &str) -> Option<Hunk> {
-    let rest = line.strip_prefix("@@ -")?;
-    let (old, rest) = rest.split_once(" +")?;
-    let (new, _tail) = rest.split_once(" @@")?;
-    let (start, count) = range(old)?;
-    range(new)?;
-    Some(Hunk { start, count })
 }
 
 fn is_word(c: char) -> bool {
@@ -369,8 +372,32 @@ fn lines_of(base: &str) -> Vec<Line<'_>> {
         .collect()
 }
 
+// A name on its own argument line (`it(\n  "name",`) belongs to the call that opens above it.
+fn anchor(lines: &[Line<'_>], at: usize) -> usize {
+    let Some(named) = lines.get(at) else {
+        return at;
+    };
+    if named.text.ends_with('(') || named.text.ends_with('{') {
+        return at;
+    }
+    (0..at)
+        .rev()
+        .find(|index| {
+            lines
+                .get(*index)
+                .is_some_and(|line| !line.blank() && line.indent < named.indent)
+        })
+        .filter(|index| {
+            lines
+                .get(*index)
+                .is_some_and(|line| line.text.ends_with('('))
+        })
+        .unwrap_or(at)
+}
+
 // Indexes from 0; the span is (first, last), both included.
-fn span(lines: &[Line<'_>], at: usize) -> (usize, usize) {
+fn span(lines: &[Line<'_>], named_at: usize) -> (usize, usize) {
+    let at = anchor(lines, named_at);
     let Some(named) = lines.get(at) else {
         return (at, at);
     };
@@ -417,43 +444,47 @@ fn span(lines: &[Line<'_>], at: usize) -> (usize, usize) {
             })
             .unwrap_or(last_text)
     };
-    (first, last.max(signature))
+    (first, last.max(signature).max(named_at))
 }
 
-// Line numbers from 1, as git writes them.
-fn touches_span(hunk: Hunk, (first, last): (usize, usize)) -> bool {
-    let (Ok(first), Ok(last)) = (u64::try_from(first), u64::try_from(last)) else {
-        return false;
-    };
-    let (first, last) = (first + 1, last + 1);
-    let inside = |line: u64| (first..=last).contains(&line);
-    if hunk.count == 0 {
-        inside(hunk.start) && inside(hunk.start.saturating_add(1))
-    } else {
-        hunk.start <= last && hunk.start.saturating_add(hunk.count) > first
-    }
+// The text of each span of the name, in file order.
+fn spans_of(lines: &[Line<'_>], name: &str) -> Vec<Vec<String>> {
+    lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| names_test(line.text, name))
+        .map(|(at, _)| {
+            let (first, last) = span(lines, at);
+            lines
+                .get(first..=last)
+                .unwrap_or_default()
+                .iter()
+                .map(|line| format!("{}{}", " ".repeat(line.indent), line.text))
+                .collect()
+        })
+        .collect()
 }
 
-pub(crate) fn touched_tests(base: &str, hunks: &[Hunk], mapped: &BTreeSet<String>) -> Vec<String> {
-    let lines = lines_of(base);
-    let mut found = BTreeSet::new();
-    for name in mapped {
-        let spans: Vec<(usize, usize)> = lines
-            .iter()
-            .enumerate()
-            .filter(|(_, line)| names_test(line.text, name))
-            .map(|(at, _)| span(&lines, at))
-            .collect();
-        let touched = !spans.is_empty()
-            && (hunks.is_empty()
-                || spans
-                    .iter()
-                    .any(|span| hunks.iter().any(|hunk| touches_span(*hunk, *span))));
-        if touched {
-            found.insert(name.clone());
-        }
-    }
-    found.into_iter().collect()
+// A mapped test is edited or removed when one of its spans at the fork is not found, line for
+// line, at the tip; a new line that names it elsewhere edits nothing.
+pub(crate) fn touched_tests(fork: &str, tip: &str, mapped: &BTreeSet<String>) -> Vec<String> {
+    let (old, new) = (lines_of(fork), lines_of(tip));
+    mapped
+        .iter()
+        .filter(|name| {
+            let mut left = spans_of(&new, name);
+            spans_of(&old, name).into_iter().any(|span| {
+                match left.iter().position(|kept| *kept == span) {
+                    Some(found) => {
+                        left.swap_remove(found);
+                        false
+                    }
+                    None => true,
+                }
+            })
+        })
+        .cloned()
+        .collect()
 }
 
 #[cfg(test)]
@@ -555,12 +586,12 @@ mod tests {
         fn a_risk_path_parses_as_a_repo_path_does_with_a_star(text in "[a*/. ?\\[\\\\]{0,8}") {
             prop_assert_eq!(
                 RiskPath::parse(&text).is_some(),
-                RepoPath::parse(&text.replace('*', "a")).is_some()
+                !text.contains("**") && RepoPath::parse(&text.replace('*', "a")).is_some()
             );
             for good in ["src/", "claude_*.rs"] {
                 prop_assert!(RiskPath::parse(good).is_some(), "{}", good);
             }
-            for bad in ["", "/a", "a//b", "a/..", "a?", "[a]"] {
+            for bad in ["", "/a", "a//b", "a/..", "a?", "[a]", "**", "src/**/a.rs", "a**"] {
                 prop_assert!(RiskPath::parse(bad).is_none(), "{}", bad);
             }
         }
@@ -663,6 +694,10 @@ mod tests {
             "coverage map m.toml could not be read"
         );
         assert_eq!(
+            Reason::UnreadableFiles(names(&["a.rs", "b.rs"])).text(),
+            "changed files a.rs, b.rs could not be read at the fork"
+        );
+        assert_eq!(
             Reason::BaseGiven("main".to_owned()).text(),
             "check base given by hand: main"
         );
@@ -677,7 +712,8 @@ mod tests {
         assert_eq!(Reason::Raised("x".to_owned()).text(), "raised: x");
     }
 
-    // One test block of a file: its kind (0 Rust-like, 1 bats-like, 2 indent-only), its name,
+    // One test block of a file: its kind (0 Rust-like, 1 bats-like, 2 indent-only, 3 a JS call
+    // with the name on its own argument line, 4 the same in Scala with a braced body), its name,
     // its body lines (digits, and whether the line is at column 0), a multi-line signature
     // (Rust-like only), and the blank lines after it.
     #[derive(Debug, Clone)]
@@ -723,23 +759,47 @@ mod tests {
                     lines.extend(body("  "));
                     lines.push("}".to_owned());
                 }
-                _ => {
+                2 => {
                     lines.push(format!("def {name}():"));
                     lines.extend(body("    "));
+                }
+                3 => {
+                    lines.push("it(".to_owned());
+                    lines.push(format!("  \"{name} x\","));
+                    lines.push("  () => {".to_owned());
+                    lines.extend(body("    "));
+                    lines.push("  }".to_owned());
+                    lines.push(");".to_owned());
+                }
+                _ => {
+                    lines.push("test(".to_owned());
+                    lines.push(format!("  \"{name} x\""));
+                    lines.push(") {".to_owned());
+                    lines.extend(body("  "));
+                    lines.push("}".to_owned());
                 }
             }
             lines
         }
+
+        // The line a switch-off adds above the test.
+        fn attribute(&self) -> String {
+            if self.kind == 0 {
+                "    #[ignore]".to_owned()
+            } else {
+                "@skip".to_owned()
+            }
+        }
     }
 
-    // Blocks with unique names. An indent-only block comes last: its span ends only at a line
-    // at its own indent or less, and a Rust-like block starts at indent 4.
+    // Blocks with unique names, in kind order. A Rust-like block starts at indent 4, so it comes
+    // before an indent-only block, whose span ends only at a line at its own indent or less.
     fn blocks() -> impl Strategy<Value = Vec<Block>> {
         proptest::collection::btree_set("t_[a-z]{3,6}", 1..=5).prop_flat_map(|names| {
             let count = names.len();
             let parts = proptest::collection::vec(
                 (
-                    0_u8..3,
+                    0_u8..5,
                     proptest::collection::vec(("[0-9]{1,6}", any::<bool>()), 1..=3),
                     any::<bool>(),
                     1_usize..=2,
@@ -772,28 +832,23 @@ mod tests {
         })
     }
 
-    // The file, each block's first and last line (from 1), and the blank lines.
-    fn file_of(blocks: &[Block]) -> (String, Vec<(u64, u64)>, Vec<u64>) {
-        let mut text = String::new();
+    // The file's lines and each block's first and last line (from 0), blank lines after each.
+    fn file_of(blocks: &[Block]) -> (Vec<String>, Vec<(usize, usize)>) {
+        let mut lines = Vec::new();
         let mut spans = Vec::new();
-        let mut blank = Vec::new();
-        let mut at = 0_u64;
         for block in blocks {
-            let lines = block.lines();
-            let first = at + 1;
-            for line in &lines {
-                text.push_str(line);
-                text.push('\n');
-                at += 1;
-            }
-            spans.push((first, at));
-            for _ in 0..block.blanks {
-                text.push('\n');
-                at += 1;
-                blank.push(at);
-            }
+            let first = lines.len();
+            lines.extend(block.lines());
+            spans.push((first, lines.len() - 1));
+            lines.extend(std::iter::repeat_n(String::new(), block.blanks));
         }
-        (text, spans, blank)
+        (lines, spans)
+    }
+
+    fn text_of(lines: &[String]) -> String {
+        let mut text = lines.join("\n");
+        text.push('\n');
+        text
     }
 
     fn universe_names(picked: &[(&str, bool, bool)]) -> Vec<String> {
@@ -804,92 +859,81 @@ mod tests {
         #![proptest_config(config())]
 
         #[test]
-        fn a_hunk_header_reads_back(
-            (a, b, c, d) in (0_u64..10_000, 0_u64..10_000, 0_u64..10_000, 0_u64..10_000),
-            tail in "[ -~]{0,8}",
-            junk in "[a-z+-]{1,3}",
-        ) {
-            prop_assert_eq!(hunk(&format!("@@ -{a},{b} +{c},{d} @@{tail}")), Some(Hunk { start: a, count: b }));
-            prop_assert_eq!(hunk(&format!("@@ -{a} +{c},{d} @@{tail}")), Some(Hunk { start: a, count: 1 }));
-            prop_assert_eq!(hunk(&format!("@@ -{junk},{b} +{c},{d} @@")), None);
-            prop_assert_eq!(hunk(&format!("@@ -{a},{junk} +{c} @@")), None);
-            prop_assert_eq!(hunk(&format!("@ -{a},{b} +{c},{d} @@")), None);
-            prop_assert_eq!(hunk(&format!("x{tail}@@ -{a},{b} +{c},{d} @@")), None);
-            prop_assert_eq!(hunk("@@ -3,0 +4,2 @@"), Some(Hunk { start: 3, count: 0 }));
-            prop_assert_eq!(hunk("@@ -7 +7 @@"), Some(Hunk { start: 7, count: 1 }));
-        }
-
-        #[test]
-        fn a_change_inside_a_mapped_test_names_it(
+        fn a_mapped_test_is_edited_when_its_span_changes(
             blocks in blocks(),
             picks in proptest::collection::vec(any::<bool>(), 5),
         ) {
-            let (text, spans, blank) = file_of(&blocks);
+            let (lines, spans) = file_of(&blocks);
+            let fork = text_of(&lines);
             let mapped: BTreeSet<String> = blocks
                 .iter()
                 .zip(&picks)
                 .filter(|(_, pick)| **pick)
                 .map(|(block, _)| block.name.clone())
                 .collect();
-            let only = |block: &Block| -> Vec<String> {
-                if mapped.contains(&block.name) { vec![block.name.clone()] } else { Vec::new() }
-            };
+            let none = Vec::<String>::new();
+            let touched = |tip: &[String]| touched_tests(&fork, &text_of(tip), &mapped);
             for (block, (first, last)) in blocks.iter().zip(&spans) {
-                for line in *first..=*last {
-                    prop_assert_eq!(touched_tests(&text, &[Hunk { start: line, count: 1 }], &mapped), only(block), "{}", line);
-                    prop_assert_eq!(touched_tests(&text, &[Hunk { start: line, count: last - line + 1 }], &mapped), only(block));
+                let only = if mapped.contains(&block.name) { vec![block.name.clone()] } else { Vec::new() };
+                for at in *first..=*last {
+                    let mut tip = lines.clone();
+                    if let Some(line) = tip.get_mut(at) {
+                        line.push('x');
+                    }
+                    prop_assert_eq!(touched(&tip), only.clone(), "{}", at);
                 }
-                for after in *first..*last {
-                    prop_assert_eq!(touched_tests(&text, &[Hunk { start: after, count: 0 }], &mapped), only(block));
-                }
-                prop_assert_eq!(touched_tests(&text, &[Hunk { start: *last, count: 0 }], &mapped), Vec::<String>::new());
+                let mut tip = lines.clone();
+                tip.insert(*first, block.attribute());
+                prop_assert_eq!(touched(&tip), only.clone());
+                let mut tip = lines.clone();
+                tip.drain(*first..=*last);
+                prop_assert_eq!(touched(&tip), only);
+                // A line just above the test, or a blank one after it, edits nothing.
+                let mut tip = lines.clone();
+                tip.insert(*first, "x9".to_owned());
+                tip.insert(last + 2, String::new());
+                prop_assert_eq!(touched(&tip), none.clone());
             }
-            for line in blank {
-                prop_assert_eq!(touched_tests(&text, &[Hunk { start: line, count: 0 }], &mapped), Vec::<String>::new());
-            }
-            let every: Vec<String> = mapped.iter().cloned().collect();
-            let total = u64::try_from(text.lines().count()).unwrap();
-            prop_assert_eq!(touched_tests(&text, &[Hunk { start: 1, count: total }], &mapped), every.clone());
-            prop_assert_eq!(touched_tests(&text, &[], &mapped), every);
+            let mut tip = lines.clone();
+            tip.push(blocks.iter().map(|block| block.name.as_str()).collect::<Vec<_>>().join(" "));
+            prop_assert_eq!(touched(&tip), none.clone());
+            prop_assert_eq!(touched(&lines), none);
+            prop_assert_eq!(touched(&[]), mapped.iter().cloned().collect::<Vec<_>>());
         }
 
         #[test]
-        fn the_diff_decides_the_level(
+        fn the_diff_adds_its_own_reasons_after_the_path_reasons(
             names in proptest::sample::subsequence(UNIVERSE.to_vec(), 0..=UNIVERSE.len()),
             files in 0_u64..15,
             light in 0_u64..6,
             mapped in proptest::collection::vec("[a-z]{1,4}", 0..=4),
             unreadable in proptest::collection::vec("[a-z]{1,4}", 0..=4),
+            unread_files in proptest::collection::vec("[a-z]{1,4}", 0..=4),
             given in any::<bool>(),
             other in any::<bool>(),
             raised in proptest::collection::vec("[a-z ]{1,6}", 0..=3),
         ) {
+            let setup = test_setup(light);
+            let names = universe_names(&names);
             let diff = DiffFacts {
-                names: universe_names(&names),
+                names: names.clone(),
                 files,
                 mapped: mapped.clone(),
                 unreadable: unreadable.clone(),
+                unread_files: unread_files.clone(),
                 given_base: given.then(|| "main".to_owned()),
                 other_base: other.then(|| ("side".to_owned(), "main".to_owned())),
             };
-            let risk = judged(&test_setup(light), &diff, &raised);
-            let mut expected = Vec::new();
-            let risky: Vec<String> = names.iter().filter(|(_, risky, _)| *risky).map(|(path, _, _)| shown(path)).collect();
-            if !risky.is_empty() {
-                expected.push(Reason::RiskyPaths(risky));
-            }
-            let locks: Vec<String> = names.iter().filter(|(_, _, lock)| *lock).map(|(path, _, _)| shown(path)).collect();
-            if !locks.is_empty() {
-                expected.push(Reason::LockFiles(locks));
-            }
-            if files > light {
-                expected.push(Reason::Files { count: files, light });
-            }
+            let risk = judged(&setup, &diff, &raised);
+            let mut expected = path_reasons(&setup, &names, files);
             if !mapped.is_empty() {
-                expected.push(Reason::MappedTests(mapped));
+                expected.push(Reason::MappedTests(mapped.clone()));
             }
             if !unreadable.is_empty() {
                 expected.push(Reason::UnreadableMaps(unreadable));
+            }
+            if !unread_files.is_empty() {
+                expected.push(Reason::UnreadableFiles(unread_files));
             }
             if given {
                 expected.push(Reason::BaseGiven("main".to_owned()));
@@ -898,25 +942,15 @@ mod tests {
                 expected.push(Reason::OtherBase { checked: "side".to_owned(), policy: "main".to_owned() });
             }
             expected.extend(raised.iter().cloned().map(Reason::Raised));
-            let level = if expected.is_empty() { Level::Light } else { Level::Full };
-            prop_assert_eq!(risk.level(), level);
+            let shown = serde_json::to_value(&risk).unwrap();
+            prop_assert_eq!(&shown["level"], if expected.is_empty() { "light" } else { "full" });
+            prop_assert_eq!(&shown["from"], "diff");
+            if mapped.is_empty() {
+                prop_assert!(shown.get("mapped_tests").is_none());
+            } else {
+                prop_assert_eq!(&shown["mapped_tests"], &serde_json::json!(mapped));
+            }
             prop_assert_eq!(risk, Risk { basis: Basis::Diff, reasons: expected });
-            let plain = |names: &[&str], given_base: Option<&str>, other_base: Option<(&str, &str)>| {
-                judged(&setup_with(&[]), &DiffFacts {
-                    names: names.iter().map(|name| (*name).to_owned()).collect(),
-                    files: u64::try_from(names.len()).unwrap(),
-                    mapped: Vec::new(),
-                    unreadable: Vec::new(),
-                    given_base: given_base.map(str::to_owned),
-                    other_base: other_base.map(|(a, b)| (a.to_owned(), b.to_owned())),
-                }, &[])
-            };
-            let lock = plain(&["src/a.rs", "Cargo.lock"], None, None);
-            prop_assert_eq!((lock.level(), lock.reasons_text()), (Level::Full, "lock file Cargo.lock".to_owned()));
-            let given = plain(&["src/a.rs"], Some("main"), None);
-            prop_assert_eq!(given.reasons_text(), "check base given by hand: main");
-            let other = plain(&["src/a.rs"], None, Some(("side", "main")));
-            prop_assert_eq!(other.reasons_text(), "checked against side, not main");
         }
     }
 }

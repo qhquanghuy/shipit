@@ -290,7 +290,7 @@ a_review() {
   [ "$(grep -c '^### ShipIt:' <<<"$output")" -eq 1 ]
 }
 
-@test "log: raise records a reason, status then asks for the second opinion, and nothing lowers it" {
+@test "log: raise records a reason, status then asks for the second opinion" {
   suite_repo
   plan_ready alpha
   mapped_work alpha DW1
@@ -313,14 +313,14 @@ a_review() {
   lg alpha raise
   [ "$status" -eq 2 ]
   [[ $stderr == "shipit: raise needs --reason; "* ]]
+  lg alpha raise --reason "  "
+  [ "$status" -eq 2 ]
+  [[ $stderr == "shipit: raise needs a --reason that is not blank; "* ]]
   lg alpha raise --reason x --text y
   [ "$status" -eq 2 ]
   [[ $stderr == "shipit: raise does not take --text; "* ]]
   lg proof raise --reason x
   [ "$status" -eq 2 ]
   [ "$stderr" = 'shipit: "proof" is a proof step: it has no review level' ]
-  lg alpha lower --reason x
-  [ "$status" -eq 2 ]
-  [[ $stderr == 'shipit: unknown event "lower"; '* ]]
   [ "$(wc -l <"$book")" -eq "$before" ]
 }

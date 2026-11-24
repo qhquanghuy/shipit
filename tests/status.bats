@@ -50,7 +50,7 @@ READY="owner: ship it, then shipit log alpha shipped --merge <merge commit> --go
   lg alpha shipped --merge HEAD
   [ "$status" -eq 0 ]
   st --json
-  [ "$(jq -c '.goals[0].slices[] | select(.name == "alpha") | .branch' <<<"$output")" = null ]
+  [ "$(jq -c '.goals[0].slices[] | select(.name == "alpha") | [.branch, has("review")]' <<<"$output")" = '["slice/demo/alpha",false]' ]
   st
   [[ $output == *"started: 0 of 3"* ]]
   [[ $output == *"shipped (demo): alpha"* ]]
@@ -83,7 +83,7 @@ READY="owner: ship it, then shipit log alpha shipped --merge <merge commit> --go
   suite_repo
   write_setup "$(cat .config/shipit.toml)"$'\n\n[review]\nfull_paths = ["risky/"]\nlight_max_files = 3'
   mkdir -p tests .shipit/coverage/demo
-  printf '@test "one" {\n  true\n}\n' >tests/one.bats
+  printf '@test "one" {\n  true\n}\n\n@test "two" {\n  true\n}\n' >tests/one.bats
   printf 'DW3 = ["one"]\n' >.shipit/coverage/demo/gamma.toml
   git add tests .shipit
   git commit -q -m "a mapped test"
@@ -95,9 +95,6 @@ READY="owner: ship it, then shipit log alpha shipped --merge <merge commit> --go
   st
   [ "$(the_line alpha)" = "$light" ]
   "$SHIPIT_BIN" check --base main >/dev/null 2>&1
-  st
-  [ "$(the_line alpha)" = "$full (check base given by hand: main). Started without shipit start." ]
-  check_here
   st
   [ "$(the_line alpha)" = "$light" ]
   git branch side main
@@ -137,6 +134,25 @@ READY="owner: ship it, then shipit log alpha shipped --merge <merge commit> --go
   check_here
   st
   [ "$(the_line alpha)" = "$full (mapped test \"one\" edited or removed). Started without shipit start." ]
+  git reset -q --hard HEAD~1
+  sed -i "1i @skip" tests/one.bats
+  git commit -q -am "a skipped test"
+  check_here
+  st
+  [ "$(the_line alpha)" = "$full (mapped test \"one\" edited or removed). Started without shipit start." ]
+  git reset -q --hard HEAD~1
+  sed -i "6s/true/false/" tests/one.bats
+  git commit -q -am "an unmapped test"
+  check_here
+  st
+  [ "$(the_line alpha)" = "$light" ]
+  git checkout -q main
+  printf 'DW4 = ["two"]\n' >.shipit/coverage/demo/delta.toml
+  git add .shipit
+  git commit -q -m "a test mapped after the fork"
+  git checkout -q slice/demo/alpha
+  st
+  [ "$(the_line alpha)" = "$full (mapped test \"two\" edited or removed). Started without shipit start." ]
 }
 
 @test "status: a reviewed slice stays checked until each done-when item is confirmed" {

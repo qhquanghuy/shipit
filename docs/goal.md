@@ -165,24 +165,36 @@ the work changes: the receipts no longer match, so the computed state drops.
 **Review levels.** One rule decides whether a slice is risky: it touches a risky path (the setup
 file, `gate.setup_files` and `[review] full_paths`), changes more than `[review] light_max_files`
 files (default 10), edits or removes a mapped test (a test that a coverage map committed at the
-slice's fork names), or changes a lock file (a built-in list plus `[review] lock_files`). A slice is
-also risky when a coverage map at the fork cannot be read, or when its check named its base by
-hand (`shipit check --base`) or was run against another base. A risky slice is reviewed at the
+slice's fork, or at the base's tip, names), or changes a lock file (a built-in list plus `[review]
+lock_files`). A slice is also risky when a coverage map or a changed file at the fork cannot be
+read, when its check named by hand a base other than the policy's branch (`shipit check --base
+side`; `--base origin/main` for `main` is the same branch), or when its check ran against another
+base. A risky slice is reviewed at the
 **full** level: the informed review, the blind second opinion and the reader. Any other slice is
 reviewed at the **light** level: one ranked review, the informed review. A second opinion done at
 light still counts against the slice with an open blocking finding or a rework result. The rule
 runs twice: on the slice's `owns` before the work (the estimate, which picks the maker) and on the
 diff once `shipit check` has passed (which picks the review). Anyone may raise a slice to full with
-`shipit log <slice> raise --reason <why>`; no entry lowers it, only the base branch's setup does.
+`shipit log <slice> raise --reason <why>` (a blank reason is refused); no entry lowers it, only the
+base branch's setup does.
 `shipit status` names the level on a slice's line only when it is full: `Review estimate: full
 (<reasons>).` from the owns, `Review: full (<reasons>).` from the diff; `shipit status --json` gives
-every unshipped slice `"review": {"level", "from", "reasons"}`, and the pull-request summary has a
-`Review level` line. The mapped-test rule reads the fork's text of each changed file and takes the
-span of each line that names a mapped test (attributes above it, a braced body, or an indented
-block). It has four known limits: a line added just above a test's first line does not count;
-another line that names the test (a doc, a fixture) makes its own span; a `}` at the test's indent
-inside a string or heredoc ends a braced span early; a column-0 line inside a string or heredoc
-cuts a span without braces.
+every unshipped slice `"review": {"level", "from", "reasons"}`, plus `"mapped_tests"` with every
+edited mapped test by its full name when there is one, and the pull-request summary has a
+`Review level` line. The mapped-test rule takes the span of each line that names a mapped test
+(attributes and decorators above it, a braced body, or an indented block; a name on its own
+argument line belongs to the call that opens above it), and counts the test as edited when one of
+its spans at the fork is not found, line for line, at the tip. So switching a test off with
+`#[ignore]`, `@pytest.mark.skip` or `@Disabled` counts. It has four known limits: a line added
+just above a test's first line, other than an attribute or a decorator, does not count; another
+line that names the test (a doc, a fixture) makes its own span; a `}` at the test's indent inside a
+string or heredoc ends a braced span early; a column-0 line inside a string or heredoc cuts a span
+without braces.
+
+Two limits of running it: the level follows the setup of the checkout where `shipit status` runs
+(its base branch's `[review]`), so the lead reads it from the main checkout; and a ShipIt binary
+older than review levels refuses a setup with `[review]` and a logbook with a `raise` line, so
+rebuild every binary that reads the repository before adding either.
 
 A done-when item is confirmed by the first of: a test the slice's coverage map names that ran in this version, as the coverage record shows, when a `shipit coverage` line of the setup wrote that record; a shipped proof step that meets the item, once every slice it follows has shipped (a proof step is not tied to a version of the work); a passing test drive of this version, for a slice marked for one; a known issue logged against a review or test drive of this version, when the reviewer's finding names the item (`DW2` of the slice's own goal, or `<goal>:DW2`, as a whole word; the lead's reason does not count). A known issue confirms without proving: the status line says `Not proven: <items>.` A proof step that comes after the slice cannot confirm the slice's item. An unconfirmed item keeps the slice checked, and its next step names it: `missing: proof of <goal>:DW<n>`. When the setup has no `shipit coverage` line, the owner adds one as a setup-only change; until it merges, the slice lead asks the informed reviewer for a non-blocking finding that names the item and logs it as a known issue. `shipit init` writes the test run wrapped in `shipit coverage` when it can tell the command (a Cargo project).
 

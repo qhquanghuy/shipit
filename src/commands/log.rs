@@ -198,9 +198,14 @@ fn event(args: Args, event: &str) -> Result<Event, Failure> {
         }
         "raise" => {
             only(&args.given, &["--reason"], event)?;
-            Ok(Event::Raise {
-                reason: required(args.reason, "--reason", event)?,
-            })
+            let reason = required(args.reason, "--reason", event)?;
+            // A raise is read by people deciding the review, so it must say why.
+            if reason.trim().is_empty() {
+                return Err(Failure::usage(format!(
+                    "raise needs a --reason that is not blank; {USAGE}"
+                )));
+            }
+            Ok(Event::Raise { reason })
         }
         "receipt" => Err(Failure::usage(
             "\"receipt\" entries are written by shipit receipt".to_owned(),

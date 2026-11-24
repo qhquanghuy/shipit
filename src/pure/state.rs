@@ -99,11 +99,19 @@ pub(crate) struct Plan {
     pub(crate) review: Option<ReceiptView>,
 }
 
+// A checked version: its diff facts, read for every slice but a shipped one, which is never
+// judged.
+#[derive(Debug)]
+pub(crate) enum Check {
+    Judged(DiffFacts),
+    Unjudged,
+}
+
 // What is known about the branch of a slice: its tip, and the receipts for that version.
 #[derive(Debug)]
 pub(crate) struct Work {
     pub(crate) commits: u64,
-    pub(crate) checked: Option<DiffFacts>,
+    pub(crate) checked: Option<Check>,
     pub(crate) patch_id: Option<String>,
     pub(crate) tree: String,
     pub(crate) informed: Option<ReceiptView>,
@@ -346,6 +354,13 @@ struct Judged {
     claims: Vec<String>,
 }
 
+impl Judged {
+    // At light the second opinion is not asked, but one that was done still blocks.
+    fn passes_unasked(&self) -> bool {
+        self.open_blocking.is_empty() && !self.rework
+    }
+}
+
 fn judge(slot: &Slot<'_>, facts: &Facts, policy: &Setup) -> Judged {
     let mut judged = Judged {
         counts: false,
@@ -486,7 +501,6 @@ fn review_of(facts: &Facts, setup: &Setup) -> Risk {
     let raised: Vec<String> = facts
         .entries
         .iter()
-        .filter(|logged| logged.slice == facts.name)
         .filter_map(|logged| match &logged.entry {
             Entry::Raise { reason } => Some(reason.clone()),
             Entry::Receipt { .. }
@@ -499,8 +513,8 @@ fn review_of(facts: &Facts, setup: &Setup) -> Risk {
         })
         .collect();
     match facts.work.as_ref().and_then(|work| work.checked.as_ref()) {
-        Some(diff) => judged(setup, diff, &raised),
-        None => estimate(setup, &facts.owns, &raised),
+        Some(Check::Judged(diff)) => judged(setup, diff, &raised),
+        Some(Check::Unjudged) | None => estimate(setup, &facts.owns, &raised),
     }
 }
 
@@ -553,11 +567,10 @@ pub(crate) fn view(facts: &Facts, policy: &Policy<'_>) -> View {
     let drive = judge_it(&drive_slot);
     let (open, claims) = rolled_up(&[&plan, &informed, &second, &drive]);
     let (items, unconfirmed) = confirmed_items(facts, policy, shipped, test_drive && drive.counts);
-    // At light the second opinion is not asked, but one that was done still blocks.
     let second_ok = if full {
         second.counts
     } else {
-        second.open_blocking.is_empty() && !second.rework
+        second.passes_unasked()
     };
     let work_ok =
         informed.counts && second_ok && (!test_drive || drive.counts) && unconfirmed.is_empty();
@@ -636,7 +649,7 @@ fn checked_step(
     let mut blocking: Vec<String> = Vec::new();
     let mut missing: Vec<String> = Vec::new();
     for (index, (judged, slot)) in works.iter().enumerate() {
-        let unasked = index == 1 && !full && judged.open_blocking.is_empty() && !judged.rework;
+        let unasked = index == 1 && !full && judged.passes_unasked();
         if judged.counts || (index == 2 && !test_drive) || unasked {
             continue;
         }
@@ -953,6 +966,7 @@ mod tests {
             files: if full { 11 } else { 1 },
             mapped: vec![],
             unreadable: vec![],
+            unread_files: vec![],
             given_base: None,
             other_base: None,
         }
@@ -961,7 +975,7 @@ mod tests {
     fn facts(given: &Given) -> Facts {
         let work = given.made.then(|| Work {
             commits: 1,
-            checked: given.checked.then(|| diff(given.full)),
+            checked: given.checked.then(|| Check::Judged(diff(given.full))),
             patch_id: Some("patch".to_owned()),
             tree: "tree".to_owned(),
             informed: given.informed.then(|| counting("patch")),
@@ -1698,10 +1712,10 @@ mod tests {
         });
         checked.name = name("gamma");
         if let Some(work) = checked.work.as_mut() {
-            work.checked = Some(DiffFacts {
+            work.checked = Some(Check::Judged(DiffFacts {
                 names: vec!["Cargo.lock".to_owned()],
                 ..diff(false)
-            });
+            }));
         }
         let mut gamma = judged(&checked, &[]);
         gamma.without_start = false;

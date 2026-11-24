@@ -31,12 +31,12 @@ use crate::pure::receipt::Oid;
 use crate::pure::review::{
     ReceiptKind, Stored, check_base, counts, open_findings, read_receipt, stored_findings,
 };
-use crate::pure::risk::{DiffFacts, Hunk, hunk, touched_tests};
+use crate::pure::risk::{DiffFacts, touched_tests};
 use crate::pure::roadmap::{Element, Roadmap, SliceName};
 use crate::pure::setup::{HEAD, Setup, toml_table};
 use crate::pure::state::{
-    Counts, Facts, GoalView, Kind, Plan, Policy, Unknown, View, Work, is_shipped, proven, render,
-    started_count, view,
+    Check, Counts, Facts, GoalView, Kind, Plan, Policy, Unknown, View, Work, is_shipped, proven,
+    render, started_count, view,
 };
 use crate::pure::store_changes::{flag_line, flags, item_changes, span, span_line, started_at};
 use crate::pure::store_path::OwnerFile;
@@ -114,77 +114,91 @@ fn policy_branch(base_ref: &BaseRef) -> String {
     }
 }
 
-// The mapped tests at the fork that the change edits or removes, and the maps that could not
-// be read. Nothing here ends status: what cannot be read counts against the slice.
+// The tests the coverage maps at `rev` name; a map that cannot be listed, read or parsed is
+// named instead.
+fn read_maps(
+    git: &Git,
+    rev: &OsStr,
+    mapped: &mut BTreeSet<String>,
+    unreadable: &mut BTreeSet<String>,
+) {
+    match map_paths_at(git, rev) {
+        Err(_why) => {
+            unreadable.insert(".shipit/coverage/".to_owned());
+        }
+        Ok(paths) => {
+            for path in paths {
+                let map = git
+                    .show_file(rev, &path)
+                    .and_then(|bytes| toml_table(&bytes).ok())
+                    .and_then(|table| parse_map(&table).ok());
+                match map {
+                    Some(map) => mapped.extend(map.items.into_values().flatten()),
+                    None => {
+                        unreadable.insert(path);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// What the mapped-test rule found: the tests edited or removed, the maps and the changed files
+// it could not read.
+struct MappedFacts {
+    touched: Vec<String>,
+    unreadable_maps: Vec<String>,
+    unread_files: Vec<String>,
+}
+
+// The mapped tests the change edits or removes. The maps are read at the fork and at the base's
+// tip, so a test mapped on the base after the fork still counts. Nothing here ends status: what
+// cannot be read counts against the slice.
 fn mapped_touched(
     git: &Git,
-    fork: &Oid,
-    tip: &Oid,
+    (fork, tip, base): (&Oid, &Oid, &BaseRef),
     changed: &[(char, String)],
-) -> (Vec<String>, Vec<String>) {
+) -> MappedFacts {
     let edited: Vec<&str> = changed
         .iter()
         .filter(|(status, _)| *status != 'A')
         .map(|(_, path)| path.as_str())
         .collect();
+    let mut found = MappedFacts {
+        touched: Vec::new(),
+        unreadable_maps: Vec::new(),
+        unread_files: Vec::new(),
+    };
     if edited.is_empty() {
-        return (Vec::new(), Vec::new());
+        return found;
     }
     let at = OsStr::new(fork.as_str());
+    let base_tip = base.full();
     let mut mapped = BTreeSet::new();
-    let mut unreadable = Vec::new();
-    match map_paths_at(git, at) {
-        Err(_why) => unreadable.push(".shipit/coverage/".to_owned()),
-        Ok(paths) => {
-            for path in paths {
-                let map = git
-                    .show_file(at, &path)
-                    .and_then(|bytes| toml_table(&bytes).ok())
-                    .and_then(|table| parse_map(&table).ok());
-                match map {
-                    Some(map) => mapped.extend(map.items.into_values().flatten()),
-                    None => unreadable.push(path),
-                }
-            }
-        }
+    let mut unreadable = BTreeSet::new();
+    read_maps(git, at, &mut mapped, &mut unreadable);
+    read_maps(git, OsStr::new(&base_tip), &mut mapped, &mut unreadable);
+    found.unreadable_maps = unreadable.into_iter().collect();
+    if mapped.is_empty() {
+        return found;
     }
     let mut touched = BTreeSet::new();
     for path in edited {
-        let Some(bytes) = git.show_file(at, path) else {
+        let Some(old) = git.show_file(at, path) else {
+            found.unread_files.push(path.to_owned());
             continue;
         };
-        let text = String::from_utf8_lossy(&bytes);
-        let held = touched_tests(&text, &[], &mapped);
-        if held.is_empty() {
-            continue;
-        }
-        let literal = format!(":(literal){path}");
-        let diff = git.output(&[
-            OsStr::new("diff"),
-            OsStr::new("-U0"),
-            OsStr::new("--text"),
-            OsStr::new("--no-ext-diff"),
-            OsStr::new("--no-color"),
-            OsStr::new("--no-textconv"),
-            OsStr::new("--no-renames"),
-            OsStr::new("--end-of-options"),
-            at,
-            OsStr::new(tip.as_str()),
-            OsStr::new("--"),
-            OsStr::new(&literal),
-        ]);
-        match diff {
-            Ok(bytes) => {
-                let hunks: Vec<Hunk> = String::from_utf8_lossy(&bytes)
-                    .lines()
-                    .filter_map(hunk)
-                    .collect();
-                touched.extend(touched_tests(&text, &hunks, &mapped));
-            }
-            Err(_why) => touched.extend(held),
-        }
+        let new = git
+            .show_file(OsStr::new(tip.as_str()), path)
+            .unwrap_or_default();
+        touched.extend(touched_tests(
+            &String::from_utf8_lossy(&old),
+            &String::from_utf8_lossy(&new),
+            &mapped,
+        ));
     }
-    (touched.into_iter().collect(), unreadable)
+    found.touched = touched.into_iter().collect();
+    found
 }
 
 fn diff_facts(
@@ -202,28 +216,35 @@ fn diff_facts(
         .unwrap_or_else(|| u64::try_from(changed.len()).unwrap_or(u64::MAX));
     let given = doc.as_ref().and_then(|doc| doc.get("base_given")) == Some(&Value::Bool(true));
     let policy = policy_branch(base_ref);
-    let other_base = match (doc.as_ref().and_then(checked_branch), &base) {
-        (Some(branch), Some(base)) if branch != policy => {
+    let branch = doc.as_ref().and_then(checked_branch);
+    let other_base = match (&branch, &base) {
+        (Some(branch), Some(base)) if *branch != policy => {
             Some((base.name.clone(), base_ref.to_string()))
         }
         (Some(_) | None, _) => None,
     };
-    let (mapped, unreadable) = mapped_touched(git, &checked.merge_base, &tip.commit, &changed);
+    // A base given by hand that names the policy's branch (origin/main for main) changes nothing.
+    let given_base = base
+        .filter(|_| given && branch.as_ref() != Some(&policy))
+        .map(|base| base.name);
+    let found = mapped_touched(git, (&checked.merge_base, &tip.commit, base_ref), &changed);
     Ok(DiffFacts {
         names: changed.into_iter().map(|(_, path)| path).collect(),
         files,
-        mapped,
-        unreadable,
-        given_base: base.filter(|_| given).map(|base| base.name),
+        mapped: found.touched,
+        unreadable: found.unreadable_maps,
+        unread_files: found.unread_files,
+        given_base,
         other_base,
     })
 }
 
+// A shipped slice keeps its work, but its diff is never judged: status reads no diff for it.
 fn work_of(
     git: &Git,
     common: &Path,
     base_ref: &BaseRef,
-    branch: &str,
+    (branch, shipped): (&str, bool),
     (goal, slice): (&GoalName, &SliceName),
 ) -> Result<Option<Work>, Failure> {
     let store = store_dir(common);
@@ -240,7 +261,13 @@ fn work_of(
         .and_then(|docs| docs.into_iter().next())
         .and_then(|doc| recorded(&doc, goal, slice));
     let checked = match &tip.checked {
-        Some(checked) => Some(diff_facts(git, common, base_ref, (&tip, checked))?),
+        Some(_) if shipped => Some(Check::Unjudged),
+        Some(checked) => Some(Check::Judged(diff_facts(
+            git,
+            common,
+            base_ref,
+            (&tip, checked),
+        )?)),
         None => None,
     };
     Ok(Some(Work {
@@ -375,12 +402,13 @@ pub(crate) fn collect(
                     slice.after.clone(),
                     slice.meets.clone(),
                     plan,
-                    // A shipped slice needs no work: status reads no git for it.
-                    if is_shipped(&entries) {
-                        None
-                    } else {
-                        work_of(git, common, base_ref, &branch, (goal, &name))?
-                    },
+                    work_of(
+                        git,
+                        common,
+                        base_ref,
+                        (&branch, is_shipped(&entries)),
+                        (goal, &name),
+                    )?,
                     slice.owns.clone(),
                 )
             }
