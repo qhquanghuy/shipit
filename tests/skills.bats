@@ -621,8 +621,7 @@ check_start_order() {
   [[ $output == *"shipit-roadmap: a line names shipit start"* ]]
 }
 
-# check_store_writes: every store write in a skill is a `shipit store put`; the one `cp` into the store is the
-# fallback copy of a goal or roadmap version.
+# check_store_writes: every store write in a skill is a `shipit store put`; a goal or roadmap version is stored once the owner approves it.
 check_store_writes() {
   local root=$1 slice review file span target bad=0
   five_skills "$root" || return 1
@@ -772,12 +771,69 @@ check_drafts_in_project() {
   done < <(grep -oE '[A-Za-z0-9_./-]+\.md' "$drive")
 }
 
-@test "skills: one session per slice is the way to run slices, and the text says how that session reaches the worktree" {
+# check_run_modes <root>: the roadmap skill offers the four ways in order, the Claude Code workflow is
+# not yet tried, step 9 asks for exactly one recommendation, and the example marks one way that is
+# not the workflow.
+check_run_modes() {
+  local root=$1 file rows block marked bad=0
+  five_skills "$root" || return 1
+  file=$(skill_file "$root" shipit-roadmap)
+  rows=$(section "$file" 'How slices run' | grep -E '^\| ' | tail -n +2 | cut -d'|' -f2 | sed -e 's/^ *//' -e 's/ *$//' | paste -sd, -)
+  [[ $rows == 'same session,subagents,one session per slice,Claude Code workflow' ]] || { echo "shipit-roadmap: the ways are not the four, in order: $rows"; bad=1; }
+  section "$file" 'How slices run' | grep -E '^\| Claude Code workflow \|' | cut -d'|' -f4 | grep -qF 'not yet tried' || { echo "shipit-roadmap: the workflow row does not say not yet tried"; bad=1; }
+  step_line "$file" 9 | grep -qF 'recommends exactly one' || { echo "shipit-roadmap: step 9 does not say recommends exactly one"; bad=1; }
+  step_line "$file" 9 | grep -qF 'the owner picks' || { echo "shipit-roadmap: step 9 does not say the owner picks"; bad=1; }
+  block=$(section "$file" 'How slices run' | awk '/^```example$/ { on = 1; next } /^```$/ { on = 0 } on')
+  marked=$(grep -c '(recommended)' <<<"$block" || true)
+  [[ $marked -eq 1 ]] || { echo "shipit-roadmap: the example has $marked recommended lines, not one"; bad=1; }
+  if grep '(recommended)' <<<"$block" | grep -qi 'workflow'; then
+    echo "shipit-roadmap: the example recommends the Claude Code workflow"
+    bad=1
+  fi
+  return "$bad"
+}
+
+@test "skills: the lead offers four ways to run slices, recommends exactly one, and the owner picks" {
   cd "$SHIPIT_SRC"
-  run grep -rniE 'one agent per slice|lead fan-out|start your makers|Workflow. tool' README.md docs/claude-code.md docs/guide.md skills agents
+  run grep -rniE 'one agent per slice|lead fan-out|start your makers' README.md docs/claude-code.md docs/guide.md skills agents
   [ "$status" -eq 1 ]
   [ "$output" = "" ]
   grep -qF 'the owner opens a new session in the worktree' skills/shipit-slice/SKILL.md
   grep -qF 'the owner opens a new session in the worktree' docs/guide.md
   grep -qF 'the owner opens a new session in the worktree' docs/claude-code.md
+  run check_run_modes "$SHIPIT_SRC"
+  [ "$output" = "" ]
+  [ "$status" -eq 0 ]
+  copy_plugin "$BATS_TEST_TMPDIR/copy"
+  sed -i 's/^3\. one session per slice:/3. one session per slice (recommended):/' "$BATS_TEST_TMPDIR/copy/skills/shipit-roadmap/SKILL.md"
+  run check_run_modes "$BATS_TEST_TMPDIR/copy"
+  [ "$status" -eq 1 ]
+  [[ $output == *"the example has 2 recommended lines"* ]]
+  copy_plugin "$BATS_TEST_TMPDIR/copy2"
+  sed -i 's/^2\. subagents (recommended):/2. subagents:/; s/^4\. Claude Code workflow:/4. Claude Code workflow (recommended):/' "$BATS_TEST_TMPDIR/copy2/skills/shipit-roadmap/SKILL.md"
+  run check_run_modes "$BATS_TEST_TMPDIR/copy2"
+  [ "$status" -eq 1 ]
+  [[ $output == *"the example recommends the Claude Code workflow"* ]]
+}
+
+@test "skills: an isolated maker switches to its slice branch, checks it, and is never resumed" {
+  local slice=$SHIPIT_SRC/skills/shipit-slice/SKILL.md maker=$SHIPIT_SRC/agents/maker.md switch
+  grep -qF 'isolation: "worktree"' "$slice"
+  grep -qF 'run_in_background: true' "$slice"
+  grep -qF '`git switch slice/<goal>/<slice>`' "$slice"
+  grep -qF 'not checked' "$slice"
+  grep -qF 'never resume' "$slice"
+  switch=$(grep -nF '`git switch slice/<goal>/<slice>`' "$slice" | head -1 | cut -d: -f1)
+  sed -n "$((switch + 1)),\$p" "$slice" | grep -qF '`shipit pre-commit`'
+  grep -qF 'shipit pre-commit' "$maker"
+  grep -qF 'not checked' "$maker"
+}
+
+@test "skills: a maker stops near the cap, and a slice over it is split by the planner" {
+  local slice=$SHIPIT_SRC/skills/shipit-slice/SKILL.md
+  grep -qF '80%' "$slice"
+  grep -qF 'git diff --shortstat' "$slice"
+  grep -qF 'new roadmap version' "$slice"
+  grep -qF '`git checkout slice/<goal>/<old-slice> -- <paths>`' "$slice"
+  grep -qF '80%' "$SHIPIT_SRC/agents/maker.md"
 }

@@ -32,21 +32,27 @@ Never: write code, commit, push, or begin a slice (`shipit-slice` does that, aft
 6. Start `shipit:plan-reviewer` with the model and effort of its rank: the top tier, at the planner's effort. Author at the top tier: same tier at a higher effort, up to `agents.effort_cap`; at the cap too, a fresh agent at the same rank, recorded with `--fresh`. A model that is unavailable: its `stand_in`, written `<model>:<effort>@<tier>` in `--by`; `shipit receipt` refuses a stand-in that equals the author, and that is the outcome **no reviewer above the planner**. It fills `plan-review` (`shipit template plan-review`) and ends its report with Verified, Inferred and Unverifiable.
 7. Fix rounds, at most `agents.max_fix_rounds`. A roadmap already in the store is never edited: each change is a new version file, drafted and checked as in steps 3 and 4. When the store holds one, a new version starts as a copy of the newest stored one: `shipit store show roadmap --goal <goal> --copy` writes it to `.shipit/td/<goal>/store/roadmap.vN.md` (docs/store.md, Store show), and the planner writes the draft from that copy's text with the file tools; the copy in `store/` stays as it is, as the base of the diff. A first roadmap, and fix rounds before the first put, start from the template (step 3). The planner changes only what was decided (a ruling, an owner answer, a review finding) and leaves every other line as it is. `shipit:plan-reviewer` gets the diff, `git diff --no-index <copy> <draft>` (it exits 1 when the files differ, the normal result), with the draft, and checks the changed slices and what they change in the order (`after`) and the owns. The reviewed draft stays in the drafts folder until the owner approves it (step 8).
 8. Second decision point: write it as a `decision-point` to approve the roadmap, with a ```` ```example ```` block of the waves, and check it with `shipit validate decision-point <file>`. Its What names the roadmap version to approve (`roadmap.vN.md`) and what changed for the owner: the slices, their order and the waves. It does not list the reviewer's findings. Its Recommendation names the slices of wave 1. Once the owner approves, store it with `shipit store put roadmap <draft> --goal <goal>` (it prints the version and records it in the logbook; status and every pull request show it), then record `shipit receipt plan-review roadmap --goal <goal> --author <author> --by <model>:<effort> --result <result>`. Write `--by` as `<model>:<effort>@<tier>` only when a stand-in reviewed (step 6); otherwise plain `<model>:<effort>`.
-9. Third decision point: write it as a `decision-point` on how the slices run, with a ```` ```example ```` block like the one under How slices run, and check it with `shipit validate decision-point <file>`. It lists the ways, says which the lead recommends and why. After the answer the lead hands each slice of wave 1 to `shipit-slice`, in the way the owner chose; `shipit-slice` writes the build plan first and begins the slice only after it is approved.
+9. Third decision point: write it as a `decision-point` on how the slices run, with a ```` ```example ```` block like the one under How slices run, and check it with `shipit validate decision-point <file>`. It lists the four ways, recommends exactly one (never the Claude Code workflow while it is not yet tried) and says why; the owner picks. After the answer the lead hands each slice of wave 1 to `shipit-slice`, in the way the owner chose; `shipit-slice` writes the build plan first and begins the slice only after it is approved.
 ## How slices run
-Slices run one way, and the decision point says so and names the waves.
+The lead offers four ways at the third decision point, recommends exactly one and says why; the owner picks. The decision point names the waves.
 
-The way is one session per slice, opened in the slice's worktree. `shipit:maker` works only in a working copy on a slice branch, and the Agent tool cannot start an agent in another folder, so no session in the main working copy can make a slice (`docs/claude-code.md`, The author rule). The slice's worktree comes from `shipit-slice` step 2, after the build plan is approved: the owner opens a new session in the worktree then.
+With isolation "worktree" the Agent tool starts a maker in a new worktree of its own; it switches to its slice branch first, and the commit hook refuses its commits on any other branch (`docs/claude-code.md`, Parallel makers). For such a slice the lead makes no worktree: git refuses a branch checked out in two worktrees. For one session per slice, the worktree comes from `shipit-slice` step 2, after the build plan is approved, and the owner opens a new session in it then.
 
 | Way | Who runs `shipit-slice` | Recommended when |
 |---|---|---|
-| one session per slice | a slice session the owner opens in the slice's worktree | every slice: the owner watches and answers each one |
+| same session | the lead, one slice at a time; each maker starts with isolation "worktree" | one slice in the wave, or the owner wants one thing at a time |
+| subagents | the lead, the slices of a wave together; each maker starts with isolation "worktree" | two or more slices in a wave, and the owner answers only decision points |
+| one session per slice | a slice session the owner opens in the slice's worktree | a risky slice the owner wants to watch |
+| Claude Code workflow | a workflow script the lead writes; each maker starts with isolation "worktree" | never yet: not yet tried with ShipIt |
 
 Example for the decision point, with the real waves:
 
 ```example
 Wave 1: alpha, beta (parallel), then gamma.
-1. one session per slice: you open 2 sessions now, 1 later
+1. same session: the lead makes one slice at a time
+2. subagents (recommended): alpha and beta are made together; you answer only decision points
+3. one session per slice: you open 2 sessions now, 1 later
+4. Claude Code workflow: a script runs the makers; not yet tried
 ```
 ## Store files
 - The store is `<git common dir>/shipit`. Find it with `git rev-parse --git-common-dir`, run alone. A skill never spells the git folder itself.
