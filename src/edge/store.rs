@@ -87,13 +87,14 @@ pub(crate) fn versions(store: &Path, goal: &GoalName, kind: OwnerFile) -> Vec<u6
 pub(crate) fn read_history(store: &Path, goal: &GoalName) -> Result<Vec<Event>, Failure> {
     let path = logbook_path(store, goal);
     let shown = path.display();
-    let bytes = match fs::read(&path) {
-        Ok(bytes) => bytes,
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
         Err(why) if why.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(why) if why.kind() == ErrorKind::InvalidData => {
+            return Err(Failure::usage(format!("logbook {shown} is not UTF-8 text")));
+        }
         Err(_why) => return Err(Failure::usage(format!("cannot read {shown}"))),
     };
-    let text = String::from_utf8(bytes)
-        .map_err(|_why| Failure::usage(format!("logbook {shown} is not UTF-8 text")))?;
     logbook::read_history(&text)
         .map_err(|why| Failure::usage(format!("logbook {shown} {why}; fix that line by hand")))
 }

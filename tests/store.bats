@@ -441,3 +441,17 @@ store_with_files() {
   [ "$(cat .shipit/td/alpha/build-plan.md)" = "my edit" ]
   [ -z "$(git status --porcelain)" ]
 }
+
+@test "store put: the roadmap skill hands over shipit store put after the owner approves" {
+  skill="$SHIPIT_SRC/skills/shipit-roadmap/SKILL.md"
+  grep -qF '`shipit store put roadmap <draft> --goal <goal>`' "$skill"
+  grep -qF '`shipit store put goal <draft> --goal <goal>`' "$skill"
+  grep -qF 'approves it in chat' "$skill"
+}
+
+@test "skills: a new roadmap version is a copy of the newest, changed only where decided, and reviewed as a diff" {
+  skill="$SHIPIT_SRC/skills/shipit-roadmap/SKILL.md"
+  grep -qF 'starts as a copy of the newest stored one' "$skill"
+  grep -qF 'changes only what was decided' "$skill"
+  grep -qF '`git diff --no-index <copy> <draft>`' "$skill"
+}
