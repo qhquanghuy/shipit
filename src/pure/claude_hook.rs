@@ -19,6 +19,7 @@ pub(crate) struct HookInput {
     pub(crate) tool_use_id: Option<String>,
     pub(crate) agent_id: Option<String>,
     pub(crate) agent_type: Option<String>,
+    pub(crate) launched_agent: Option<String>,
     pub(crate) source: Option<String>,
     pub(crate) background_subagents: Option<usize>,
 }
@@ -43,6 +44,11 @@ pub(crate) fn parse_input(bytes: &[u8]) -> Result<HookInput, String> {
         tool_use_id: text("tool_use_id"),
         agent_id: text("agent_id"),
         agent_type: text("agent_type"),
+        launched_agent: object
+            .get("tool_response")
+            .and_then(|response| response.get("agentId"))
+            .and_then(Value::as_str)
+            .map(str::to_owned),
         source: text("source"),
         background_subagents: object
             .get("background_tasks")
@@ -81,7 +87,7 @@ pub(crate) fn answer_json(answer: &Answer) -> Option<String> {
 
 pub(crate) const WORK_REVIEWER: &str = "shipit:work-reviewer";
 pub(crate) const TESTER: &str = "shipit:tester";
-const BRANCH_LINE: &str = "shipit-branch:";
+pub(crate) const BRANCH_LINE: &str = "shipit-branch:";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Target {
@@ -154,7 +160,7 @@ pub(crate) fn agent_call(input: &HookInput) -> bool {
 
 pub(crate) const MAKER: &str = "shipit:maker";
 
-pub(crate) const NO_SLICE_FOLDER: &str = "ShipIt: shipit:maker works in the slice's worktree, and this Claude Code cannot start an agent in another folder: run the slice in a session opened in its worktree (docs/claude-code.md, Sessions).";
+pub(crate) const NO_SLICE_FOLDER: &str = "ShipIt: start shipit:maker with isolation \"worktree\" and a line \"shipit-branch: <slice branch>\" in its prompt, or from a session opened in the slice's worktree (docs/claude-code.md, Parallel makers).";
 
 // The setup's maker as a start is judged: its model, its effort when the setup gives one, and the
 // stand-in of its tier. The effort is the receipt's word when the setup gives none.
@@ -242,6 +248,7 @@ mod tests {
             tool_use_id: None,
             agent_id: None,
             agent_type: None,
+            launched_agent: None,
             source: None,
             background_subagents: None,
         }
@@ -419,6 +426,17 @@ mod tests {
         assert_eq!(minimal.event, "");
         assert_eq!(minimal.session_id, None);
         assert_eq!(minimal.background_subagents, None);
+        assert_eq!(minimal.launched_agent, None);
+        for (response, agent) in [
+            (r#"{"agentId":"a1"}"#, Some("a1")),
+            (r#"{"agentId":7}"#, None),
+            (r#"{"status":"done"}"#, None),
+            (r#""a1""#, None),
+        ] {
+            let text = format!(r#"{{"cwd":"/r","tool_response":{response}}}"#);
+            let parsed = parse_input(text.as_bytes()).expect("reads");
+            assert_eq!(parsed.launched_agent.as_deref(), agent, "{response}");
+        }
         let event = parse_input(
             br#"{"cwd":"/r","hook_event_name":"SubagentStart","session_id":"s","tool_use_id":"t","agent_id":"a","source":"startup"}"#,
         )

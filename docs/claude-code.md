@@ -41,7 +41,7 @@ as `shipit`. claude.ai and Cowork do not install a plugin that has a `bin/` fold
   call, and only in a working copy on a slice branch (the session's folder: a `cwd` in the call is
   not read, because this Claude Code ignores it). The rank is read from the base branch's setup, as
   the agent cap is. The two refusals:
-  - A start outside a working copy on a slice branch (the Agent tool of this Claude Code has no `cwd` to start it elsewhere): `ShipIt: shipit:maker works in the slice's worktree, and this Claude Code cannot start an agent in another folder: run the slice in a session opened in its worktree (docs/claude-code.md, Sessions).`
+  - A start outside a working copy on a slice branch (the Agent tool of this Claude Code has no `cwd` to start it elsewhere): `ShipIt: start shipit:maker with isolation "worktree" and a line "shipit-branch: <slice branch>" in its prompt, or from a session opened in the slice's worktree (docs/claude-code.md, Parallel makers).`
   - A start at another rank than the setup's maker or its stand-in, with the model and the effort the setup's maker has (`sonnet` and `high` here): `ShipIt: start shipit:maker with model "sonnet" and effort "high", the setup's maker (agents.roles.maker), or its stand-in: the receipts name that rank as the author.`
 
   A review of the work names the setup's maker as `--author`, else `shipit receipt` refuses it:

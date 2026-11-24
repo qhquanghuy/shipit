@@ -1,19 +1,24 @@
 use std::ffi::{OsStr, OsString};
 use std::io::Write;
 
+use serde_json::Value;
+
 use crate::commands::setup::load_setup_table;
 use crate::commands::verify::verify_at;
 use crate::edge::agent_store::Ledger;
 use crate::edge::clock::now_utc;
 use crate::edge::git::Git;
 use crate::edge::hook_process::{base_names, exists, gate_folder, on_slice_branch, run_gate};
+use crate::edge::records::append_line;
 use crate::edge::slice_git::load_policy;
-use crate::pure::agent_ledger::{Change, Entry, admit, seconds};
+use crate::pure::agent_ledger::{
+    Change, Entry, MAKERS_LOG, MakerRecord, admit, branch_line, record_line, seconds,
+};
 use crate::pure::base::BranchName;
 use crate::pure::branch::is_slice_branch;
 use crate::pure::claude_hook::{
-    Answer, HookInput, NO_SLICE_FOLDER, Target, agent_call, maker_rank, maker_start, review_target,
-    safe_field,
+    Answer, HookInput, MAKER, NO_SLICE_FOLDER, Target, agent_call, maker_rank, maker_start,
+    review_target, safe_field,
 };
 use crate::pure::failure::{Exit, Failure};
 use crate::pure::setup::{HEAD, SETUP_PATH, Setup};
@@ -45,6 +50,18 @@ fn named_branch(git: &Git, branch: &str, bases: &[String]) -> Option<String> {
     git.commit_of(OsStr::new(&full)).map(|_commit| full)
 }
 
+fn name_the_slice(role: &str) -> String {
+    format!(
+        "ShipIt: name the slice: add a line \"shipit-branch: <branch>\" to the prompt of {role}."
+    )
+}
+
+fn not_a_slice_branch(branch: &str) -> String {
+    format!(
+        "ShipIt: \"shipit-branch: {branch}\" must name a local slice branch, not a base branch or another revision."
+    )
+}
+
 fn receipt_answer(
     role: &str,
     branch: Option<&str>,
@@ -74,9 +91,7 @@ fn review_gate(git: &Git, input: &HookInput) -> Option<Answer> {
     let bases = base_names(git);
     if let Some(branch) = branch {
         let Some(full) = named_branch(git, &branch, &bases) else {
-            return Some(deny(format!(
-                "ShipIt: \"shipit-branch: {branch}\" must name a local slice branch, not a base branch or another revision."
-            )));
+            return Some(deny(not_a_slice_branch(&branch)));
         };
         let result = verify_at(git, Some(OsStr::new(&full)));
         receipt_answer(&role, Some(&branch), result)
@@ -85,9 +100,7 @@ fn review_gate(git: &Git, input: &HookInput) -> Option<Answer> {
             .current_branch()
             .is_some_and(|current| bases.contains(&current))
         {
-            return Some(deny(format!(
-                "ShipIt: name the slice: add a line \"shipit-branch: <branch>\" to the prompt of {role}."
-            )));
+            return Some(deny(name_the_slice(&role)));
         }
         receipt_answer(&role, None, verify_at(git, None))
     }
@@ -106,21 +119,40 @@ fn agent_cap(git: &Git) -> Result<u64, Failure> {
     Ok(u64::from(&policy_of(git)?.agents.parallel.agents))
 }
 
-// A maker starts at the setup's maker rank, in a working copy on a slice branch: the session's
-// folder. The call's own `cwd` is not read: this Claude Code ignores it, and the agent works in the
-// session's folder.
-fn maker_gate(git: &Git, input: &HookInput) -> Option<Answer> {
-    let tool_input = input.tool_input.as_ref()?;
-    let started = maker_start(tool_input, || {
+// A maker starts at the setup's maker rank. Without isolation it works in the session's folder,
+// which must be a working copy on a slice branch; the call's own `cwd` is not read: this Claude
+// Code ignores it. With isolation it works in a worktree of its own, and its prompt names the
+// slice branch it switches to: that branch is the Ok of an admitted isolated maker.
+fn maker_gate(git: &Git, input: &HookInput) -> Result<Option<String>, Answer> {
+    let Some(tool_input) = input.tool_input.as_ref() else {
+        return Ok(None);
+    };
+    let Some(started) = maker_start(tool_input, || {
         let policy = policy_of(git).map_err(|failure| cannot_start(failure.message))?;
         maker_rank(&policy).ok_or_else(|| cannot_start("the setup has no tier for the maker"))
-    })?;
-    if let Err(text) = started {
-        return Some(deny(text));
+    }) else {
+        return Ok(None);
+    };
+    started.map_err(deny)?;
+    if tool_input.get("isolation").and_then(Value::as_str) != Some("worktree") {
+        return on_slice_branch(&input.cwd)
+            .map(|_git| None)
+            .ok_or_else(|| deny(NO_SLICE_FOLDER.to_owned()));
     }
-    on_slice_branch(&input.cwd)
-        .is_none()
-        .then(|| deny(NO_SLICE_FOLDER.to_owned()))
+    let prompt = tool_input
+        .get("prompt")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    match branch_line(prompt) {
+        Err(why) => Err(deny(cannot_start(why))),
+        Ok(None) => Err(deny(name_the_slice(MAKER))),
+        Ok(Some(branch)) => {
+            if named_branch(git, branch, &base_names(git)).is_none() {
+                return Err(deny(not_a_slice_branch(branch)));
+            }
+            Ok(Some(branch.to_owned()))
+        }
+    }
 }
 
 fn cannot_start(why: impl std::fmt::Display) -> String {
@@ -151,6 +183,23 @@ fn admit_start(git: &Git, input: &HookInput) -> Result<(), String> {
     .map_err(cannot_start)
 }
 
+// A record that cannot be written stops nothing: the maker's own check then finds its slice
+// unknown and stops.
+fn record_start(git: &Git, input: &HookInput, branch: &str) {
+    let write = || -> Result<(), String> {
+        let session = safe_field(input.session_id.as_deref(), "session_id")?;
+        let call = safe_field(input.tool_use_id.as_deref(), "tool_use_id")?;
+        let common = git.common_dir().map_err(|failure| failure.message)?;
+        let line = record_line(&MakerRecord::Start {
+            session: session.to_owned(),
+            call: call.to_owned(),
+            branch: branch.to_owned(),
+        });
+        append_line(&common.join(MAKERS_LOG), &line).map_err(|failure| failure.message)
+    };
+    write().ok();
+}
+
 fn decide(input: &Result<HookInput, String>) -> Answer {
     let Some(git) = gate_folder(input) else {
         return Answer::Pass;
@@ -165,11 +214,17 @@ fn decide(input: &Result<HookInput, String>) -> Answer {
     if !agent_call(input) {
         return Answer::Pass;
     }
-    if let Some(answer) = maker_gate(&git, input) {
-        return answer;
-    }
+    let recorded = match maker_gate(&git, input) {
+        Ok(branch) => branch,
+        Err(answer) => return answer,
+    };
     match admit_start(&git, input) {
-        Ok(()) => Answer::Pass,
+        Ok(()) => {
+            if let Some(branch) = recorded {
+                record_start(&git, input, &branch);
+            }
+            Answer::Pass
+        }
         Err(text) => deny(text),
     }
 }

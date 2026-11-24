@@ -1,6 +1,13 @@
-// How many agents a session has running, kept as one entry per agent or per start in flight.
-// The files are the edge's; what an entry means, and what each hook event does to the entries,
-// is decided here.
+// Which agents a session runs, and which maker worktree belongs to which slice. How many agents a
+// session has running is kept as one entry per agent or per start in flight. The files are the
+// edge's; what an entry means, what each hook event does to the entries, and what a commit in a
+// maker's worktree may do, is decided here.
+
+use std::path::Path;
+
+use serde::{Deserialize, Serialize};
+
+use crate::pure::claude_hook::BRANCH_LINE;
 
 // A start that never became an agent (another hook may refuse the call) stops counting after
 // this long.
@@ -222,9 +229,200 @@ pub(crate) fn is_stale(started: Option<&str>, now: i64) -> bool {
         .is_some_and(|at| now.saturating_sub(at) > STALE_SECONDS)
 }
 
+// Outside the store folder: the store's layout is docs/store.md's, and this file is the agent hooks'.
+pub(crate) const MAKERS_LOG: &str = "shipit-makers.jsonl";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "event", rename_all = "kebab-case")]
+pub(crate) enum MakerRecord {
+    Start {
+        session: String,
+        call: String,
+        branch: String,
+    },
+    Launched {
+        session: String,
+        call: String,
+        agent: String,
+    },
+    Maker {
+        session: String,
+        agent: String,
+    },
+}
+
+pub(crate) fn record_line(record: &MakerRecord) -> String {
+    // Strings and nothing else are serialized, which cannot fail.
+    let mut line = serde_json::to_string(record).unwrap_or_default();
+    line.push('\n');
+    line
+}
+
+fn parse_record(line: &str) -> Option<MakerRecord> {
+    serde_json::from_str(line).ok()
+}
+
+fn records(log: &str) -> Vec<MakerRecord> {
+    log.lines().filter_map(parse_record).collect()
+}
+
+// The branch a prompt names with `shipit-branch:` lines, read as the review gate reads them: the
+// first word after the colon, a trailing full stop dropped. Two different names, or an empty one,
+// are refused in the review gate's own words.
+pub(crate) fn branch_line(prompt: &str) -> Result<Option<&str>, &'static str> {
+    let mut named: Vec<&str> = Vec::new();
+    for line in prompt.lines() {
+        let Some(rest) = line.trim().strip_prefix(BRANCH_LINE) else {
+            continue;
+        };
+        let word = rest
+            .split_whitespace()
+            .next()
+            .map(|word| word.trim_end_matches('.'))
+            .filter(|word| !word.is_empty())
+            .ok_or("the shipit-branch line names no branch")?;
+        if !named.contains(&word) {
+            named.push(word);
+        }
+    }
+    match named.as_slice() {
+        [] => Ok(None),
+        [branch] => Ok(Some(branch)),
+        [_, _, ..] => Err("the prompt names two branches"),
+    }
+}
+
+// The worktree Claude Code made for agent <id>: `<anything>/.claude/worktrees/agent-<id>`.
+pub(crate) fn agent_of_worktree(top: &Path) -> Option<String> {
+    let id = top.file_name()?.to_str()?.strip_prefix("agent-")?;
+    let worktrees = top.parent()?;
+    let claude = worktrees.parent()?;
+    (worktrees.file_name()? == "worktrees" && claude.file_name()? == ".claude" && safe_id(id))
+        .then(|| id.to_owned())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum MakerSlice {
+    NoRecord,
+    Known(String),
+    Unknown,
+}
+
+// The call that launched the agent, and then the start of that same call: the pairing is exact,
+// in any order of the lines.
+pub(crate) fn maker_slice(log: &str, agent: &str) -> MakerSlice {
+    let records = records(log);
+    let launched = records.iter().find_map(|record| match record {
+        MakerRecord::Launched {
+            session,
+            call,
+            agent: launched,
+        } if launched == agent => Some((session, call)),
+        MakerRecord::Launched { .. } | MakerRecord::Start { .. } | MakerRecord::Maker { .. } => {
+            None
+        }
+    });
+    if let Some((launched_session, launched_call)) = launched {
+        let start = records.iter().find_map(|record| match record {
+            MakerRecord::Start {
+                session,
+                call,
+                branch,
+            } if session == launched_session && call == launched_call => Some(branch),
+            MakerRecord::Start { .. }
+            | MakerRecord::Launched { .. }
+            | MakerRecord::Maker { .. } => None,
+        });
+        return start.map_or(MakerSlice::Unknown, |branch| {
+            MakerSlice::Known(branch.clone())
+        });
+    }
+    let started = records
+        .iter()
+        .any(|record| matches!(record, MakerRecord::Maker { agent: made, .. } if made == agent));
+    if started {
+        MakerSlice::Unknown
+    } else {
+        MakerSlice::NoRecord
+    }
+}
+
+// A SubagentStart of an agent the log already knows as a maker, outside its own worktree: a resume.
+pub(crate) fn resumed_away(log: &str, agent: &str, cwd: &Path) -> bool {
+    maker_slice(log, agent) != MakerSlice::NoRecord
+        && agent_of_worktree(cwd).as_deref() != Some(agent)
+}
+
+// A start that no launch has claimed: a foreground maker, whose launch is told only when it ends,
+// or a start whose launch line was lost.
+fn unpaired_start(log: &str, branch: &str) -> bool {
+    let records = records(log);
+    records.iter().any(|record| match record {
+        MakerRecord::Start {
+            session,
+            call,
+            branch: named,
+        } if named == branch => !records.iter().any(|other| {
+            matches!(other, MakerRecord::Launched { session: s, call: c, .. } if s == session && c == call)
+        }),
+        MakerRecord::Start { .. } | MakerRecord::Launched { .. } | MakerRecord::Maker { .. } => {
+            false
+        }
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CommitVerdict {
+    Pass,
+    Warn(String),
+    Refuse(String),
+}
+
+const UNKNOWN_SLICE: &str = "not checked: this maker's slice branch is not known; start it again with run_in_background (docs/claude-code.md, Parallel makers)";
+
+fn refusal(branch: &str) -> String {
+    format!(
+        "this worktree is shipit:maker's for {branch}; commit there: git switch {branch} (docs/claude-code.md, Parallel makers)"
+    )
+}
+
+fn unpaired(branch: &str) -> String {
+    format!(
+        "not checked: no maker record names this worktree, but a maker was started for {branch} (docs/claude-code.md, Parallel makers)"
+    )
+}
+
+// The only refusal is a known maker's worktree off its known slice branch; every doubt passes,
+// silent or with a warning.
+pub(crate) fn commit_verdict(top: &Path, branch: Option<&str>, log: Option<&str>) -> CommitVerdict {
+    let (Some(agent), Some(log)) = (agent_of_worktree(top), log) else {
+        return CommitVerdict::Pass;
+    };
+    match maker_slice(log, &agent) {
+        MakerSlice::Known(slice) if branch == Some(slice.as_str()) => CommitVerdict::Pass,
+        MakerSlice::Known(slice) => CommitVerdict::Refuse(refusal(&slice)),
+        MakerSlice::Unknown => CommitVerdict::Warn(UNKNOWN_SLICE.to_owned()),
+        MakerSlice::NoRecord => match branch.filter(|named| unpaired_start(log, named)) {
+            Some(named) => CommitVerdict::Warn(unpaired(named)),
+            None => CommitVerdict::Pass,
+        },
+    }
+}
+
+pub(crate) fn subagent_context(text: &str) -> String {
+    serde_json::json!({
+        "hookSpecificOutput": {
+            "hookEventName": "SubagentStart",
+            "additionalContext": text,
+        }
+    })
+    .to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;
+    use std::path::PathBuf;
 
     use super::*;
 
@@ -451,6 +649,285 @@ mod tests {
             prop_assert_eq!(is_stale(Some(&text), at + age), age > 7 * 24 * 60 * 60);
             prop_assert!(!is_stale(None, at + age));
             prop_assert!(!is_stale(Some("not a time"), at + age));
+        }
+    }
+
+    fn word() -> impl Strategy<Value = String> {
+        "[a-z0-9]{1,8}"
+    }
+
+    fn slice_branch() -> impl Strategy<Value = String> {
+        "slice/[a-z]{1,4}/[a-z]{1,6}"
+    }
+
+    fn maker_record() -> impl Strategy<Value = MakerRecord> {
+        prop_oneof![
+            (word(), word(), slice_branch()).prop_map(|(session, call, branch)| {
+                MakerRecord::Start {
+                    session,
+                    call,
+                    branch,
+                }
+            }),
+            (word(), word(), word()).prop_map(|(session, call, agent)| MakerRecord::Launched {
+                session,
+                call,
+                agent
+            }),
+            (word(), word()).prop_map(|(session, agent)| MakerRecord::Maker { session, agent }),
+        ]
+    }
+
+    fn log_of(records: &[MakerRecord]) -> String {
+        records.iter().map(record_line).collect()
+    }
+
+    // What the hooks wrote for one call of a lead. A decoy is the start of the same call in
+    // another session.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Line {
+        Start,
+        Decoy,
+        Launched,
+        Maker,
+    }
+
+    #[derive(Debug, Clone)]
+    struct Call {
+        session: &'static str,
+        branch: String,
+        lines: Vec<Line>,
+    }
+
+    impl Call {
+        fn has(&self, line: Line) -> bool {
+            self.lines.contains(&line)
+        }
+    }
+
+    fn call() -> impl Strategy<Value = Call> {
+        (
+            proptest::sample::select(vec!["s1", "s2"]),
+            slice_branch(),
+            proptest::sample::subsequence(
+                vec![Line::Start, Line::Decoy, Line::Launched, Line::Maker],
+                0..=4,
+            ),
+        )
+            .prop_map(|(session, branch, lines)| Call {
+                session,
+                branch,
+                lines,
+            })
+    }
+
+    fn lines_of_calls(calls: &[Call]) -> Vec<MakerRecord> {
+        let mut records = Vec::new();
+        for (at, call) in calls.iter().enumerate() {
+            let (id, agent) = (format!("t{at}"), format!("ag{at}"));
+            let session = call.session.to_owned();
+            let other = if call.session == "s1" { "s2" } else { "s1" };
+            for line in &call.lines {
+                records.push(match line {
+                    Line::Start => MakerRecord::Start {
+                        session: session.clone(),
+                        call: id.clone(),
+                        branch: call.branch.clone(),
+                    },
+                    Line::Decoy => MakerRecord::Start {
+                        session: other.to_owned(),
+                        call: id.clone(),
+                        branch: "slice/zz/decoy".to_owned(),
+                    },
+                    Line::Launched => MakerRecord::Launched {
+                        session: session.clone(),
+                        call: id.clone(),
+                        agent: agent.clone(),
+                    },
+                    Line::Maker => MakerRecord::Maker {
+                        session: session.clone(),
+                        agent: agent.clone(),
+                    },
+                });
+            }
+        }
+        records
+    }
+
+    fn small_record() -> impl Strategy<Value = MakerRecord> {
+        let session = || proptest::sample::select(vec!["s1", "s2"]).prop_map(str::to_owned);
+        let call = || proptest::sample::select(vec!["c1", "c2", "c3"]).prop_map(str::to_owned);
+        let agent = || proptest::sample::select(vec!["a1", "a2"]).prop_map(str::to_owned);
+        let branch =
+            || proptest::sample::select(vec!["slice/g/x", "slice/g/y"]).prop_map(str::to_owned);
+        prop_oneof![
+            (session(), call(), branch()).prop_map(|(session, call, branch)| MakerRecord::Start {
+                session,
+                call,
+                branch
+            }),
+            (session(), call(), agent()).prop_map(|(session, call, agent)| {
+                MakerRecord::Launched {
+                    session,
+                    call,
+                    agent,
+                }
+            }),
+            (session(), agent()).prop_map(|(session, agent)| MakerRecord::Maker { session, agent }),
+        ]
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            failure_persistence: None,
+            ..ProptestConfig::default()
+        })]
+
+        #[test]
+        fn maker_records_round_trip(
+            record in maker_record(),
+            junk in "[a-z ]{0,10}",
+            agent in word(),
+        ) {
+            let line = record_line(&record);
+            prop_assert!(line.ends_with('\n'));
+            prop_assert_eq!(line.lines().count(), 1);
+            prop_assert_eq!(parse_record(line.trim_end()), Some(record));
+            // a line that is not a record is not read, and the lines around it still are
+            prop_assert_eq!(parse_record(&junk), None);
+            prop_assert_eq!(
+                maker_slice(&format!("{junk}\n{line}"), &agent),
+                maker_slice(&line, &agent)
+            );
+        }
+
+        #[test]
+        fn branch_line_reads_one_name(
+            free in proptest::collection::vec("[a-z ]{0,10}", 0..3),
+            first in "[a-z][a-z/0-9-]{0,10}",
+            second in "[a-z][a-z/0-9-]{0,10}",
+            times in 1_usize..4,
+            stops in proptest::collection::vec(any::<bool>(), 3),
+        ) {
+            let free = free.join("\n");
+            prop_assert_eq!(branch_line(&free), Ok(None));
+            let named: Vec<String> = stops
+                .iter()
+                .take(times)
+                .map(|stop| format!("  shipit-branch: {first}{}", if *stop { "." } else { "" }))
+                .collect();
+            let prompt = format!("{free}\n{}\n{free}", named.join("\n"));
+            prop_assert_eq!(branch_line(&prompt), Ok(Some(first.as_str())));
+            if first != second {
+                let two = format!("shipit-branch: {first}\n{free}\nshipit-branch: {second}");
+                prop_assert_eq!(branch_line(&two), Err("the prompt names two branches"));
+            }
+            for empty in ["shipit-branch:", "shipit-branch:   ", "shipit-branch: .."] {
+                let prompt = format!("shipit-branch: {first}\n{empty}");
+                prop_assert_eq!(
+                    branch_line(&prompt),
+                    Err("the shipit-branch line names no branch")
+                );
+            }
+        }
+
+        #[test]
+        fn a_maker_worktree_is_paired_with_its_start_by_call(
+            (calls, shuffled) in proptest::collection::vec(call(), 1..6).prop_flat_map(|calls| {
+                let records = lines_of_calls(&calls);
+                (Just(calls), Just(records).prop_shuffle())
+            }),
+        ) {
+            let log = log_of(&shuffled);
+            for (at, call) in calls.iter().enumerate() {
+                let expected = if call.has(Line::Launched) && call.has(Line::Start) {
+                    MakerSlice::Known(call.branch.clone())
+                } else if call.has(Line::Launched) || call.has(Line::Maker) {
+                    MakerSlice::Unknown
+                } else {
+                    MakerSlice::NoRecord
+                };
+                prop_assert_eq!(maker_slice(&log, &format!("ag{at}")), expected);
+            }
+            prop_assert_eq!(maker_slice(&log, "nobody"), MakerSlice::NoRecord);
+        }
+
+        #[test]
+        fn an_agent_worktree_is_read_from_its_path(
+            parent in "(/[a-z]{1,6}){1,3}",
+            id in "[a-zA-Z0-9_-]{1,20}",
+        ) {
+            let top = |rest: &str| PathBuf::from(format!("{parent}/{rest}"));
+            let own = top(&format!(".claude/worktrees/agent-{id}"));
+            prop_assert_eq!(agent_of_worktree(&own), Some(id.clone()));
+            for other in [
+                format!(".claude/trees/agent-{id}"),
+                format!("claude/worktrees/agent-{id}"),
+                format!(".claude/worktrees/work-{id}"),
+                format!(".claude/worktrees/agent-{id}."),
+                ".claude/worktrees/agent-".to_owned(),
+            ] {
+                prop_assert_eq!(agent_of_worktree(&top(&other)), None, "{}", other);
+            }
+            // a resume is a known maker whose folder is not its own worktree
+            let launched = [
+                MakerRecord::Start { session: "s".to_owned(), call: "c".to_owned(), branch: "slice/g/x".to_owned() },
+                MakerRecord::Launched { session: "s".to_owned(), call: "c".to_owned(), agent: id.clone() },
+            ];
+            let made = [MakerRecord::Maker { session: "s".to_owned(), agent: id.clone() }];
+            for log in [log_of(&launched), log_of(&made)] {
+                prop_assert!(!resumed_away(&log, &id, &own));
+                prop_assert!(resumed_away(&log, &id, Path::new(&parent)));
+                prop_assert!(resumed_away(&log, &id, &top(".claude/worktrees/agent-other.")));
+            }
+            prop_assert!(!resumed_away("", &id, Path::new(&parent)));
+            prop_assert!(!resumed_away(&log_of(&launched), "nobody", Path::new(&parent)));
+        }
+
+        #[test]
+        fn the_commit_verdict_refuses_only_a_known_maker_off_its_branch(
+            top in prop_oneof![
+                proptest::sample::select(vec!["a1", "a2", "a3"])
+                    .prop_map(|id| PathBuf::from(format!("/r/.claude/worktrees/agent-{id}"))),
+                Just(PathBuf::from("/r")),
+                Just(PathBuf::from("/r/.claude/worktrees/other")),
+            ],
+            branch in proptest::option::of(proptest::sample::select(vec!["slice/g/x", "slice/g/y", "main"])),
+            records in proptest::option::of(proptest::collection::vec(small_record(), 0..8)),
+        ) {
+            let log = records.as_deref().map(log_of);
+            let verdict = commit_verdict(&top, branch, log.as_deref());
+            let launched_for = |session: &String, call: &String| {
+                records.iter().flatten().any(|other| {
+                    matches!(other, MakerRecord::Launched { session: s, call: c, .. } if s == session && c == call)
+                })
+            };
+            let names_unpaired = |wanted: &str| {
+                records.iter().flatten().any(|record| {
+                    matches!(record, MakerRecord::Start { session, call, branch }
+                        if branch == wanted && !launched_for(session, call))
+                })
+            };
+            let slice = agent_of_worktree(&top)
+                .zip(log.as_deref())
+                .map(|(agent, log)| maker_slice(log, &agent));
+            let refuse = matches!(&slice, Some(MakerSlice::Known(b)) if branch != Some(b.as_str()));
+            let warn = match &slice {
+                Some(MakerSlice::Unknown) => true,
+                Some(MakerSlice::NoRecord) => branch.is_some_and(names_unpaired),
+                Some(MakerSlice::Known(_)) | None => false,
+            };
+            match (&verdict, &slice) {
+                (CommitVerdict::Refuse(text), Some(MakerSlice::Known(b))) => {
+                    prop_assert!(refuse);
+                    prop_assert_eq!(text.matches(b.as_str()).count(), 2);
+                }
+                (CommitVerdict::Warn(_), _) => prop_assert!(warn),
+                (CommitVerdict::Pass, _) => prop_assert!(!refuse && !warn),
+                (CommitVerdict::Refuse(_), _) => prop_assert!(false, "a refusal without a known maker"),
+            }
+            prop_assert_eq!(matches!(verdict, CommitVerdict::Warn(_)), warn);
+            prop_assert_eq!(matches!(verdict, CommitVerdict::Refuse(_)), refuse);
         }
     }
 

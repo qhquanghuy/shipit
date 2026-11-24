@@ -259,16 +259,29 @@ hook_table() {
   jq -c '[.hooks.PreToolUse[] | [.matcher, [.hooks[].args[0]]]]' "${1:-$PLUGIN/hooks/hooks.json}"
 }
 
+# post_tool_use_ok <hooks file>: PostToolUse runs only the agent count, on Agent|Task, and never blocks.
+post_tool_use_ok() {
+  jq -e '.hooks.PostToolUse == [{matcher: "Agent|Task", hooks: [{type: "command", command: "${CLAUDE_PLUGIN_ROOT}/bin/shipit", args: ["claude-agent-count"], timeout: 10, onFailure: "continue"}]}]' "$1"
+}
+
 @test "the hook table holds only the agent gate and the install gate before a tool runs, and no hook on an event that can refuse" {
   local hooks=$PLUGIN/hooks/hooks.json broken=$BATS_TEST_TMPDIR/hooks.json
   [ "$(hook_table)" = '[["Agent|Task",["claude-agent-gate"]],["Bash|Monitor",["claude-install-gate"]]]' ]
-  # No other event: PermissionRequest, UserPromptSubmit and PostToolUse can refuse or block, and have no hook.
-  [ "$(jq -c '.hooks | keys' "$hooks")" = '["PostToolUseFailure","PreToolUse","SessionStart","Stop","SubagentStart","SubagentStop"]' ]
+  # No other event: PermissionRequest and UserPromptSubmit can refuse or block, and have no hook; PostToolUse
+  # runs only the agent count, on Agent|Task, and never blocks.
+  [ "$(jq -c '.hooks | keys' "$hooks")" = '["PostToolUse","PostToolUseFailure","PreToolUse","SessionStart","Stop","SubagentStart","SubagentStop"]' ]
+  post_tool_use_ok "$hooks"
+  jq '.hooks.PostToolUse[0].hooks[0].args = ["claude-form-gate"]' "$hooks" >"$broken"
+  run post_tool_use_ok "$broken"
+  [ "$status" -ne 0 ]
+  jq '.hooks.PostToolUse[0].hooks[0].onFailure = "block"' "$hooks" >"$broken"
+  run post_tool_use_ok "$broken"
+  [ "$status" -ne 0 ]
   # Stop and SubagentStop can block too: there only the agent count runs, and it never blocks.
   jq -e '[.hooks.Stop[], .hooks.SubagentStop[] | .hooks[] | .args[0] == "claude-agent-count" and .onFailure == "continue"] | all' "$hooks"
   # A gate added with no matcher runs on every tool: the table shows it.
   jq '.hooks.PreToolUse += [{hooks: [{type: "command", command: "x", args: ["claude-form-gate"], timeout: 10, onFailure: "block"}]}]' "$hooks" >"$broken"
   [ "$(hook_table "$broken")" != '[["Agent|Task",["claude-agent-gate"]],["Bash|Monitor",["claude-install-gate"]]]' ]
   jq '.hooks.PermissionRequest = [{hooks: [{type: "command", command: "x", args: ["claude-form-gate"], timeout: 10, onFailure: "block"}]}]' "$hooks" >"$broken"
-  [ "$(jq -c '.hooks | keys' "$broken")" != '["PostToolUseFailure","PreToolUse","SessionStart","Stop","SubagentStart","SubagentStop"]' ]
+  [ "$(jq -c '.hooks | keys' "$broken")" != '["PostToolUse","PostToolUseFailure","PreToolUse","SessionStart","Stop","SubagentStart","SubagentStop"]' ]
 }
