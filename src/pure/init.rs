@@ -42,17 +42,32 @@ pub(crate) fn choose_base(
         .or_else(|| unborn.and_then(BranchName::parse))
 }
 
-// `pack` is the model pack's `[agents]` table. The base is quoted as a JSON string, which is a
-// TOML string too.
-pub(crate) fn starting_setup(base: &BranchName, pack: &str) -> String {
+// Only a runner whose passed lines shipit coverage reads (libtest, nextest, TAP) and whose command is certain.
+pub(crate) fn test_check(top_files: &[String]) -> Option<&'static str> {
+    top_files
+        .iter()
+        .any(|name| name == "Cargo.toml")
+        .then_some("shipit coverage -- cargo test")
+}
+
+// `pack` is the model pack's `[agents]` table. The base and the check line are quoted as JSON
+// strings, which are TOML strings too.
+pub(crate) fn starting_setup(base: &BranchName, pack: &str, check: Option<&str>) -> String {
     let base = json_string(base.as_str());
+    let check = match check {
+        Some(line) => format!(
+            "check = [{}]  # your check commands, in order; shipit coverage confirms the tests the done-when maps name",
+            json_string(line)
+        ),
+        None => "check = []  # your check commands, in order; wrap the test run as \"shipit coverage -- <test command>\"".to_owned(),
+    };
     format!(
         "version = 1\n\
          \n\
          [gate]\n\
          base = {base}\n\
          max_files = 60\n\
-         check = []  # your check commands, in order\n\
+         {check}\n\
          \n\
          [gate.environment]\n\
          prefix = []  # for example [\"nix\", \"develop\", \"--command\"]\n\
@@ -113,7 +128,7 @@ pub(crate) enum Start {
     Pushed,
 }
 
-pub(crate) fn next_lines(base: &BranchName, start: Start) -> Vec<String> {
+pub(crate) fn next_lines(base: &BranchName, start: Start, wrote_check: bool) -> Vec<String> {
     let mut lines = Vec::new();
     match start {
         Start::NoCommits => lines.push(format!(
@@ -128,8 +143,15 @@ pub(crate) fn next_lines(base: &BranchName, start: Start) -> Vec<String> {
         "Next: the owner creates .claude/settings.json with the permission list of the README (an agent cannot write that file); then commit it alone on adopt/settings: the owner pushes it and opens pull request 1."
             .to_owned(),
     );
+    let check_step = if wrote_check {
+        format!(
+            "add your other checks to check in {SETUP_PATH} (the test run is there, wrapped in shipit coverage)"
+        )
+    } else {
+        format!("fill in check in {SETUP_PATH}")
+    };
     lines.push(format!(
-        "After it merges: on adopt/setup, made from the updated {base}, fill in check in {SETUP_PATH} and commit that file alone; shipit check; the owner pushes it and opens pull request 2 (the setup file only)."
+        "After it merges: on adopt/setup, made from the updated {base}, {check_step} and commit that file alone; shipit check; the owner pushes it and opens pull request 2 (the setup file only)."
     ));
     lines.push(
         "After it merges: on adopt/ci, shipit init --ci-job, set SHIPIT_COMMIT to a ShipIt commit hash; the owner pushes it and opens pull request 3 (the CI job only)."
@@ -187,14 +209,28 @@ mod tests {
         })]
 
         #[test]
-        fn starting_setup_parses_for_any_base(base in base_name()) {
-            let text = starting_setup(&base, pack());
+        fn starting_setup_parses_for_any_base(
+            base in base_name(),
+            files in proptest::collection::vec("[A-Za-z.]{1,10}", 0..4),
+            cargo in any::<bool>(),
+        ) {
+            let mut files = files;
+            if cargo {
+                files.push("Cargo.toml".to_owned());
+            }
+            let text = starting_setup(&base, pack(), test_check(&files));
             prop_assert!(text.contains("\nexample_max_lines = 15\n"));
             let setup = parsed(&text);
             prop_assert_eq!(setup.pointer("/gate/base"), Some(&json!(base.as_str())));
             prop_assert_eq!(setup.pointer("/gate/max_files"), Some(&json!(60)));
             prop_assert_eq!(setup.pointer("/agents/parallel/slices"), Some(&json!(3)));
             prop_assert_eq!(setup.pointer("/agents/parallel/agents"), Some(&json!(4)));
+            let wanted = if files.iter().any(|name| name == "Cargo.toml") {
+                json!(["shipit coverage -- cargo test"])
+            } else {
+                json!([])
+            };
+            prop_assert_eq!(setup.pointer("/gate/check"), Some(&wanted));
         }
 
         #[test]
@@ -246,13 +282,16 @@ mod tests {
         }
 
         #[test]
-        fn the_next_lines_name_three_pull_requests_settings_first(base in base_name()) {
-            let common = next_lines(&base, Start::Pushed);
+        fn the_next_lines_name_three_pull_requests_settings_first(
+            base in base_name(),
+            wrote in any::<bool>(),
+        ) {
+            let common = next_lines(&base, Start::Pushed, wrote);
             prop_assert_eq!(common.len(), 4);
-            let none = next_lines(&base, Start::NoCommits);
+            let none = next_lines(&base, Start::NoCommits, wrote);
             prop_assert!(none.first().is_some_and(|line| line.starts_with("No commits yet: ")));
             prop_assert_eq!(none.get(1..), Some(common.as_slice()));
-            let unpushed = next_lines(&base, Start::NoOrigin);
+            let unpushed = next_lines(&base, Start::NoOrigin, wrote);
             prop_assert!(unpushed.first().is_some_and(|line| line.starts_with("No origin/")));
             prop_assert_eq!(unpushed.get(1..), Some(common.as_slice()));
             let at = |needle: &str| common.iter().position(|line| line.contains(needle));
@@ -270,6 +309,12 @@ mod tests {
             let named = common.get(1).is_some_and(|line| line.contains(&from_updated));
             prop_assert!(named);
             prop_assert!(common.iter().all(|line| !line.contains("as a normal slice")));
+            let setup_line = common.get(1).map(String::as_str).unwrap_or_default();
+            prop_assert_eq!(setup_line.contains("fill in check in"), !wrote);
+            prop_assert_eq!(
+                setup_line.contains("the test run is there, wrapped in shipit coverage"),
+                wrote
+            );
         }
 
         #[test]
@@ -318,7 +363,7 @@ mod tests {
 
     #[test]
     fn the_pack_values_reach_the_setup() {
-        let setup = parsed(&starting_setup(&name("main"), pack()));
+        let setup = parsed(&starting_setup(&name("main"), pack(), None));
         assert_eq!(setup.pointer("/agents/effort_cap"), Some(&json!("high")));
         assert_eq!(setup.pointer("/agents/roles/maker/tier"), Some(&json!(2)));
         assert_eq!(setup.pointer("/agents/roles/planner/tier"), Some(&json!(3)));

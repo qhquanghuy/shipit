@@ -89,6 +89,15 @@ foreign_hook() {
   [ "$status" -eq 0 ]
 }
 
+@test "init: a Cargo project gets its test run wrapped in shipit coverage" {
+  new_repo
+  : >Cargo.toml
+  run "$SHIPIT_BIN" init --no-hook
+  [ "$status" -eq 0 ]
+  grep -qF 'check = ["shipit coverage -- cargo test"]' .config/shipit.toml
+  [[ $output == *"add your other checks to check in .config/shipit.toml"* ]]
+}
+
 @test "init: the three adoption pull requests can be followed in order" {
   new_project
   run "$SHIPIT_BIN" init
