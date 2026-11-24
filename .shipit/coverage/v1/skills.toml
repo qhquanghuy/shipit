@@ -12,5 +12,4 @@ DW11 = [
   "skills: a bug fix starts with a failing test committed before the fix",
   "an agent file holds a description, no model and no effort, and only the slice agent may start agents",
   "everything the reference docs name exists in the code",
-  "claude skills: every git and gh command a skill shows passes the ship gate",
 ]

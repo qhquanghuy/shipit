@@ -7,8 +7,6 @@ DW17 = [
   "a_replacing_put_swaps_the_whole_file_and_never_follows_a_link",
   "a_link_on_the_way_into_the_store_is_refused",
   "dollar_question_is_text_and_any_other_dollar_is_unreadable",
-  "an_unreadable_command_is_asked_about_with_its_cause",
-  "the_goals_folder_may_be_named_without_its_slash_and_read_with_diff",
   "store put: a build plan lands where receipt and status read it, and its path is printed",
   "store put: a build plan is replaced while the slice is not started",
   "store put: after the start a build plan is never replaced",

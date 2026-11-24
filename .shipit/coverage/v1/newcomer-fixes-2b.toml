@@ -1,13 +1,8 @@
 DW17 = [
-  "a_move_is_found_with_its_folder_and_trailer_and_a_wrapped_one_is_unreadable",
-  "the_author_verdict_follows_the_table",
   "every_commit_of_the_work_must_carry_a_makers_or_owners_trailer",
   "a_maker_starts_at_the_setups_maker_rank_or_its_stand_in",
   "receipt: the author of the work is the setup's maker",
   "receipt: a commit of the work without a trailer is refused, for a slice started under the rule only",
   "start: the start entry carries the author rule",
-  "ship gate: on a slice branch only the maker moves the work, with its trailer",
-  "ship gate: on a slice branch only the maker edits what git would commit",
   "agent gate: a maker starts on a slice branch at the setup's maker rank",
-  "skills: the maker's commit form is the one the gate wants",
 ]

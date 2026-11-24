@@ -1,20 +1,19 @@
 // What the hooks of Claude Code hand in and expect back: the part of a hook event the gates
 // read, and the one decision object they may print. Only the fields an event needs are read.
 
-use std::path::{Component, Path, PathBuf};
+use std::path::PathBuf;
 
 use serde_json::{Value, json};
 
 use crate::pure::agent_ledger::safe_id;
-use crate::pure::branch::is_slice_branch;
-use crate::pure::ship_gate::{Answer, Mode};
+use crate::pure::rank::effort_name;
+use crate::pure::setup::Setup;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct HookInput {
     pub(crate) tool_name: Option<String>,
     pub(crate) tool_input: Option<Value>,
     pub(crate) cwd: PathBuf,
-    pub(crate) mode: Mode,
     pub(crate) event: String,
     pub(crate) session_id: Option<String>,
     pub(crate) tool_use_id: Option<String>,
@@ -39,7 +38,6 @@ pub(crate) fn parse_input(bytes: &[u8]) -> Result<HookInput, String> {
         tool_name: text("tool_name"),
         tool_input: object.get("tool_input").cloned(),
         cwd: PathBuf::from(cwd),
-        mode: Mode::parse(text("permission_mode").as_deref().unwrap_or("")),
         event: text("hook_event_name").unwrap_or_default(),
         session_id: text("session_id"),
         tool_use_id: text("tool_use_id"),
@@ -58,10 +56,15 @@ pub(crate) fn parse_input(bytes: &[u8]) -> Result<HookInput, String> {
     })
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Answer {
+    Pass,
+    Deny(String),
+}
+
 pub(crate) fn answer_json(answer: &Answer) -> Option<String> {
     let (decision, reason) = match answer {
         Answer::Pass => return None,
-        Answer::Ask(reason) => ("ask", reason),
         Answer::Deny(reason) => ("deny", reason),
     };
     Some(
@@ -149,64 +152,78 @@ pub(crate) fn agent_call(input: &HookInput) -> bool {
     matches!(input.tool_name.as_deref(), Some("Agent" | "Task"))
 }
 
-// The path with its `.` and `..` parts taken out, as written: where the path leads, whatever the
-// folders hold.
-pub(crate) fn normalize(path: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for part in path.components() {
-        match part {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                out.pop();
-            }
-            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => out.push(part),
+pub(crate) const MAKER: &str = "shipit:maker";
+
+pub(crate) const NO_SLICE_FOLDER: &str = "ShipIt: shipit:maker works in the slice's worktree, and this Claude Code cannot start an agent in another folder: run the slice in a session opened in its worktree (docs/claude-code.md, Sessions).";
+
+// The setup's maker as a start is judged: its model, its effort when the setup gives one, and the
+// stand-in of its tier. The effort is the receipt's word when the setup gives none.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MakerRank {
+    pub(crate) model: String,
+    pub(crate) effort: Option<String>,
+    pub(crate) stand_in: Option<(String, String)>,
+}
+
+pub(crate) fn maker_rank(setup: &Setup) -> Option<MakerRank> {
+    let role = &setup.agents.roles.maker;
+    let tier = setup
+        .agents
+        .tiers
+        .iter()
+        .find(|tier| u64::from(&tier.tier) == u64::from(&role.tier))?;
+    Some(MakerRank {
+        model: tier.model.as_str().to_owned(),
+        effort: role.effort.map(|effort| effort_name(effort).to_owned()),
+        stand_in: tier.stand_in.as_ref().map(|stand_in| {
+            (
+                stand_in.model.as_str().to_owned(),
+                effort_name(stand_in.effort).to_owned(),
+            )
+        }),
+    })
+}
+
+fn not_at_rank(maker: &MakerRank) -> String {
+    let effort = maker
+        .effort
+        .as_ref()
+        .map(|effort| format!(" and effort \"{effort}\""))
+        .unwrap_or_default();
+    format!(
+        "ShipIt: start shipit:maker with model \"{}\"{effort}, the setup's maker (agents.roles.maker), or its stand-in: the receipts name that rank as the author.",
+        maker.model
+    )
+}
+
+// None for an agent that is not the maker. For a maker: Ok when it starts at the setup's maker rank
+// or its stand-in, else the denial. The call's `cwd` is not read. The rank is read only for a
+// maker, and a setup that cannot be read is that denial.
+pub(crate) fn maker_start(
+    tool_input: &Value,
+    maker: impl FnOnce() -> Result<MakerRank, String>,
+) -> Option<Result<(), String>> {
+    let text = |key: &str| tool_input.get(key).and_then(Value::as_str);
+    if text("subagent_type") != Some(MAKER) {
+        return None;
+    }
+    Some(maker().and_then(|rank| {
+        let (model, effort) = (text("model"), text("effort"));
+        let own = model == Some(rank.model.as_str())
+            && rank
+                .effort
+                .as_deref()
+                .is_none_or(|want| effort == Some(want));
+        let stand_in = rank
+            .stand_in
+            .as_ref()
+            .is_some_and(|(m, e)| model == Some(m.as_str()) && effort == Some(e.as_str()));
+        if own || stand_in {
+            Ok(())
+        } else {
+            Err(not_at_rank(&rank))
         }
-    }
-    out
-}
-
-// A folder the reader gives as `~/x` is the home folder's; with no home it stays under the working
-// folder, where it names nothing and so no project.
-pub(crate) fn resolve(cwd: &Path, home: Option<&Path>, dir: Option<&str>) -> PathBuf {
-    let Some(dir) = dir else {
-        return cwd.to_path_buf();
-    };
-    match (dir.strip_prefix("~/"), home) {
-        (Some(under), Some(home)) => home.join(under),
-        (Some(_) | None, Some(_) | None) => cwd.join(dir),
-    }
-}
-
-const MCP_SHIP_WORDS: [&str; 3] = ["merge", "create_release", "create_tag"];
-const MCP_FILE_WRITES: [&str; 5] = [
-    "create_or_update_file",
-    "delete_file",
-    "push_files",
-    "update_file",
-    "write_file",
-];
-const MCP_READS: [&str; 6] = ["get_", "list_", "read_", "search_", "fetch_", "find_"];
-
-// A tool of an MCP server that ships: one whose name says it merges, releases, tags or pushes,
-// or that writes to a branch (a file write, or any tool that is given a `branch` and is not a
-// read) unless that branch is a slice branch. A write that names no branch asks too.
-pub(crate) fn mcp_ship(tool_name: &str, tool_input: Option<&Value>) -> Option<String> {
-    let rest = tool_name.strip_prefix("mcp__")?;
-    let tool = rest.rsplit("__").next().unwrap_or(rest);
-    let calls = || Some(format!("calls {tool_name}"));
-    if MCP_SHIP_WORDS.iter().any(|word| tool.contains(word)) {
-        return calls();
-    }
-    let branch = tool_input.and_then(|input| input.get("branch"));
-    let reads = MCP_READS.iter().any(|prefix| tool.starts_with(prefix));
-    let writes_a_branch =
-        MCP_FILE_WRITES.iter().any(|word| tool.contains(word)) || (branch.is_some() && !reads);
-    if writes_a_branch {
-        let slice = branch.and_then(Value::as_str).is_some_and(is_slice_branch);
-        return (!slice)
-            .then(|| format!("calls {tool_name} for a branch that is not a slice branch"));
-    }
-    if tool.contains("push") { calls() } else { None }
+    }))
 }
 
 #[cfg(test)]
@@ -220,7 +237,6 @@ mod tests {
             tool_name: Some(tool.to_owned()),
             tool_input: Some(tool_input),
             cwd: PathBuf::from("/r"),
-            mode: Mode::Auto,
             event: String::new(),
             session_id: None,
             tool_use_id: None,
@@ -231,45 +247,30 @@ mod tests {
         }
     }
 
+    const MODELS: [&str; 3] = ["sonnet", "opus", "fable"];
+    const EFFORTS: [&str; 3] = ["low", "medium", "high"];
+
+    fn rank() -> impl Strategy<Value = MakerRank> {
+        (
+            proptest::sample::select(MODELS.to_vec()),
+            proptest::option::of(proptest::sample::select(EFFORTS.to_vec())),
+            proptest::option::of((
+                proptest::sample::select(MODELS.to_vec()),
+                proptest::sample::select(EFFORTS.to_vec()),
+            )),
+        )
+            .prop_map(|(model, effort, stand_in)| MakerRank {
+                model: model.to_owned(),
+                effort: effort.map(str::to_owned),
+                stand_in: stand_in.map(|(model, effort)| (model.to_owned(), effort.to_owned())),
+            })
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig {
             failure_persistence: None,
             ..ProptestConfig::default()
         })]
-
-        #[test]
-        fn a_path_is_normalized_to_where_it_leads(
-            parts in proptest::collection::vec("[a-z]{1,4}", 1..5),
-            detours in proptest::collection::vec(("[a-z]{1,4}", 0..5_usize), 0..4),
-        ) {
-            let clean: PathBuf = std::iter::once("/".to_owned()).chain(parts.iter().cloned()).collect();
-            let mut text = parts.clone();
-            for (name, at) in &detours {
-                let at = at % (text.len() + 1);
-                text.splice(at..at, [name.clone(), "..".to_owned(), ".".to_owned()]);
-            }
-            let written: PathBuf = std::iter::once("/".to_owned()).chain(text).collect();
-            prop_assert_eq!(normalize(&written), clean);
-        }
-
-        #[test]
-        fn a_folder_is_read_from_the_cwd_and_joined_with_a_relative_dir(
-            cwd in "/[a-z]{1,6}(/[a-z]{1,6}){0,2}",
-            dir in "[a-z]{1,6}(/[a-z]{1,6}){0,2}",
-            home in "/[a-z]{1,6}",
-        ) {
-            let base = Path::new(&cwd);
-            let at_home = Path::new(&home);
-            for home in [None, Some(at_home)] {
-                prop_assert_eq!(resolve(base, home, None), base.to_path_buf());
-                prop_assert_eq!(resolve(base, home, Some(&dir)), base.join(&dir));
-                prop_assert_eq!(resolve(base, home, Some("/abs")), PathBuf::from("/abs"));
-            }
-            // `~/x` is the home folder's, and without a home it names nothing under the cwd.
-            let tilde = format!("~/{dir}");
-            prop_assert_eq!(resolve(base, Some(at_home), Some(&tilde)), at_home.join(&dir));
-            prop_assert_eq!(resolve(base, None, Some(&tilde)), base.join(&tilde));
-        }
 
         #[test]
         fn only_a_missing_or_non_string_cwd_or_non_json_is_refused(
@@ -373,58 +374,49 @@ mod tests {
         }
 
         #[test]
-        fn mcp_names_that_say_merge_release_tag_or_push_are_ship_tools(
-            server in "[a-z]{1,6}",
-            tool in "[a-z_]{1,16}",
+        fn a_maker_starts_at_the_setups_maker_rank_or_its_stand_in(
+            rank in rank(),
+            kind in proptest::sample::select(vec![MAKER, "shipit:reader"]),
+            model in proptest::option::of(proptest::sample::select(MODELS.to_vec())),
+            effort in proptest::option::of(proptest::sample::select(EFFORTS.to_vec())),
         ) {
-            prop_assume!(!["file", "update", "write", "delete"].iter().any(|word| tool.contains(word)));
-            let name = format!("mcp__{server}__{tool}");
-            let ship = ["merge", "create_release", "create_tag", "push"]
-                .iter()
-                .any(|word| tool.contains(word));
-            prop_assert_eq!(mcp_ship(&name, None), ship.then(|| format!("calls {name}")));
-            prop_assert_eq!(mcp_ship(&format!("Bash{tool}"), None), None);
-            prop_assert_eq!(mcp_ship(&format!("{server}__merge"), None), None);
-        }
-
-        #[test]
-        fn an_mcp_write_to_a_branch_asks_unless_the_branch_is_a_slice_branch(
-            goal in "[a-z]{1,5}",
-            slice in "[a-z]{1,5}",
-            other in "[a-z]{1,6}",
-            tool in prop_oneof![
-                Just("create_or_update_file"), Just("delete_file"), Just("push_files"),
-                Just("update_file"), Just("write_file"), Just("edit_things"), Just("create_branch"),
-            ],
-        ) {
-            let name = format!("mcp__github__{tool}");
-            let on = |branch: Value| mcp_ship(&name, Some(&json!({"branch": branch})));
-            prop_assert_eq!(on(json!(format!("slice/{goal}/{slice}"))), None);
-            prop_assert!(on(json!("main")).is_some());
-            prop_assert!(on(json!(other)).is_some());
-            prop_assert!(on(json!(7)).is_some());
-            let file_tool = !matches!(tool, "edit_things" | "create_branch");
-            let asks_without_a_branch = mcp_ship(&name, Some(&json!({"path": "x"}))).is_some();
-            prop_assert_eq!(asks_without_a_branch, file_tool);
-            // A read that is given a branch is not a write.
-            for read in ["get_file_contents", "list_commits", "search_code"] {
-                let name = format!("mcp__github__{read}");
-                prop_assert_eq!(mcp_ship(&name, Some(&json!({"branch": "main"}))), None);
+            let mut call = serde_json::json!({ "subagent_type": kind });
+            for (key, value) in [("model", model), ("effort", effort)] {
+                if let Some(value) = value {
+                    call[key] = serde_json::json!(value);
+                }
             }
+            call["cwd"] = serde_json::json!("/anywhere");
+            let own = model == Some(rank.model.as_str())
+                && rank.effort.as_deref().is_none_or(|want| effort == Some(want));
+            let stand_in = rank
+                .stand_in
+                .as_ref()
+                .is_some_and(|(m, e)| model == Some(m.as_str()) && effort == Some(e.as_str()));
+            let wanted = if kind != MAKER {
+                None
+            } else if own || stand_in {
+                Some(Ok(()))
+            } else {
+                Some(Err(not_at_rank(&rank)))
+            };
+            let loaded = rank.clone();
+            prop_assert_eq!(maker_start(&call, move || Ok(loaded)), wanted);
+            let unread = maker_start(&call, || Err("no setup".to_owned()));
+            prop_assert_eq!(unread, (kind == MAKER).then(|| Err("no setup".to_owned())));
         }
     }
 
     #[test]
     fn the_other_fields_are_optional_and_read_when_present() {
-        let input = parse_input(br#"{"cwd":"/r","tool_name":"Bash","permission_mode":"auto","tool_input":{"command":"ls"}}"#)
-            .expect("reads");
+        let input =
+            parse_input(br#"{"cwd":"/r","tool_name":"Bash","tool_input":{"command":"ls"}}"#)
+                .expect("reads");
         assert_eq!(input.tool_name.as_deref(), Some("Bash"));
-        assert_eq!(input.mode, Mode::Auto);
         assert_eq!(input.tool_input, Some(json!({"command": "ls"})));
         let minimal = parse_input(br#"{"cwd":"/r"}"#).expect("reads");
         assert_eq!(minimal.tool_name, None);
         assert_eq!(minimal.tool_input, None);
-        assert_eq!(minimal.mode, Mode::Unknown);
         assert_eq!(minimal.event, "");
         assert_eq!(minimal.session_id, None);
         assert_eq!(minimal.background_subagents, None);
@@ -452,21 +444,16 @@ mod tests {
     #[test]
     fn a_decision_is_exactly_one_object() {
         assert_eq!(answer_json(&Answer::Pass), None);
-        for (answer, decision) in [
-            (Answer::Ask("why".to_owned()), "ask"),
-            (Answer::Deny("why".to_owned()), "deny"),
-        ] {
-            let text = answer_json(&answer).expect("a decision");
-            let value: Value = serde_json::from_str(&text).expect("JSON");
-            assert_eq!(
-                value,
-                json!({"hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": decision,
-                    "permissionDecisionReason": "why",
-                }})
-            );
-            assert!(!text.contains('\n'));
-        }
+        let text = answer_json(&Answer::Deny("why".to_owned())).expect("a decision");
+        let value: Value = serde_json::from_str(&text).expect("JSON");
+        assert_eq!(
+            value,
+            json!({"hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": "why",
+            }})
+        );
+        assert!(!text.contains('\n'));
     }
 }

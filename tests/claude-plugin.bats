@@ -40,11 +40,6 @@ STUB
   chmod +x "$STUBS/nix"
 }
 
-# doc_lines <kind>: the commands of the fenced blocks in docs/claude-code.md marked `sh <kind>`.
-doc_lines() {
-  awk -v kind="$1" '$0 == "```sh " kind { on = 1; next } /^```/ { on = 0 } on' "$PLUGIN/docs/claude-code.md"
-}
-
 @test "the manifests parse and hold their fields" {
   jq -e '.name == "shipit" and (has("version") | not) and .license == "MIT" and (.keywords | length > 0) and (.author.name | length > 0) and (.description | length > 0)' \
     "$PLUGIN/.claude-plugin/plugin.json"
@@ -182,13 +177,13 @@ doc_lines() {
   [[ $stderr == "ShipIt: cannot build the shipit tool."* ]]
 }
 
-@test "the eight agents are named by their files, and the two gated ones are in the hook code" {
+@test "the eight agents are named by their files, and the gated ones are in the hook code" {
   local names
   names=$(cd "$PLUGIN/agents" && printf '%s\n' *.md | sed 's/\.md$//' | sort | tr '\n' ' ')
   [ "$names" = "maker model-scout plan-reviewer reader scout slice tester work-reviewer " ]
   grep -q '"shipit:work-reviewer"' "$PLUGIN/src/pure/claude_hook.rs"
   grep -q '"shipit:tester"' "$PLUGIN/src/pure/claude_hook.rs"
-  run ! grep -q 'const .*"shipit:\(plan-reviewer\|reader\|maker\|scout\|model-scout\|slice\)"' "$PLUGIN/src/pure/claude_hook.rs"
+  run ! grep -q 'const .*"shipit:\(plan-reviewer\|reader\|scout\|model-scout\|slice\)"' "$PLUGIN/src/pure/claude_hook.rs"
 }
 
 @test "an agent file holds a description, no model and no effort, and only the slice agent may start agents" {
@@ -257,25 +252,6 @@ doc_lines() {
   [ "$(grep -c '❯ root: CLAUDE.md at the plugin root' <<<"$output")" -eq 1 ]
   [ "$(grep -c 'Found [0-9]* warning:' <<<"$output")" -eq 3 ]
   grep -q 'agents: shipit:work-reviewer' <<<"$output"
-}
-
-@test "the push form the doc calls silent passes the ship gate, and the forms it says ask do ask" {
-  local repo line
-  repo=$(shipit_repo)
-  cd "$repo"
-  git checkout -q -b slice/v1/demo
-  [ -n "$(doc_lines silent)" ]
-  [ -n "$(doc_lines asks)" ]
-  while IFS= read -r line; do
-    run_hook claude-ship-gate "$(bash_input "$repo" "$line" bypassPermissions)"
-    [ -z "$output" ]
-  done < <(doc_lines silent)
-  while IFS= read -r line; do
-    run_hook claude-ship-gate "$(bash_input "$repo" "$line" auto)"
-    [ "$(decision)" = ask ]
-    run_hook claude-ship-gate "$(bash_input "$repo" "$line" bypassPermissions)"
-    [ "$(decision)" = deny ]
-  done < <(doc_lines asks)
 }
 
 # hook_table [hooks file]: the PreToolUse table, one line: each matcher with the gates it runs.

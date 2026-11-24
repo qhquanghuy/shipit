@@ -2,22 +2,10 @@ DW7 = [
   "branch_line_rules",
 ]
 DW9 = [
-  "only_the_goals_folder_of_the_store_may_be_named_under_dot_git",
-  "harmless_git_reads_and_edits_pass_and_the_forms_that_write_ask",
-  "the_working_folder_and_every_folder_passed_are_judged",
-  "a_shell_given_a_file_is_a_program_nobody_read",
-  "source_reading_a_pipe_or_a_device_is_a_program_nobody_read",
-  "a_command_slot_of_a_text_program_asks",
   "cd_to_a_folder_under_home_is_read_and_any_other_tilde_is_complex",
   "a_segment_reads_stdin_from_a_pipe_or_a_file_and_from_nothing_else",
-  "a_folder_is_read_from_the_cwd_and_joined_with_a_relative_dir",
-  "a cd to a folder under the home folder is read and judged there",
-  "a cd to another folder never takes the working folder out of the judgement",
   "a worktree or a checkout from before the setup file is judged as the project",
   "a repository is a project by its default branch or its store, and not by another branch",
-  "a_git_gh_or_shell_startup_variable_asks_wherever_it_is_set",
   "a start or a resume in a project makes the store folder, and in no other folder nothing",
   "origin's main stands in for the default branch when origin/HEAD is missing and main is gone",
-  "what could empty the rule that a repository is a project asks",
-  "the push form the doc calls silent passes the ship gate, and the forms it says ask do ask",
 ]

@@ -5,15 +5,3 @@ DW7 = [
   "gated_iff_work_reviewer_or_tester",
   "the review gate answers in under one second",
 ]
-DW9 = [
-  "merge_and_release_commands_ask",
-  "push_without_named_slice_asks",
-  "a_base_or_tag_push_names_what_it_reaches",
-  "ship_answer_by_mode",
-  "each ship command asks in auto mode",
-  "slice_push_forms_pass",
-  "a slice-branch push passes",
-  "bypass mode denies a base push",
-  "complete_confirm_asks",
-  "shipit complete with --confirm asks in auto mode and is denied in bypass mode",
-]
