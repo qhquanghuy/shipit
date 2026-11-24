@@ -3,7 +3,6 @@ use std::io::Write;
 use std::path::Path;
 
 use serde::Serialize;
-use serde_json::Value;
 
 use crate::commands::setup::load_setup_table;
 use crate::edge::git::Git;
@@ -17,11 +16,10 @@ use crate::edge::slice_git::{
 use crate::edge::store::{check_receipt_path, read_json};
 use crate::pure::base::BaseRef;
 use crate::pure::branch::{parse_slice_branch, slice_branch};
-use crate::pure::coverage_map::parse_map;
 use crate::pure::failure::Failure;
 use crate::pure::finding::{Class, Outcome};
 use crate::pure::flags::{goal_flag, once, unknown_argument};
-use crate::pure::goal::{GoalName, QualifiedDoneWhen};
+use crate::pure::goal::GoalName;
 use crate::pure::goal_pick::{element_name, element_named, which_goal};
 use crate::pure::logbook::{Entry, Logged, closed};
 use crate::pure::metric::{history, outlier, read_record};
@@ -30,15 +28,15 @@ use crate::pure::review::{
     ReceiptKind, Stored, check_base, counts, open_findings, read_receipt, stored_findings,
 };
 use crate::pure::roadmap::{Element, Roadmap, SliceName};
-use crate::pure::setup::{CheckCommand, HEAD, Setup, toml_table};
+use crate::pure::setup::{HEAD, Setup};
 use crate::pure::state::{
-    Counts, Facts, GoalView, Kind, Plan, Policy, Unknown, View, Work, is_shipped, render,
+    Counts, Facts, GoalView, Kind, Plan, Policy, Unknown, View, Work, is_shipped, proven, render,
     started_count, view,
 };
 use crate::pure::summary::{
-    Answered, CheckRow, DoneWhen, Known, MetricLine, Row, SummaryInput, Unfixed, summary_md, tick,
+    Answered, CheckRow, Known, MetricLine, Row, SummaryInput, Unfixed, summary_md,
 };
-use crate::pure::tests_ran::map_path;
+use crate::pure::tests_ran::{map_path, recorded};
 
 pub(crate) const HIDDEN: bool = false;
 pub(crate) const NEEDS_SETUP: bool = true;
@@ -92,6 +90,7 @@ fn work_of(
     common: &Path,
     base_ref: &BaseRef,
     branch: &str,
+    (goal, slice): (&GoalName, &SliceName),
 ) -> Result<Option<Work>, Failure> {
     let store = store_dir(common);
     let Some(commit) = branch_tip(git, branch) else {
@@ -103,6 +102,9 @@ fn work_of(
         .checked
         .as_ref()
         .and_then(|checked| checked.patch_id.clone());
+    let tested = read_json(&coverage_record_path(&store, &tip.tree))
+        .and_then(|docs| docs.into_iter().next())
+        .and_then(|doc| recorded(&doc, goal, slice));
     Ok(Some(Work {
         commits,
         checked: tip.checked.is_some(),
@@ -113,7 +115,7 @@ fn work_of(
             .as_ref()
             .and_then(|key| receipt_of(&store, ReceiptKind::SecondOpinion, key)),
         drive: receipt_of(&store, ReceiptKind::TestDrive, &tip.tree),
-        commit: tip.commit.to_string(),
+        tested,
         patch_id: patch.map(|key| key.to_string()),
         tree: tip.tree.to_string(),
     }))
@@ -160,7 +162,7 @@ pub(crate) fn collect(
                     slice.after.clone(),
                     slice.meets.clone(),
                     plan,
-                    work_of(git, common, base_ref, &branch)?,
+                    work_of(git, common, base_ref, &branch, (goal, &name))?,
                 )
             }
         };
@@ -209,9 +211,11 @@ pub(crate) fn judge_goals(
             .filter(|fact| is_shipped(&fact.entries))
             .map(|fact| fact.name.clone())
             .collect();
+        let proven = proven(&facts);
         let context = Policy {
             setup: policy,
             shipped: &shipped,
+            proven: &proven,
         };
         let views = facts.iter().map(|fact| view(fact, &context)).collect();
         goals.push(GoalView {
@@ -253,9 +257,7 @@ pub(crate) fn unknown_branches(
 
 // Everything the pull-request summary is made from, read and not judged.
 struct Reading<'a> {
-    git: &'a Git,
     common: &'a Path,
-    policy: &'a Setup,
     fact: &'a Facts,
 }
 
@@ -275,52 +277,6 @@ fn check_row(reading: &Reading<'_>) -> Option<CheckRow> {
         cap: size.get("cap")?.as_u64()?,
         base: check_base(doc)?.name,
     })
-}
-
-// An item is confirmed by the coverage record of this version, when the command that wrote it is
-// one of the setup's own check lines.
-fn done_when(reading: &Reading<'_>, goal: &GoalName) -> DoneWhen {
-    let fact = reading.fact;
-    let committed = fact.work.as_ref().and_then(|work| {
-        let bytes = reading
-            .git
-            .show_file(OsStr::new(&work.commit), &map_path(goal, &fact.name))?;
-        parse_map(&toml_table(&bytes).ok()?).ok()
-    });
-    let Some(map) = committed else {
-        return DoneWhen::NoMap;
-    };
-    let record = fact
-        .work
-        .as_ref()
-        .and_then(|work| Oid::parse(&work.tree))
-        .and_then(|tree| read_json(&coverage_record_path(&store_dir(reading.common), &tree)))
-        .and_then(|docs| docs.into_iter().next());
-    let checks: Vec<&str> = reading
-        .policy
-        .gate
-        .check
-        .iter()
-        .map(CheckCommand::as_str)
-        .collect();
-    let mine = format!("{goal}/{}", fact.name);
-    let items = map
-        .items
-        .iter()
-        .map(|(id, names)| {
-            let recorded = record
-                .as_ref()
-                .and_then(|doc| doc.get("maps")?.get(&mine)?.get(id.to_string()))
-                .and_then(Value::as_array)
-                .map_or(names.len(), Vec::len);
-            let check = record.as_ref().and_then(|doc| doc.get("check")?.as_str());
-            (
-                QualifiedDoneWhen::of(goal, *id),
-                tick(check, &checks, recorded),
-            )
-        })
-        .collect();
-    DoneWhen::Items(items)
 }
 
 fn current_key(fact: &Facts, kind: &str) -> Option<String> {
@@ -537,16 +493,8 @@ fn stand_ins_of(fact: &Facts) -> Vec<String> {
     found
 }
 
-fn summary_for(
-    (git, common, policy): (&Git, &Path, &Setup),
-    (goal, fact, judged): (&GoalName, &Facts, &View),
-) -> String {
-    let reading = Reading {
-        git,
-        common,
-        policy,
-        fact,
-    };
+fn summary_for(common: &Path, (goal, fact, judged): (&GoalName, &Facts, &View)) -> String {
+    let reading = Reading { common, fact };
     let (known, answers) = known_issues(&reading);
     let state = match &judged.merge_note {
         Some(note) => format!("{} (merge not matched: {note})", judged.state),
@@ -556,7 +504,7 @@ fn summary_for(
         name: fact.name.clone(),
         state,
         map_path: map_path(goal, &fact.name),
-        done_when: done_when(&reading, goal),
+        done_when: judged.items.clone(),
         check: check_row(&reading),
         rows: rows_of(&reading),
         open: judged.open,
@@ -604,19 +552,16 @@ fn summary_command(
         .iter()
         .find(|fact| fact.name == slice)
         .ok_or_else(unknown)?;
+    let proven = proven(&facts);
     let judged = view(
         fact,
         &Policy {
             setup: policy,
             shipped: &shipped,
+            proven: &proven,
         },
     );
-    write!(
-        out,
-        "{}",
-        summary_for((git, common, policy), (&goal, fact, &judged))
-    )
-    .ok();
+    write!(out, "{}", summary_for(common, (&goal, fact, &judged))).ok();
     Ok(())
 }
 

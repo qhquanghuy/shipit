@@ -1,9 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
+use serde_json::Value;
 
 use crate::pure::coverage_map::CoverageMap;
-use crate::pure::goal::{DoneWhen, GoalName, QualifiedDoneWhen};
+use crate::pure::goal::{DoneWhen, GoalName, QualifiedDoneWhen, parse_done_when};
 use crate::pure::repo_path::RepoPath;
 use crate::pure::roadmap::SliceName;
 use crate::pure::text::comma_list;
@@ -208,6 +209,39 @@ pub(crate) fn local_problems(
     problems
 }
 
+// The coverage record of one version for one slice: its key, the check line that wrote it, and how many tests each item of the slice's map named.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Tested {
+    pub(crate) key: String,
+    pub(crate) check: String,
+    pub(crate) items: BTreeMap<DoneWhen, usize>,
+}
+
+pub(crate) fn recorded(doc: &Value, goal: &GoalName, slice: &SliceName) -> Option<Tested> {
+    let key = doc.get("key")?.as_str()?.to_owned();
+    let check = doc.get("check")?.as_str()?.to_owned();
+    let items = doc
+        .get("maps")
+        .and_then(|maps| maps.get(format!("{goal}/{slice}")))
+        .and_then(Value::as_object)
+        .map(|map| {
+            map.iter()
+                .filter_map(|(id, names)| Some((parse_done_when(id)?, names.as_array()?.len())))
+                .collect()
+        })
+        .unwrap_or_default();
+    Some(Tested { key, check, items })
+}
+
+// Only a coverage line writes a record whose tests ran; any other setup line could write the file by hand.
+pub(crate) fn is_coverage_line(line: &str) -> bool {
+    let mut words = line.split_whitespace();
+    matches!(
+        (words.next(), words.next(), words.next()),
+        (Some(program), Some("coverage"), Some("--")) if program.rsplit('/').next() == Some("shipit")
+    )
+}
+
 #[derive(Debug, Serialize)]
 pub(crate) struct CoverageRecord<'a> {
     kind: &'static str,
@@ -257,7 +291,7 @@ mod tests {
 
     fn map_of(names: &[&str]) -> CoverageMap {
         let mut items = BTreeMap::new();
-        if let Some(id) = crate::pure::goal::parse_done_when("DW4") {
+        if let Some(id) = parse_done_when("DW4") {
             items.insert(id, names.iter().map(|name| (*name).to_owned()).collect());
         }
         CoverageMap { items }
@@ -388,6 +422,77 @@ mod tests {
             prop_assert_eq!(parse_map_path(&map_path(&goal, &slice)), Some((goal, slice)));
             prop_assert_eq!(parse_map_path(&format!(".shipit/coverage/{g}/{s}/x.toml")), None);
             prop_assert_eq!(parse_map_path(&format!(".shipit/coverage/{g}.toml")), None);
+        }
+    }
+
+    fn counts() -> impl Strategy<Value = BTreeMap<u64, usize>> {
+        proptest::collection::btree_map(1..9_u64, 1..4_usize, 0..4)
+    }
+
+    fn map_from(counts: &BTreeMap<u64, usize>) -> CoverageMap {
+        CoverageMap {
+            items: counts
+                .iter()
+                .filter_map(|(n, count)| {
+                    let id = parse_done_when(&format!("DW{n}"))?;
+                    Some((id, (0..*count).map(|i| format!("test_{i}")).collect()))
+                })
+                .collect(),
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            failure_persistence: None,
+            ..ProptestConfig::default()
+        })]
+
+        #[test]
+        fn a_coverage_record_reads_back_as_the_items_of_its_slice(
+            mine in counts(),
+            other in counts(),
+            key in "[0-9a-f]{40}",
+            check in "[a-z ]{1,12}",
+        ) {
+            let (demo, beta) = (goal("demo"), slice("beta"));
+            let maps = [
+                (demo.clone(), beta.clone(), map_from(&mine)),
+                (demo.clone(), slice("gamma"), map_from(&other)),
+            ];
+            let record = CoverageRecord::new(key.clone(), &check, &maps, ("time".to_owned(), "tool".to_owned()));
+            let doc = serde_json::to_value(record).expect("a record is JSON");
+            let items = map_from(&mine)
+                .items
+                .iter()
+                .map(|(id, names)| (*id, names.len()))
+                .collect();
+            prop_assert_eq!(recorded(&doc, &demo, &beta), Some(Tested { key: key.clone(), check: check.clone(), items }));
+            let elsewhere = recorded(&doc, &demo, &slice("delta")).map(|tested| tested.items);
+            prop_assert_eq!(elsewhere, Some(BTreeMap::new()));
+            let mut bare = doc;
+            if let Some(object) = bare.as_object_mut() {
+                object.remove("check");
+            }
+            prop_assert_eq!(recorded(&bare, &demo, &beta), None);
+        }
+
+        #[test]
+        fn a_coverage_line_is_shipit_coverage_and_a_double_dash(
+            dir in proptest::option::of("/[a-z]{1,5}(/[a-z]{1,5}){0,2}"),
+            rest in "[a-z ]{0,10}",
+            word in 0..4_usize,
+            sub in prop::sample::select(vec!["coverage", "lint"]),
+            dashes in any::<bool>(),
+        ) {
+            let words = ["shipit", "shipitx", "xshipit", "nix"];
+            let program = words.get(word).copied().expect("a program word");
+            let path = dir.map_or_else(|| program.to_owned(), |dir| format!("{dir}/{program}"));
+            let dd = if dashes { "--" } else { "-x" };
+            let line = format!("{path} {sub} {dd} {rest}");
+            prop_assert_eq!(
+                is_coverage_line(&line),
+                program == "shipit" && sub == "coverage" && dashes
+            );
         }
     }
 

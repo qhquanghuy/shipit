@@ -3,12 +3,13 @@ use std::fmt::{self, Write as _};
 
 use serde::{Serialize, Serializer};
 
-use crate::pure::finding::Class;
-use crate::pure::goal::{GoalName, QualifiedDoneWhen};
+use crate::pure::finding::{Class, Outcome};
+use crate::pure::goal::{GoalName, QualifiedDoneWhen, parse_done_when};
 use crate::pure::logbook::{Entry, Logged, closed};
 use crate::pure::review::{ReceiptView, counts, open_findings};
 use crate::pure::roadmap::SliceName;
 use crate::pure::setup::Setup;
+use crate::pure::tests_ran::{Tested, is_coverage_line};
 use crate::pure::text::{comma_list, plain};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -99,7 +100,6 @@ pub(crate) struct Plan {
 // What is known about the branch of a slice: its tip, and the receipts for that version.
 #[derive(Debug)]
 pub(crate) struct Work {
-    pub(crate) commit: String,
     pub(crate) commits: u64,
     pub(crate) checked: bool,
     pub(crate) patch_id: Option<String>,
@@ -107,6 +107,7 @@ pub(crate) struct Work {
     pub(crate) informed: Option<ReceiptView>,
     pub(crate) second: Option<ReceiptView>,
     pub(crate) drive: Option<ReceiptView>,
+    pub(crate) tested: Option<Tested>,
 }
 
 #[derive(Debug)]
@@ -139,6 +140,118 @@ pub(crate) struct View {
     pub(crate) branch: Option<String>,
     pub(crate) test_drive: bool,
     pub(crate) meets: Vec<QualifiedDoneWhen>,
+    #[serde(skip)]
+    pub(crate) items: Vec<(QualifiedDoneWhen, Confirmation)>,
+    pub(crate) unconfirmed: Vec<QualifiedDoneWhen>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Confirmation {
+    Tests(usize),
+    ProofStep,
+    TestDrive,
+    KnownIssue,
+    RecordNotCounted,
+    Missing,
+}
+
+impl Confirmation {
+    pub(crate) const fn confirms(self) -> bool {
+        match self {
+            Self::Tests(_) | Self::ProofStep | Self::TestDrive | Self::KnownIssue => true,
+            Self::RecordNotCounted | Self::Missing => false,
+        }
+    }
+}
+
+// A proof step is not tied to a version of the work, so it counts only once all it follows has shipped.
+pub(crate) fn proven(facts: &[Facts]) -> Vec<QualifiedDoneWhen> {
+    let shipped: Vec<&SliceName> = facts
+        .iter()
+        .filter(|fact| is_shipped(&fact.entries))
+        .map(|fact| &fact.name)
+        .collect();
+    facts
+        .iter()
+        .filter(|fact| {
+            matches!(fact.kind, Kind::Proof { .. })
+                && shipped.contains(&&fact.name)
+                && fact.after.iter().all(|name| shipped.contains(&name))
+        })
+        .flat_map(|fact| fact.meets.iter().cloned())
+        .collect()
+}
+
+// A whole word, bare or qualified: DW21 and other:DW2 do not name DW2.
+fn names(text: &str, item: &QualifiedDoneWhen) -> bool {
+    text.split(|c: char| !(c.is_ascii_alphanumeric() || c == ':' || c == '-'))
+        .map(|word| word.trim_matches(|c| c == ':' || c == '-'))
+        .any(|word| {
+            parse_done_when(word) == Some(item.id)
+                || QualifiedDoneWhen::parse(word).as_ref() == Some(item)
+        })
+}
+
+// The tie of a known issue to a version is the one `closed` uses.
+fn known_issue_names(facts: &Facts, item: &QualifiedDoneWhen) -> bool {
+    let Some(work) = facts.work.as_ref() else {
+        return false;
+    };
+    facts.entries.iter().any(|logged| match &logged.entry {
+        Entry::KnownIssue {
+            kind, key, reason, ..
+        } => {
+            logged.slice == facts.name
+                && names(reason, item)
+                && match kind.as_str() {
+                    "informed-review" | "second-opinion" => {
+                        Some(key.as_str()) == work.patch_id.as_deref()
+                    }
+                    "test-drive" => *key == work.tree,
+                    _ => false,
+                }
+        }
+        Entry::Receipt { .. }
+        | Entry::Note { .. }
+        | Entry::Answer { .. }
+        | Entry::ShippedMerge { .. }
+        | Entry::ShippedProof { .. }
+        | Entry::Started { .. } => false,
+    })
+}
+
+fn confirmation(
+    item: &QualifiedDoneWhen,
+    facts: &Facts,
+    policy: &Policy<'_>,
+    drive_passed: bool,
+) -> Confirmation {
+    let recorded = facts.work.as_ref().and_then(|work| {
+        let tested = work.tested.as_ref().filter(|_| item.goal == facts.goal)?;
+        let tests = *tested.items.get(&item.id)?;
+        let counts = tested.key == work.tree
+            && is_coverage_line(&tested.check)
+            && policy
+                .setup
+                .gate
+                .check
+                .iter()
+                .any(|line| line.as_str() == tested.check);
+        Some((tests, counts))
+    });
+    if let Some((tests, true)) = recorded {
+        Confirmation::Tests(tests)
+    } else if policy.proven.contains(item) {
+        Confirmation::ProofStep
+    } else if drive_passed {
+        Confirmation::TestDrive
+    } else if known_issue_names(facts, item) {
+        Confirmation::KnownIssue
+    } else if recorded.is_some() {
+        Confirmation::RecordNotCounted
+    } else {
+        Confirmation::Missing
+    }
 }
 
 // Why an owner's merge was accepted without a patch id match, when that is how it shipped.
@@ -272,6 +385,7 @@ fn plan_step(facts: &Facts, plan_open: &[String]) -> String {
 pub(crate) struct Policy<'a> {
     pub(crate) setup: &'a Setup,
     pub(crate) shipped: &'a [SliceName],
+    pub(crate) proven: &'a [QualifiedDoneWhen],
 }
 
 fn chain(facts: &Facts, shipped: bool, plan_ok: bool, work_ok: bool) -> State {
@@ -290,6 +404,53 @@ fn chain(facts: &Facts, shipped: bool, plan_ok: bool, work_ok: bool) -> State {
     } else {
         State::ReadyToShip
     }
+}
+
+fn rolled_up(all: &[&Judged]) -> (Counts, Vec<String>) {
+    let open = all
+        .iter()
+        .fold(Counts::default(), |sum, judged| sum.sum(judged.tally));
+    let claims = all
+        .iter()
+        .flat_map(|judged| judged.claims.iter().cloned())
+        .collect();
+    (open, claims)
+}
+
+// The items of a slice with how each is confirmed; a drive receipt passes only with a `pass` result.
+fn confirmed_items(
+    facts: &Facts,
+    policy: &Policy<'_>,
+    drive_counts: bool,
+) -> (
+    Vec<(QualifiedDoneWhen, Confirmation)>,
+    Vec<QualifiedDoneWhen>,
+) {
+    let drive_passed = drive_counts
+        && facts
+            .work
+            .as_ref()
+            .and_then(|work| work.drive.as_ref())
+            .is_some_and(|receipt| receipt.result == Outcome::Pass);
+    let items: Vec<(QualifiedDoneWhen, Confirmation)> = match facts.kind {
+        Kind::Slice { .. } => facts
+            .meets
+            .iter()
+            .map(|item| {
+                (
+                    item.clone(),
+                    confirmation(item, facts, policy, drive_passed),
+                )
+            })
+            .collect(),
+        Kind::Proof { .. } => Vec::new(),
+    };
+    let unconfirmed = items
+        .iter()
+        .filter(|(_, confirmation)| !confirmation.confirms())
+        .map(|(item, _)| item.clone())
+        .collect();
+    (items, unconfirmed)
 }
 
 // The chain of conditions, each reached only with all before it; `shipped` overrides.
@@ -330,14 +491,10 @@ pub(crate) fn view(facts: &Facts, policy: &Policy<'_>) -> View {
     let informed = judge_it(&informed_slot);
     let second = judge_it(&second_slot);
     let drive = judge_it(&drive_slot);
-    let open = [&plan, &informed, &second, &drive]
-        .iter()
-        .fold(Counts::default(), |all, judged| all.sum(judged.tally));
-    let claims: Vec<String> = [&plan, &informed, &second, &drive]
-        .iter()
-        .flat_map(|judged| judged.claims.iter().cloned())
-        .collect();
-    let work_ok = informed.counts && second.counts && (!test_drive || drive.counts);
+    let (open, claims) = rolled_up(&[&plan, &informed, &second, &drive]);
+    let (items, unconfirmed) = confirmed_items(facts, policy, drive.counts);
+    let work_ok =
+        informed.counts && second.counts && (!test_drive || drive.counts) && unconfirmed.is_empty();
     let state = chain(facts, shipped, plan.counts, work_ok);
     let started = !shipped && matches!(facts.kind, Kind::Slice { .. }) && work.is_some();
     let without_start = started
@@ -374,6 +531,7 @@ pub(crate) fn view(facts: &Facts, policy: &Policy<'_>) -> View {
                 (&drive, &drive_slot),
             ],
             test_drive,
+            &unconfirmed,
         ),
         (Kind::Slice { .. }, State::ReadyToShip) => format!(
             "owner: ship it, then shipit log {} shipped --merge <merge commit> --goal {}",
@@ -393,6 +551,8 @@ pub(crate) fn view(facts: &Facts, policy: &Policy<'_>) -> View {
         branch: work.map(|_| facts.branch.clone()),
         test_drive,
         meets: facts.meets.clone(),
+        items,
+        unconfirmed,
     }
 }
 
@@ -401,11 +561,12 @@ fn checked_step(
     policy: &Setup,
     works: [(&Judged, &Slot<'_>); 3],
     test_drive: bool,
+    unconfirmed: &[QualifiedDoneWhen],
 ) -> String {
     let limit = policy.agents.max_fix_rounds;
     let rounds = rounds_used(&facts.entries);
     let mut blocking: Vec<String> = Vec::new();
-    let mut missing: Vec<&str> = Vec::new();
+    let mut missing: Vec<String> = Vec::new();
     for (index, (judged, slot)) in works.iter().enumerate() {
         if judged.counts || (index == 2 && !test_drive) {
             continue;
@@ -415,10 +576,14 @@ fn checked_step(
         } else if judged.rework {
             blocking.push(slot.kind.to_owned());
         } else {
-            missing.push(slot.label);
+            missing.push(slot.label.to_owned());
         }
     }
     if blocking.is_empty() {
+        let [.., (drive, _)] = &works;
+        if !test_drive || drive.counts {
+            missing.extend(unconfirmed.iter().map(|item| format!("proof of {item}")));
+        }
         return format!("missing: {}", comma_list(missing));
     }
     if rounds > limit {
@@ -549,6 +714,15 @@ fn goal_lines(goal: &GoalView, lines: &mut Vec<String>) {
         if !view.open.is_empty() {
             write!(notes, " Open: {}.", view.open.listed()).ok();
         }
+        let not_proven: Vec<&QualifiedDoneWhen> = view
+            .items
+            .iter()
+            .filter(|(_, confirmation)| *confirmation == Confirmation::KnownIssue)
+            .map(|(item, _)| item)
+            .collect();
+        if !not_proven.is_empty() {
+            write!(notes, " Not proven: {}.", plain(&comma_list(not_proven))).ok();
+        }
         if !view.claims.is_empty() {
             write!(notes, " Claims: {}.", plain(&view.claims.join("; "))).ok();
         }
@@ -614,14 +788,21 @@ pub(crate) fn render(
 mod tests {
     use proptest::prelude::*;
 
+    use std::collections::BTreeMap;
+
+    use toml::Value;
+
     use super::*;
-    use crate::pure::finding::Outcome;
     use crate::pure::rank::parse_worker;
     use crate::pure::review::{ReceiptKind, Stored};
     use crate::pure::testing::setup_with;
 
     fn name(text: &str) -> SliceName {
         SliceName::parse(text).expect("a slice name")
+    }
+
+    fn id(text: &str) -> QualifiedDoneWhen {
+        QualifiedDoneWhen::parse(text).expect("a done-when id")
     }
 
     fn goal() -> GoalName {
@@ -678,7 +859,6 @@ mod tests {
 
     fn facts(given: &Given) -> Facts {
         let work = given.made.then(|| Work {
-            commit: "commit".to_owned(),
             commits: 1,
             checked: given.checked,
             patch_id: Some("patch".to_owned()),
@@ -686,6 +866,7 @@ mod tests {
             informed: given.informed.then(|| counting("patch")),
             second: given.second.then(|| counting("patch")),
             drive: given.drive.then(|| counting("tree")),
+            tested: None,
         });
         let entries = if given.shipped {
             vec![Logged {
@@ -718,15 +899,20 @@ mod tests {
         }
     }
 
-    fn judged(facts: &Facts, shipped: &[SliceName]) -> View {
+    fn judged_with(facts: &Facts, shipped: &[SliceName], proven: &[QualifiedDoneWhen]) -> View {
         let setup = setup_with(&[]);
         view(
             facts,
             &Policy {
                 setup: &setup,
                 shipped,
+                proven,
             },
         )
+    }
+
+    fn judged(facts: &Facts, shipped: &[SliceName]) -> View {
+        judged_with(facts, shipped, &[])
     }
 
     fn given() -> impl Strategy<Value = Given> {
@@ -762,7 +948,25 @@ mod tests {
         })]
 
         #[test]
-        fn the_state_is_the_longest_chain_that_holds(given in given()) {
+        fn the_state_is_the_longest_chain_that_holds(
+            given in given(),
+            confirmed in proptest::collection::vec(any::<bool>(), 0..4),
+        ) {
+            let item = |n: usize| id(&format!("demo:DW{}", n + 1));
+            let mut facts = facts(&given);
+            facts.meets = (0..confirmed.len()).map(item).collect();
+            let proven: Vec<QualifiedDoneWhen> = confirmed
+                .iter()
+                .enumerate()
+                .filter(|(_, flag)| **flag)
+                .map(|(n, _)| item(n))
+                .collect();
+            let unconfirmed: Vec<QualifiedDoneWhen> = confirmed
+                .iter()
+                .enumerate()
+                .filter(|(_, flag)| !**flag)
+                .map(|(n, _)| item(n))
+                .collect();
             let ready = given.informed && given.second && (!given.test_drive || given.drive);
             let expected = if given.shipped {
                 State::Shipped
@@ -772,12 +976,155 @@ mod tests {
                 State::BuildPlanReady
             } else if !given.checked {
                 State::Made
-            } else if !ready {
+            } else if !ready || !unconfirmed.is_empty() {
                 State::Checked
             } else {
                 State::ReadyToShip
             };
-            prop_assert_eq!(judged(&facts(&given), &[]).state, expected);
+            let seen = judged_with(&facts, &[], &proven);
+            prop_assert_eq!(seen.state, expected);
+            prop_assert_eq!(&seen.unconfirmed, &unconfirmed);
+            if expected == State::Checked && ready {
+                let proofs = unconfirmed.iter().map(|item| format!("proof of {item}"));
+                prop_assert_eq!(&seen.next, &format!("missing: {}", comma_list(proofs)));
+            }
+            let waits_for_drive = given.plan_ok && given.made && given.checked && given.informed
+                && given.second && given.test_drive && !given.drive && !given.shipped;
+            if waits_for_drive {
+                prop_assert_eq!(seen.next.as_str(), "missing: test drive");
+            }
+        }
+
+        #[test]
+        fn an_item_is_confirmed_by_the_first_source_that_holds(
+            record in 0..5_usize,
+            tests in 1..5_usize,
+            proof in any::<bool>(),
+            drive in any::<bool>(),
+            known in 0..4_usize,
+        ) {
+            let [coverage, flake] = ["shipit coverage -- cargo test", "nix flake check --print-build-logs"];
+            let setup = setup_with(&[(
+                "gate.check",
+                Value::Array(vec![Value::String(coverage.to_owned()), Value::String(flake.to_owned())]),
+            )]);
+            let item = id("demo:DW1");
+            let mut facts = facts(&Given {
+                plan_file: true, plan_ok: true, made: true, checked: true,
+                informed: true, second: true, drive: true, test_drive: false, shipped: false,
+            });
+            let (check, key) = match record {
+                1 => (Some(coverage), "tree"),
+                2 => (Some(flake), "tree"),
+                3 => (Some("shipit coverage -- other"), "tree"),
+                4 => (Some(coverage), "old"),
+                _ => (None, "tree"),
+            };
+            if let Some(work) = facts.work.as_mut() {
+                work.tested = check.map(|check| Tested {
+                    key: key.to_owned(),
+                    check: check.to_owned(),
+                    items: BTreeMap::from([(item.id, tests)]),
+                });
+            }
+            let issue = |kind: &str, key: &str| Logged {
+                slice: name("beta"),
+                entry: Entry::KnownIssue {
+                    kind: kind.to_owned(),
+                    key: key.to_owned(),
+                    finding: "F1".to_owned(),
+                    reason: "waits: DW1".to_owned(),
+                    by: "opus:high".to_owned(),
+                },
+            };
+            match known {
+                1 => facts.entries.push(issue("informed-review", "patch")),
+                2 => facts.entries.push(issue("plan-review", "plan")),
+                3 => facts.entries.push(issue("informed-review", "old-patch")),
+                _ => {}
+            }
+            let proven = if proof { vec![item.clone()] } else { Vec::new() };
+            let policy = Policy { setup: &setup, shipped: &[], proven: &proven };
+            let expected = if record == 1 {
+                Confirmation::Tests(tests)
+            } else if proof {
+                Confirmation::ProofStep
+            } else if drive {
+                Confirmation::TestDrive
+            } else if known == 1 {
+                Confirmation::KnownIssue
+            } else if record >= 2 {
+                Confirmation::RecordNotCounted
+            } else {
+                Confirmation::Missing
+            };
+            prop_assert_eq!(confirmation(&item, &facts, &policy, drive), expected);
+        }
+
+        #[test]
+        fn a_known_issue_names_an_item_only_as_a_whole_word(
+            before in "[a-z ]{0,6}",
+            after in "[a-z ]{0,6}",
+            n in 1..40_u64,
+            extra in proptest::option::of(0..10_u64),
+            prefix in 0..3_usize,
+            tail in prop::sample::select(vec!["", ":", ".", "-"]),
+        ) {
+            let lead = ["", "demo:", "other:"].get(prefix).copied().expect("a prefix");
+            let extra_text = extra.map(|digit| digit.to_string()).unwrap_or_default();
+            let text = format!("{before} {lead}DW{n}{extra_text}{tail} {after}");
+            prop_assert_eq!(
+                names(&text, &id(&format!("demo:DW{n}"))),
+                extra.is_none() && lead != "other:"
+            );
+        }
+
+        #[test]
+        fn a_shipped_proof_step_confirms_the_items_it_meets(
+            slices in any::<[bool; 2]>(),
+            steps in proptest::collection::vec((any::<bool>(), 0..4_usize, 1..9_u64), 0..4),
+        ) {
+            let [alpha_shipped, beta_shipped] = slices;
+            let bare = |shipped| Given {
+                plan_file: false, plan_ok: false, made: false, checked: false,
+                informed: false, second: false, drive: false, test_drive: false, shipped,
+            };
+            let element = |text: &str, kind: Kind, after: &[&str], meets: Vec<QualifiedDoneWhen>, shipped: bool| {
+                let mut fact = facts(&bare(shipped));
+                fact.name = name(text);
+                fact.kind = kind;
+                fact.after = after.iter().map(|each| name(each)).collect();
+                fact.meets = meets;
+                fact
+            };
+            let mut all = vec![
+                element("alpha", Kind::Slice { test_drive: false }, &[], Vec::new(), alpha_shipped),
+                element("beta", Kind::Slice { test_drive: false }, &[], Vec::new(), beta_shipped),
+            ];
+            let mut expected = Vec::new();
+            for (index, (shipped, follows, number)) in steps.iter().enumerate() {
+                let after: &[&str] = match follows {
+                    0 => &[],
+                    1 => &["alpha"],
+                    2 => &["beta"],
+                    _ => &["alpha", "beta"],
+                };
+                let meets = vec![id(&format!("demo:DW{number}"))];
+                let all_shipped = after.iter().all(|each| {
+                    if *each == "alpha" { alpha_shipped } else { beta_shipped }
+                });
+                if *shipped && all_shipped {
+                    expected.extend(meets.clone());
+                }
+                all.push(element(
+                    &format!("step{index}"),
+                    Kind::Proof { how: "by hand".to_owned() },
+                    after,
+                    meets,
+                    *shipped,
+                ));
+            }
+            prop_assert_eq!(proven(&all), expected);
         }
 
         #[test]
@@ -859,6 +1206,8 @@ mod tests {
                         branch: None,
                         test_drive: false,
                         meets: Vec::new(),
+                        items: Vec::new(),
+                        unconfirmed: Vec::new(),
                     })
                     .collect()
             };
@@ -906,6 +1255,8 @@ mod tests {
                 branch: started.then(|| "slice/demo/beta".to_owned()),
                 test_drive: false,
                 meets: Vec::new(),
+                items: Vec::new(),
+                unconfirmed: Vec::new(),
             };
             let before = [name("alpha")];
             let waits: Vec<&SliceName> = if waiting { before.iter().collect() } else { Vec::new() };
