@@ -191,7 +191,7 @@ PLAN=(--author opus:high --by fable:high --result approve)
   mkdir sub
   printf 'x\n' >sub/é.txt
   git add -A
-  git commit -q -m "work" --trailer "ShipIt-Made-By: shipit:maker"
+  git commit -q -m "work"
   check_here
   rec second-opinion beta --author sonnet:high --by opus:high --result approve
   [ "$status" -eq 0 ]
@@ -215,17 +215,17 @@ PLAN=(--author opus:high --by fable:high --result approve)
   make_work slice/demo/beta 1
   printf '\000\001\002' >bin.dat
   git add bin.dat
-  git commit -q -m "a binary file" --trailer "ShipIt-Made-By: shipit:maker"
+  git commit -q -m "a binary file"
   check_here
   rec second-opinion beta --author sonnet:high --by opus:high --result approve
   [ "$status" -eq 0 ]
   printf '\000\001\003' >bin.dat
-  git commit -q -am "another binary content" --trailer "ShipIt-Made-By: shipit:maker"
+  git commit -q -am "another binary content"
   check_here
   rec second-opinion beta --author sonnet:high --by opus:high --result approve
   [ "$status" -eq 0 ]
   printf 'text\n' >>beta-1
-  git commit -q -am "a text change" --trailer "ShipIt-Made-By: shipit:maker"
+  git commit -q -am "a text change"
   check_here
   rec second-opinion beta --author sonnet:high --by opus:high --result approve
   [ "$status" -eq 0 ]
@@ -240,7 +240,7 @@ PLAN=(--author opus:high --by fable:high --result approve)
   [ "$stderr" = "shipit: no check receipt for this content: run shipit check on slice/demo/beta" ]
   git checkout -q main
   git checkout -q -b slice/demo/gamma
-  git commit -q --allow-empty -m "nothing" --trailer "ShipIt-Made-By: shipit:maker"
+  git commit -q --allow-empty -m "nothing"
   check_here
   rec second-opinion gamma --author sonnet:high --by opus:high --result approve
   [ "$status" -eq 1 ]
@@ -275,7 +275,7 @@ PLAN=(--author opus:high --by fable:high --result approve)
   first=$(git rev-parse HEAD)
   check_here
   printf 'more\n' >>beta-1
-  git commit -q -am "more work" --trailer "ShipIt-Made-By: shipit:maker"
+  git commit -q -am "more work"
   check_here
   rec second-opinion beta --author sonnet:high --by opus:high --result approve --commit "$first"
   [ "$status" -eq 0 ]
@@ -341,6 +341,7 @@ PLAN=(--author opus:high --by fable:high --result approve)
   plan_ready alpha
   run "$SHIPIT_BIN" start alpha
   [ "$status" -eq 0 ]
+  logged_start alpha rule
   git checkout -q slice/demo/alpha
   plain_commit a1
   check_here

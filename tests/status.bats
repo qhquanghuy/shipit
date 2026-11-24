@@ -82,7 +82,7 @@ READY="owner: ship it, then shipit log alpha shipped --merge <merge commit> --go
   make_slice_repo
   ready alpha
   printf 'more\n' >>alpha-1
-  git commit -q -am "more work" --trailer "ShipIt-Made-By: shipit:maker"
+  git commit -q -am "more work"
   st
   [[ $(the_line alpha) == "demo/alpha: made. Next: run shipit check on slice/demo/alpha"* ]]
   check_here
@@ -136,7 +136,7 @@ READY="owner: ship it, then shipit log alpha shipped --merge <merge commit> --go
   [[ $(the_line alpha) == "demo/alpha: checked. Next: maker: fix round 1 of 2: fix informed-review F1 or log them as known issues"* ]]
   [[ $(the_line alpha) == *"Open: must fix 1."* ]]
   printf 'fixed\n' >>alpha-1
-  git commit -q -am "a fix" --trailer "ShipIt-Made-By: shipit:maker"
+  git commit -q -am "a fix"
   check_here
   "$SHIPIT_BIN" receipt informed-review alpha --author sonnet:high --by opus:high --result rework \
     --finding "issue (blocking): second"

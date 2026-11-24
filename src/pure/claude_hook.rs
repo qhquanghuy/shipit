@@ -280,7 +280,6 @@ mod tests {
             ],
             with_cwd in any::<bool>(),
             name in proptest::option::of(prop_oneof![Just(json!("Bash")), Just(json!(7))]),
-            mode in proptest::option::of(prop_oneof![Just(json!("auto")), Just(json!(false))]),
             input in proptest::option::of(Just(json!({"command": "ls"}))),
             junk in "[a-z ]{0,8}",
         ) {
@@ -288,7 +287,7 @@ mod tests {
             if with_cwd {
                 object.insert("cwd".to_owned(), cwd.clone());
             }
-            for (key, value) in [("tool_name", name), ("permission_mode", mode), ("tool_input", input)] {
+            for (key, value) in [("tool_name", name), ("tool_input", input)] {
                 if let Some(value) = value {
                     object.insert(key.to_owned(), value);
                 }

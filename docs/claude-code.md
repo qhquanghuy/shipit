@@ -56,21 +56,28 @@ and push tools of MCP servers.
 Branch protection with the required check proves that the check ran; it does not prove that the
 owner decided. An agent that runs on the owner's gh login can still run `gh pr merge`.
 
-What does stop an agent:
+What stops an agent, and only what is named here:
 
-- a required approving review on the base branch (the agent cannot approve its own pull request);
-- a token for agents without merge, release or tag rights;
-- deny rules in the project's `.claude/settings.json`.
+- a required approving review on the base branch stops a merge into the base branch (the agent
+  cannot approve its own pull request), and only while admin bypass is off: an agent on the owner's
+  admin gh login can still run `gh pr merge --admin`. It does not stop a tag, `gh release create`
+  or `shipit complete <goal> --confirm`;
+- a token for agents without merge, release or tag rights stops the actions that token lacks, and
+  only for commands that run on that token;
+- deny rules in the project's `.claude/settings.json` stop the commands they name, in the Claude
+  Code session that reads them.
 
 The optional deny rules (replace `main` with the base branch):
 
 ```json
-{ "permissions": { "deny": ["Bash(gh pr merge *)", "Bash(git push origin main)", "Bash(git push origin main *)", "Bash(git tag *)", "Bash(gh release create *)"] } }
+{ "permissions": { "deny": ["Bash(gh pr merge *)", "Bash(git push origin main)", "Bash(git push origin main *)", "Bash(git tag *)", "Bash(gh release create *)", "Bash(shipit complete *)"] } }
 ```
 
 A deny rule in the project settings also stops the owner's own session; the owner then runs these
-commands in a plain terminal. `Bash(git tag *)` also blocks `git tag -l`. A prefix rule misses
-other forms (`git push origin HEAD:main`, an MCP tool), so it is a guardrail, not a guard.
+commands in a plain terminal. `Bash(git tag *)` also blocks `git tag -l`. `Bash(shipit complete *)`
+also blocks the owner's own dry run, so the owner may prefer to rely on their word for that one.
+A prefix rule misses other forms (`git push origin HEAD:main`, an MCP tool), so it is a guardrail,
+not a guard.
 
 ## Sessions
 
@@ -170,7 +177,6 @@ These commands are not in the list; they ask:
 
 Known, and not caught:
 
-- an unreadable command that names an installer is refused by its words (for example `echo $HOME && echo pip install`); a known limit of DW4.
 - agents started outside the `Agent` tool, and a reviewer continued after the work changed;
 - resumed agents and teammate messages count towards the cap but are never refused, and Claude
   Code's own internal agents may count too; whether a `Stop` always lists the background tasks is
@@ -180,5 +186,7 @@ Known, and not caught:
 - a session started outside a ShipIt project that later works inside one: the gates judge the
   folder of each event, the build and the launcher judge the folder the session started in;
 - a session run with the bare option skips the plugin's hooks.
+
+Refused on purpose: an unreadable command that names an installer is refused by its words (for example `echo $HOME && echo pip install`); a known limit of DW4.
 
 For merges, pushes and tags, see Merging, pushing and tags.
