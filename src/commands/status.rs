@@ -1,8 +1,10 @@
+use std::collections::BTreeSet;
 use std::ffi::{OsStr, OsString};
 use std::io::Write;
 use std::path::Path;
 
 use serde::Serialize;
+use serde_json::Value;
 
 use crate::commands::setup::load_setup_table;
 use crate::edge::git::Git;
@@ -11,11 +13,13 @@ use crate::edge::records::{
     newest_roadmap, read_store_text, receipt_doc, receipt_path, store_dir,
 };
 use crate::edge::slice_git::{
-    branch_tip, commits_beyond, file_hash, load_policy, slice_branches, tip_of,
+    Checked, Tip, branch_tip, changed_with_status, commits_beyond, file_hash, load_policy,
+    map_paths_at, slice_branches, tip_of,
 };
 use crate::edge::store::{check_receipt_path, read_history, read_json, versions};
 use crate::pure::base::BaseRef;
 use crate::pure::branch::{parse_slice_branch, slice_branch};
+use crate::pure::coverage_map::parse_map;
 use crate::pure::failure::Failure;
 use crate::pure::finding::{Class, Outcome};
 use crate::pure::flags::{goal_flag, once, unknown_argument};
@@ -27,8 +31,9 @@ use crate::pure::receipt::Oid;
 use crate::pure::review::{
     ReceiptKind, Stored, check_base, counts, open_findings, read_receipt, stored_findings,
 };
+use crate::pure::risk::{DiffFacts, Hunk, hunk, touched_tests};
 use crate::pure::roadmap::{Element, Roadmap, SliceName};
-use crate::pure::setup::{HEAD, Setup};
+use crate::pure::setup::{HEAD, Setup, toml_table};
 use crate::pure::state::{
     Counts, Facts, GoalView, Kind, Plan, Policy, Unknown, View, Work, is_shipped, proven, render,
     started_count, view,
@@ -87,6 +92,133 @@ fn receipt_of(
     read_receipt(read_json(&receipt_path(store, kind, key)).as_deref())
 }
 
+fn check_doc(common: &Path, tree: &Oid) -> Option<Value> {
+    read_json(&check_receipt_path(common, tree))?
+        .into_iter()
+        .next()
+}
+
+// The base branch a check receipt names, with a remote part dropped: origin/main is main.
+fn checked_branch(doc: &Value) -> Option<String> {
+    let full = doc.get("base_ref")?.as_str()?;
+    if let Some(name) = full.strip_prefix("refs/heads/") {
+        return Some(name.to_owned());
+    }
+    let (_remote, name) = full.strip_prefix("refs/remotes/")?.split_once('/')?;
+    Some(name.to_owned())
+}
+
+fn policy_branch(base_ref: &BaseRef) -> String {
+    match base_ref {
+        BaseRef::Local(name) | BaseRef::Origin(name) => name.to_string(),
+    }
+}
+
+// The mapped tests at the fork that the change edits or removes, and the maps that could not
+// be read. Nothing here ends status: what cannot be read counts against the slice.
+fn mapped_touched(
+    git: &Git,
+    fork: &Oid,
+    tip: &Oid,
+    changed: &[(char, String)],
+) -> (Vec<String>, Vec<String>) {
+    let edited: Vec<&str> = changed
+        .iter()
+        .filter(|(status, _)| *status != 'A')
+        .map(|(_, path)| path.as_str())
+        .collect();
+    if edited.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    let at = OsStr::new(fork.as_str());
+    let mut mapped = BTreeSet::new();
+    let mut unreadable = Vec::new();
+    match map_paths_at(git, at) {
+        Err(_why) => unreadable.push(".shipit/coverage/".to_owned()),
+        Ok(paths) => {
+            for path in paths {
+                let map = git
+                    .show_file(at, &path)
+                    .and_then(|bytes| toml_table(&bytes).ok())
+                    .and_then(|table| parse_map(&table).ok());
+                match map {
+                    Some(map) => mapped.extend(map.items.into_values().flatten()),
+                    None => unreadable.push(path),
+                }
+            }
+        }
+    }
+    let mut touched = BTreeSet::new();
+    for path in edited {
+        let Some(bytes) = git.show_file(at, path) else {
+            continue;
+        };
+        let text = String::from_utf8_lossy(&bytes);
+        let held = touched_tests(&text, &[], &mapped);
+        if held.is_empty() {
+            continue;
+        }
+        let literal = format!(":(literal){path}");
+        let diff = git.output(&[
+            OsStr::new("diff"),
+            OsStr::new("-U0"),
+            OsStr::new("--text"),
+            OsStr::new("--no-ext-diff"),
+            OsStr::new("--no-color"),
+            OsStr::new("--no-textconv"),
+            OsStr::new("--no-renames"),
+            OsStr::new("--end-of-options"),
+            at,
+            OsStr::new(tip.as_str()),
+            OsStr::new("--"),
+            OsStr::new(&literal),
+        ]);
+        match diff {
+            Ok(bytes) => {
+                let hunks: Vec<Hunk> = String::from_utf8_lossy(&bytes)
+                    .lines()
+                    .filter_map(hunk)
+                    .collect();
+                touched.extend(touched_tests(&text, &hunks, &mapped));
+            }
+            Err(_why) => touched.extend(held),
+        }
+    }
+    (touched.into_iter().collect(), unreadable)
+}
+
+fn diff_facts(
+    git: &Git,
+    common: &Path,
+    base_ref: &BaseRef,
+    (tip, checked): (&Tip, &Checked),
+) -> Result<DiffFacts, Failure> {
+    let changed = changed_with_status(git, &checked.merge_base, OsStr::new(tip.commit.as_str()))?;
+    let doc = check_doc(common, &tip.tree);
+    let base = doc.as_ref().and_then(check_base);
+    let files = doc
+        .as_ref()
+        .and_then(|doc| doc.get("size")?.get("files")?.as_u64())
+        .unwrap_or_else(|| u64::try_from(changed.len()).unwrap_or(u64::MAX));
+    let given = doc.as_ref().and_then(|doc| doc.get("base_given")) == Some(&Value::Bool(true));
+    let policy = policy_branch(base_ref);
+    let other_base = match (doc.as_ref().and_then(checked_branch), &base) {
+        (Some(branch), Some(base)) if branch != policy => {
+            Some((base.name.clone(), base_ref.to_string()))
+        }
+        (Some(_) | None, _) => None,
+    };
+    let (mapped, unreadable) = mapped_touched(git, &checked.merge_base, &tip.commit, &changed);
+    Ok(DiffFacts {
+        names: changed.into_iter().map(|(_, path)| path).collect(),
+        files,
+        mapped,
+        unreadable,
+        given_base: base.filter(|_| given).map(|base| base.name),
+        other_base,
+    })
+}
+
 fn work_of(
     git: &Git,
     common: &Path,
@@ -107,9 +239,13 @@ fn work_of(
     let tested = read_json(&coverage_record_path(&store, &tip.tree))
         .and_then(|docs| docs.into_iter().next())
         .and_then(|doc| recorded(&doc, goal, slice));
+    let checked = match &tip.checked {
+        Some(checked) => Some(diff_facts(git, common, base_ref, (&tip, checked))?),
+        None => None,
+    };
     Ok(Some(Work {
         commits,
-        checked: tip.checked.is_some(),
+        checked,
         informed: patch
             .as_ref()
             .and_then(|key| receipt_of(&store, ReceiptKind::InformedReview, key)),
@@ -239,7 +375,12 @@ pub(crate) fn collect(
                     slice.after.clone(),
                     slice.meets.clone(),
                     plan,
-                    work_of(git, common, base_ref, &branch, (goal, &name))?,
+                    // A shipped slice needs no work: status reads no git for it.
+                    if is_shipped(&entries) {
+                        None
+                    } else {
+                        work_of(git, common, base_ref, &branch, (goal, &name))?
+                    },
                     slice.owns.clone(),
                 )
             }
@@ -348,16 +489,19 @@ fn short(text: &str) -> String {
 }
 
 fn check_row(reading: &Reading<'_>) -> Option<CheckRow> {
-    let work = reading.fact.work.as_ref().filter(|work| work.checked)?;
+    let work = reading
+        .fact
+        .work
+        .as_ref()
+        .filter(|work| work.checked.is_some())?;
     let tree = Oid::parse(&work.tree)?;
-    let docs = read_json(&check_receipt_path(reading.common, &tree))?;
-    let doc = docs.first()?;
+    let doc = check_doc(reading.common, &tree)?;
     let size = doc.get("size")?;
     Some(CheckRow {
         tree: short(&work.tree),
         files: size.get("files")?.as_u64()?,
         cap: size.get("cap")?.as_u64()?,
-        base: check_base(doc)?.name,
+        base: check_base(&doc)?.name,
     })
 }
 

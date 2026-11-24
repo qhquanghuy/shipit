@@ -8,7 +8,7 @@ use crate::pure::goal::{GoalName, QualifiedDoneWhen, parse_done_when};
 use crate::pure::logbook::{Entry, Logged, closed};
 use crate::pure::repo_path::RepoPath;
 use crate::pure::review::{ReceiptView, counts, open_findings};
-use crate::pure::risk::{Level, Risk, estimate};
+use crate::pure::risk::{Basis, DiffFacts, Level, Risk, estimate, judged};
 use crate::pure::roadmap::SliceName;
 use crate::pure::setup::Setup;
 use crate::pure::tests_ran::{Tested, is_coverage_line};
@@ -103,7 +103,7 @@ pub(crate) struct Plan {
 #[derive(Debug)]
 pub(crate) struct Work {
     pub(crate) commits: u64,
-    pub(crate) checked: bool,
+    pub(crate) checked: Option<DiffFacts>,
     pub(crate) patch_id: Option<String>,
     pub(crate) tree: String,
     pub(crate) informed: Option<ReceiptView>,
@@ -408,7 +408,10 @@ pub(crate) struct Policy<'a> {
 
 fn chain(facts: &Facts, shipped: bool, plan_ok: bool, work_ok: bool) -> State {
     let made = facts.work.as_ref().is_some_and(|work| work.commits >= 1);
-    let checked = facts.work.as_ref().is_some_and(|work| work.checked);
+    let checked = facts
+        .work
+        .as_ref()
+        .is_some_and(|work| work.checked.is_some());
     if shipped {
         State::Shipped
     } else if !plan_ok || matches!(facts.kind, Kind::Proof { .. }) {
@@ -481,8 +484,15 @@ fn confirmed_items(
 pub(crate) fn view(facts: &Facts, policy: &Policy<'_>) -> View {
     let shipped = is_shipped(&facts.entries);
     let test_drive = matches!(facts.kind, Kind::Slice { test_drive: true });
-    let review = (!shipped && matches!(facts.kind, Kind::Slice { .. }))
-        .then(|| estimate(policy.setup, &facts.owns));
+    let review = (!shipped && matches!(facts.kind, Kind::Slice { .. })).then(|| {
+        match facts.work.as_ref().and_then(|work| work.checked.as_ref()) {
+            Some(diff) => judged(policy.setup, diff),
+            None => estimate(policy.setup, &facts.owns),
+        }
+    });
+    let full = review
+        .as_ref()
+        .is_none_or(|risk| risk.level() == Level::Full);
     let work = facts.work.as_ref();
     let none = String::new();
     let plan_key = facts.plan.as_ref().map_or(&none, |plan| &plan.key);
@@ -519,8 +529,14 @@ pub(crate) fn view(facts: &Facts, policy: &Policy<'_>) -> View {
     let drive = judge_it(&drive_slot);
     let (open, claims) = rolled_up(&[&plan, &informed, &second, &drive]);
     let (items, unconfirmed) = confirmed_items(facts, policy, shipped, test_drive && drive.counts);
+    // At light the second opinion is not asked, but one that was done still blocks.
+    let second_ok = if full {
+        second.counts
+    } else {
+        second.open_blocking.is_empty() && !second.rework
+    };
     let work_ok =
-        informed.counts && second.counts && (!test_drive || drive.counts) && unconfirmed.is_empty();
+        informed.counts && second_ok && (!test_drive || drive.counts) && unconfirmed.is_empty();
     let state = chain(facts, shipped, plan.counts, work_ok);
     let started = !shipped && matches!(facts.kind, Kind::Slice { .. }) && work.is_some();
     let without_start = started
@@ -556,7 +572,7 @@ pub(crate) fn view(facts: &Facts, policy: &Policy<'_>) -> View {
                 (&second, &second_slot),
                 (&drive, &drive_slot),
             ],
-            test_drive,
+            (test_drive, full),
             &unconfirmed,
         ),
         (Kind::Slice { .. }, State::ReadyToShip) => format!(
@@ -588,7 +604,7 @@ fn checked_step(
     facts: &Facts,
     policy: &Setup,
     works: [(&Judged, &Slot<'_>); 3],
-    test_drive: bool,
+    (test_drive, full): (bool, bool),
     unconfirmed: &[QualifiedDoneWhen],
 ) -> String {
     let limit = policy.agents.max_fix_rounds;
@@ -596,7 +612,8 @@ fn checked_step(
     let mut blocking: Vec<String> = Vec::new();
     let mut missing: Vec<String> = Vec::new();
     for (index, (judged, slot)) in works.iter().enumerate() {
-        if judged.counts || (index == 2 && !test_drive) {
+        let unasked = index == 1 && !full && judged.open_blocking.is_empty() && !judged.rework;
+        if judged.counts || (index == 2 && !test_drive) || unasked {
             continue;
         }
         if !judged.open_blocking.is_empty() {
@@ -767,12 +784,11 @@ fn goal_lines(goal: &GoalView, lines: &mut Vec<String>) {
             .as_ref()
             .filter(|risk| risk.level() == Level::Full)
         {
-            write!(
-                notes,
-                " Review estimate: full ({}).",
-                plain(&risk.reasons_text())
-            )
-            .ok();
+            let label = match risk.basis() {
+                Basis::Owns => "Review estimate",
+                Basis::Diff => "Review",
+            };
+            write!(notes, " {label}: full ({}).", plain(&risk.reasons_text())).ok();
         }
         if view.without_start {
             notes.push_str(" Started without shipit start.");
@@ -903,12 +919,25 @@ mod tests {
         drive: bool,
         test_drive: bool,
         shipped: bool,
+        full: bool,
+    }
+
+    // A checked version of 11 files is full by the default `light_max_files` of 10.
+    fn diff(full: bool) -> DiffFacts {
+        DiffFacts {
+            names: vec![],
+            files: if full { 11 } else { 1 },
+            mapped: vec![],
+            unreadable: vec![],
+            given_base: None,
+            other_base: None,
+        }
     }
 
     fn facts(given: &Given) -> Facts {
         let work = given.made.then(|| Work {
             commits: 1,
-            checked: given.checked,
+            checked: given.checked.then(|| diff(given.full)),
             patch_id: Some("patch".to_owned()),
             tree: "tree".to_owned(),
             informed: given.informed.then(|| counting("patch")),
@@ -966,7 +995,7 @@ mod tests {
     }
 
     fn given() -> impl Strategy<Value = Given> {
-        (any::<[bool; 8]>(), any::<bool>()).prop_map(|(flags, shipped)| {
+        (any::<[bool; 9]>(), any::<bool>()).prop_map(|(flags, shipped)| {
             let [
                 plan_file,
                 plan_ok,
@@ -976,6 +1005,7 @@ mod tests {
                 second,
                 drive,
                 test_drive,
+                full,
             ] = flags;
             Given {
                 plan_file,
@@ -987,6 +1017,7 @@ mod tests {
                 drive: drive && made,
                 test_drive,
                 shipped,
+                full,
             }
         })
     }
@@ -1017,7 +1048,7 @@ mod tests {
                 .filter(|(_, flag)| !**flag)
                 .map(|(n, _)| item(n))
                 .collect();
-            let ready = given.informed && given.second && (!given.test_drive || given.drive);
+            let ready = given.informed && (given.second || !given.full) && (!given.test_drive || given.drive);
             let expected = if given.shipped {
                 State::Shipped
             } else if !given.plan_ok {
@@ -1041,7 +1072,7 @@ mod tests {
                 prop_assert_eq!(&seen.next, &format!("missing: {}", comma_list(proofs)));
             }
             let waits_for_drive = given.plan_ok && given.made && given.checked && given.informed
-                && given.second && given.test_drive && !given.drive && !given.shipped;
+                && (given.second || !given.full) && given.test_drive && !given.drive && !given.shipped;
             if waits_for_drive {
                 prop_assert_eq!(seen.next.as_str(), "missing: test drive");
             }
@@ -1065,7 +1096,7 @@ mod tests {
             let item = id(if other_goal { "other:DW1" } else { "demo:DW1" });
             let mut facts = facts(&Given {
                 plan_file: true, plan_ok: true, made: true, checked: true,
-                informed: true, second: true, drive: true, test_drive: true, shipped: false,
+                informed: true, second: true, drive: true, test_drive: true, shipped: false, full: false,
             });
             let (check, key) = match record {
                 1 => (Some(coverage), "tree"),
@@ -1152,7 +1183,7 @@ mod tests {
         ) {
             let mut facts = facts(&Given {
                 plan_file: true, plan_ok: true, made: true, checked: true,
-                informed: true, second: true, drive: true, test_drive: marked, shipped: false,
+                informed: true, second: true, drive: true, test_drive: marked, shipped: false, full: false,
             });
             facts.meets = vec![id("demo:DW1")];
             if let Some(work) = facts.work.as_mut() {
@@ -1176,7 +1207,7 @@ mod tests {
             let [alpha_shipped, beta_shipped] = slices;
             let bare = |shipped| Given {
                 plan_file: false, plan_ok: false, made: false, checked: false,
-                informed: false, second: false, drive: false, test_drive: false, shipped,
+                informed: false, second: false, drive: false, test_drive: false, shipped, full: false,
             };
             let element = |text: &str, kind: Kind, after: &[&str], meets: Vec<QualifiedDoneWhen>, shipped: bool| {
                 let mut fact = facts(&bare(shipped));
@@ -1229,7 +1260,7 @@ mod tests {
                 .collect();
             let mut facts = facts(&Given {
                 plan_file: true, plan_ok: true, made: true, checked: true,
-                informed: true, second: true, drive: true, test_drive: false, shipped: false,
+                informed: true, second: true, drive: true, test_drive: false, shipped: false, full: false,
             });
             let mut review = counting("patch");
             review.findings = findings;
@@ -1381,7 +1412,7 @@ mod tests {
             let views: Vec<View> = (0..count)
                 .map(|_| judged(&facts(&Given {
                     plan_file: false, plan_ok: false, made: false, checked: false,
-                    informed: false, second: false, drive: false, test_drive: false, shipped: false,
+                    informed: false, second: false, drive: false, test_drive: false, shipped: false, full: false,
                 }), &[]))
                 .collect();
             let shown = GoalView { goal: goal(), reviewed: false, flags: Vec::new(), views };
@@ -1413,6 +1444,7 @@ mod tests {
                 drive: false,
                 test_drive: true,
                 shipped: true,
+                full: false,
             }),
             &[],
         );
@@ -1434,6 +1466,7 @@ mod tests {
             drive: false,
             test_drive: false,
             shipped: false,
+            full: false,
         };
         let next = |given: &Given, shipped: &[SliceName]| judged(&facts(given), shipped).next;
         assert_eq!(
@@ -1472,8 +1505,15 @@ mod tests {
             checked: true,
             ..made
         };
+        assert_eq!(next(&checked, &[]), "missing: informed review");
         assert_eq!(
-            next(&checked, &[]),
+            next(
+                &Given {
+                    full: true,
+                    ..checked
+                },
+                &[]
+            ),
             "missing: informed review, second opinion"
         );
         let both = Given {
@@ -1505,6 +1545,7 @@ mod tests {
             drive: false,
             test_drive: false,
             shipped: false,
+            full: false,
         });
         if let Some(work) = blocked.work.as_mut() {
             work.informed = Some(rework(
@@ -1558,6 +1599,7 @@ mod tests {
             drive: false,
             test_drive: false,
             shipped: false,
+            full: false,
         });
         if let Some(work) = claimed.work.as_mut() {
             if let Some(review) = work.informed.as_mut() {
@@ -1600,6 +1642,7 @@ mod tests {
                 drive: false,
                 test_drive: false,
                 shipped: false,
+                full: false,
             }),
             &[],
         );
@@ -1616,11 +1659,33 @@ mod tests {
             &setup_with(&[("review", Value::Table(risky))]),
             &owns,
         ));
+        let mut checked = facts(&Given {
+            plan_file: true,
+            plan_ok: true,
+            made: true,
+            checked: true,
+            informed: false,
+            second: false,
+            drive: false,
+            test_drive: false,
+            shipped: false,
+            full: false,
+        });
+        checked.name = name("gamma");
+        if let Some(work) = checked.work.as_mut() {
+            work.checked = Some(DiffFacts {
+                names: vec!["Cargo.lock".to_owned()],
+                ..diff(false)
+            });
+        }
+        let mut gamma = judged(&checked, &[]);
+        gamma.without_start = false;
+        let gamma_line = "demo/gamma: checked. Next: missing: informed review, second opinion. Review: full (lock file Cargo.lock).";
         let mut shown = GoalView {
             goal: goal(),
             reviewed: false,
             flags: vec!["goal v3: stored by hand, not recorded".to_owned()],
-            views: vec![view],
+            views: vec![view, gamma],
         };
         let head = [
             "open findings: must fix 1, must answer 0, nice to fix 2 · started: 1 of 3",
@@ -1635,6 +1700,7 @@ mod tests {
                 format!(
                     "{line} Review estimate: full (risky path src/a.rs). Started without shipit start."
                 ),
+                gamma_line.to_owned(),
             ]
         );
         if let Some(view) = shown.views.first_mut() {
@@ -1646,7 +1712,50 @@ mod tests {
                 head[0].to_owned(),
                 head[1].to_owned(),
                 format!("{line} Started without shipit start."),
+                gamma_line.to_owned(),
             ]
         );
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            failure_persistence: None,
+            ..ProptestConfig::default()
+        })]
+
+        #[test]
+        fn a_second_opinion_done_at_light_still_blocks(
+            class in proptest::sample::select(vec![Class::MustFix, Class::MustAnswer, Class::NiceToFix]),
+            rework_result in any::<bool>(),
+        ) {
+            let mut facts = facts(&Given {
+                plan_file: true,
+                plan_ok: true,
+                made: true,
+                checked: true,
+                informed: true,
+                second: false,
+                drive: false,
+                test_drive: false,
+                shipped: false,
+                full: false,
+            });
+            if let Some(work) = facts.work.as_mut() {
+                let found = vec![finding("F1", class)];
+                work.second = Some(if rework_result {
+                    rework("patch", found)
+                } else {
+                    ReceiptView { findings: found, ..counting("patch") }
+                });
+            }
+            let seen = judged(&facts, &[]);
+            if class == Class::NiceToFix && !rework_result {
+                prop_assert_eq!(seen.state, State::ReadyToShip);
+            } else {
+                prop_assert_eq!(seen.state, State::Checked);
+                let named = if class == Class::NiceToFix { "second-opinion" } else { "second-opinion F1" };
+                prop_assert!(seen.next.contains(named), "{}", seen.next);
+            }
+        }
     }
 }

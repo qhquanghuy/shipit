@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
 use serde::{Serialize, Serializer};
@@ -96,6 +97,7 @@ pub(crate) enum Level {
 #[serde(rename_all = "lowercase")]
 pub(crate) enum Basis {
     Owns,
+    Diff,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,6 +105,10 @@ pub(crate) enum Reason {
     RiskyPaths(Vec<String>),
     LockFiles(Vec<String>),
     Files { count: u64, light: u64 },
+    MappedTests(Vec<String>),
+    UnreadableMaps(Vec<String>),
+    BaseGiven(String),
+    OtherBase { checked: String, policy: String },
 }
 
 // At most three names, then how many more.
@@ -121,6 +127,21 @@ impl Reason {
             Self::RiskyPaths(names) => listed(names, "risky path", "risky paths"),
             Self::LockFiles(names) => listed(names, "lock file", "lock files"),
             Self::Files { count, light } => format!("{count} files, light allows {light}"),
+            Self::MappedTests(names) => {
+                let quoted: Vec<String> = names.iter().map(|name| format!("\"{name}\"")).collect();
+                let mut text = listed(&quoted, "mapped test", "mapped tests");
+                text.push_str(" edited or removed");
+                text
+            }
+            Self::UnreadableMaps(paths) => {
+                let mut text = listed(paths, "coverage map", "coverage maps");
+                text.push_str(" could not be read");
+                text
+            }
+            Self::BaseGiven(name) => format!("check base given by hand: {name}"),
+            Self::OtherBase { checked, policy } => {
+                format!("checked against {checked}, not {policy}")
+            }
         }
     }
 }
@@ -132,6 +153,10 @@ pub(crate) struct Risk {
 }
 
 impl Risk {
+    pub(crate) const fn basis(&self) -> Basis {
+        self.basis
+    }
+
     pub(crate) const fn level(&self) -> Level {
         if self.reasons.is_empty() {
             Level::Light
@@ -226,6 +251,201 @@ pub(crate) fn estimate(setup: &Setup, owns: &[RepoPath]) -> Risk {
         basis: Basis::Owns,
         reasons: path_reasons(setup, &names, count),
     }
+}
+
+// What status reads for a checked version; `other_base` is the receipt's base and the policy's,
+// set only when they differ.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DiffFacts {
+    pub(crate) names: Vec<String>,
+    pub(crate) files: u64,
+    pub(crate) mapped: Vec<String>,
+    pub(crate) unreadable: Vec<String>,
+    pub(crate) given_base: Option<String>,
+    pub(crate) other_base: Option<(String, String)>,
+}
+
+// After `shipit check`: the changed names, the receipt's file count, and what status could not
+// judge, each make the slice full.
+pub(crate) fn judged(setup: &Setup, diff: &DiffFacts) -> Risk {
+    let mut reasons = path_reasons(setup, &diff.names, diff.files);
+    if !diff.mapped.is_empty() {
+        reasons.push(Reason::MappedTests(diff.mapped.clone()));
+    }
+    if !diff.unreadable.is_empty() {
+        reasons.push(Reason::UnreadableMaps(diff.unreadable.clone()));
+    }
+    if let Some(name) = &diff.given_base {
+        reasons.push(Reason::BaseGiven(name.clone()));
+    }
+    if let Some((checked, policy)) = &diff.other_base {
+        reasons.push(Reason::OtherBase {
+            checked: checked.clone(),
+            policy: policy.clone(),
+        });
+    }
+    Risk {
+        basis: Basis::Diff,
+        reasons,
+    }
+}
+
+// The old side of one `git diff -U0` hunk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Hunk {
+    pub(crate) start: u64,
+    pub(crate) count: u64,
+}
+
+fn number(text: &str) -> Option<u64> {
+    (!text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit()))
+        .then(|| text.parse().ok())
+        .flatten()
+}
+
+fn range(text: &str) -> Option<(u64, u64)> {
+    match text.split_once(',') {
+        Some((start, count)) => Some((number(start)?, number(count)?)),
+        None => Some((number(text)?, 1)),
+    }
+}
+
+pub(crate) fn hunk(line: &str) -> Option<Hunk> {
+    let rest = line.strip_prefix("@@ -")?;
+    let (old, rest) = rest.split_once(" +")?;
+    let (new, _tail) = rest.split_once(" @@")?;
+    let (start, count) = range(old)?;
+    range(new)?;
+    Some(Hunk { start, count })
+}
+
+fn is_word(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_'
+}
+
+// The name occurs with no word character next to it, at an end where the name has one.
+fn names_test(line: &str, name: &str) -> bool {
+    let check_before = name.starts_with(is_word);
+    let check_after = name.ends_with(is_word);
+    line.match_indices(name).any(|(at, _)| {
+        let before = line.get(..at).and_then(|head| head.chars().next_back());
+        let after = line
+            .get(at + name.len()..)
+            .and_then(|tail| tail.chars().next());
+        let joined_before = check_before && before.is_some_and(is_word);
+        let joined_after = check_after && after.is_some_and(is_word);
+        !joined_before && !joined_after
+    })
+}
+
+struct Line<'a> {
+    indent: usize,
+    text: &'a str,
+}
+
+impl Line<'_> {
+    fn blank(&self) -> bool {
+        self.text.is_empty()
+    }
+}
+
+fn lines_of(base: &str) -> Vec<Line<'_>> {
+    base.lines()
+        .map(|line| {
+            let text = line.trim_start_matches([' ', '\t']);
+            Line {
+                indent: line.len() - text.len(),
+                text: text.trim_end(),
+            }
+        })
+        .collect()
+}
+
+// Indexes from 0; the span is (first, last), both included.
+fn span(lines: &[Line<'_>], at: usize) -> (usize, usize) {
+    let Some(named) = lines.get(at) else {
+        return (at, at);
+    };
+    let indent = named.indent;
+    let at_indent = |index: &usize, prefix: &[&str]| {
+        lines.get(*index).is_some_and(|line| {
+            line.indent == indent && prefix.iter().any(|start| line.text.starts_with(start))
+        })
+    };
+    let mut first = at;
+    while first > 0 && at_indent(&(first - 1), &["#[", "@"]) {
+        first -= 1;
+    }
+    let last_text = lines.iter().rposition(|line| !line.blank()).unwrap_or(at);
+    let signature = if named.text.ends_with('(') {
+        (at + 1..lines.len())
+            .find(|index| at_indent(index, &[")"]))
+            .unwrap_or(at)
+    } else {
+        at
+    };
+    let braced = lines
+        .get(signature)
+        .is_some_and(|line| line.text.ends_with('{'));
+    let last = if braced {
+        (signature + 1..lines.len())
+            .find(|index| at_indent(index, &["}"]))
+            .unwrap_or(last_text)
+    } else {
+        (signature + 1..lines.len())
+            .find(|index| {
+                lines.get(*index).is_some_and(|line| {
+                    !line.blank()
+                        && line.indent <= indent
+                        && ![")", "]", "}"]
+                            .iter()
+                            .any(|start| line.text.starts_with(start))
+                })
+            })
+            .and_then(|cut| {
+                (signature..cut)
+                    .rev()
+                    .find(|index| lines.get(*index).is_some_and(|line| !line.blank()))
+            })
+            .unwrap_or(last_text)
+    };
+    (first, last.max(signature))
+}
+
+// Line numbers from 1, as git writes them.
+fn touches_span(hunk: Hunk, (first, last): (usize, usize)) -> bool {
+    let (Ok(first), Ok(last)) = (u64::try_from(first), u64::try_from(last)) else {
+        return false;
+    };
+    let (first, last) = (first + 1, last + 1);
+    let inside = |line: u64| (first..=last).contains(&line);
+    if hunk.count == 0 {
+        inside(hunk.start) && inside(hunk.start.saturating_add(1))
+    } else {
+        hunk.start <= last && hunk.start.saturating_add(hunk.count) > first
+    }
+}
+
+pub(crate) fn touched_tests(base: &str, hunks: &[Hunk], mapped: &BTreeSet<String>) -> Vec<String> {
+    let lines = lines_of(base);
+    let mut found = BTreeSet::new();
+    for name in mapped {
+        let spans: Vec<(usize, usize)> = lines
+            .iter()
+            .enumerate()
+            .filter(|(_, line)| names_test(line.text, name))
+            .map(|(at, _)| span(&lines, at))
+            .collect();
+        let touched = !spans.is_empty()
+            && (hunks.is_empty()
+                || spans
+                    .iter()
+                    .any(|span| hunks.iter().any(|hunk| touches_span(*hunk, *span))));
+        if touched {
+            found.insert(name.clone());
+        }
+    }
+    found.into_iter().collect()
 }
 
 #[cfg(test)]
@@ -420,5 +640,270 @@ mod tests {
             risk.reasons_text(),
             "risky path a; 14 files, light allows 10"
         );
+        assert_eq!(
+            Reason::MappedTests(names(&["one"])).text(),
+            "mapped test \"one\" edited or removed"
+        );
+        assert_eq!(
+            Reason::MappedTests(names(&["a", "b", "c", "d"])).text(),
+            "mapped tests \"a\", \"b\", \"c\" and 1 more edited or removed"
+        );
+        assert_eq!(
+            Reason::UnreadableMaps(names(&["m.toml"])).text(),
+            "coverage map m.toml could not be read"
+        );
+        assert_eq!(
+            Reason::BaseGiven("main".to_owned()).text(),
+            "check base given by hand: main"
+        );
+        assert_eq!(
+            Reason::OtherBase {
+                checked: "side".to_owned(),
+                policy: "main".to_owned()
+            }
+            .text(),
+            "checked against side, not main"
+        );
+    }
+
+    // One test block of a file: its kind (0 Rust-like, 1 bats-like, 2 indent-only), its name,
+    // its body lines (digits, and whether the line is at column 0), a multi-line signature
+    // (Rust-like only), and the blank lines after it.
+    #[derive(Debug, Clone)]
+    struct Block {
+        kind: u8,
+        name: String,
+        body: Vec<(String, bool)>,
+        multi: bool,
+        blanks: usize,
+    }
+
+    impl Block {
+        fn lines(&self) -> Vec<String> {
+            let body = |indent: &str| {
+                self.body
+                    .iter()
+                    .map(|(digits, column_0)| {
+                        if *column_0 && self.kind != 2 {
+                            digits.clone()
+                        } else {
+                            format!("{indent}{digits}")
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let name = &self.name;
+            let mut lines = Vec::new();
+            match self.kind {
+                0 => {
+                    lines.push("    #[test]".to_owned());
+                    if self.multi {
+                        lines.push(format!("    fn {name}("));
+                        lines.push("        x: u8,".to_owned());
+                        lines.push("    ) {".to_owned());
+                    } else {
+                        lines.push(format!("    fn {name}() {{"));
+                    }
+                    lines.extend(body("        "));
+                    lines.push("    }".to_owned());
+                }
+                1 => {
+                    lines.push(format!("@test \"{name} x\" {{"));
+                    lines.extend(body("  "));
+                    lines.push("}".to_owned());
+                }
+                _ => {
+                    lines.push(format!("def {name}():"));
+                    lines.extend(body("    "));
+                }
+            }
+            lines
+        }
+    }
+
+    // Blocks with unique names. An indent-only block comes last: its span ends only at a line
+    // at its own indent or less, and a Rust-like block starts at indent 4.
+    fn blocks() -> impl Strategy<Value = Vec<Block>> {
+        proptest::collection::btree_set("t_[a-z]{3,6}", 1..=5).prop_flat_map(|names| {
+            let count = names.len();
+            let parts = proptest::collection::vec(
+                (
+                    0_u8..3,
+                    proptest::collection::vec(("[0-9]{1,6}", any::<bool>()), 1..=3),
+                    any::<bool>(),
+                    1_usize..=2,
+                ),
+                count..=count,
+            );
+            (Just(names.into_iter().collect::<Vec<_>>()), parts).prop_map(|(names, parts)| {
+                let mut blocks: Vec<Block> = names
+                    .into_iter()
+                    .zip(parts)
+                    .map(|(name, (kind, mut body, multi, blanks))| {
+                        // At most one column-0 line per block.
+                        let mut seen = false;
+                        for (_, column_0) in &mut body {
+                            *column_0 = *column_0 && !seen;
+                            seen = seen || *column_0;
+                        }
+                        Block {
+                            kind,
+                            name,
+                            body,
+                            multi,
+                            blanks,
+                        }
+                    })
+                    .collect();
+                blocks.sort_by_key(|block| block.kind);
+                blocks
+            })
+        })
+    }
+
+    // The file, each block's first and last line (from 1), and the blank lines.
+    fn file_of(blocks: &[Block]) -> (String, Vec<(u64, u64)>, Vec<u64>) {
+        let mut text = String::new();
+        let mut spans = Vec::new();
+        let mut blank = Vec::new();
+        let mut at = 0_u64;
+        for block in blocks {
+            let lines = block.lines();
+            let first = at + 1;
+            for line in &lines {
+                text.push_str(line);
+                text.push('\n');
+                at += 1;
+            }
+            spans.push((first, at));
+            for _ in 0..block.blanks {
+                text.push('\n');
+                at += 1;
+                blank.push(at);
+            }
+        }
+        (text, spans, blank)
+    }
+
+    fn universe_names(picked: &[(&str, bool, bool)]) -> Vec<String> {
+        picked.iter().map(|(path, _, _)| shown(path)).collect()
+    }
+
+    proptest! {
+        #![proptest_config(config())]
+
+        #[test]
+        fn a_hunk_header_reads_back(
+            (a, b, c, d) in (0_u64..10_000, 0_u64..10_000, 0_u64..10_000, 0_u64..10_000),
+            tail in "[ -~]{0,8}",
+            junk in "[a-z+-]{1,3}",
+        ) {
+            prop_assert_eq!(hunk(&format!("@@ -{a},{b} +{c},{d} @@{tail}")), Some(Hunk { start: a, count: b }));
+            prop_assert_eq!(hunk(&format!("@@ -{a} +{c},{d} @@{tail}")), Some(Hunk { start: a, count: 1 }));
+            prop_assert_eq!(hunk(&format!("@@ -{junk},{b} +{c},{d} @@")), None);
+            prop_assert_eq!(hunk(&format!("@@ -{a},{junk} +{c} @@")), None);
+            prop_assert_eq!(hunk(&format!("@ -{a},{b} +{c},{d} @@")), None);
+            prop_assert_eq!(hunk(&format!("x{tail}@@ -{a},{b} +{c},{d} @@")), None);
+            prop_assert_eq!(hunk("@@ -3,0 +4,2 @@"), Some(Hunk { start: 3, count: 0 }));
+            prop_assert_eq!(hunk("@@ -7 +7 @@"), Some(Hunk { start: 7, count: 1 }));
+        }
+
+        #[test]
+        fn a_change_inside_a_mapped_test_names_it(
+            blocks in blocks(),
+            picks in proptest::collection::vec(any::<bool>(), 5),
+        ) {
+            let (text, spans, blank) = file_of(&blocks);
+            let mapped: BTreeSet<String> = blocks
+                .iter()
+                .zip(&picks)
+                .filter(|(_, pick)| **pick)
+                .map(|(block, _)| block.name.clone())
+                .collect();
+            let only = |block: &Block| -> Vec<String> {
+                if mapped.contains(&block.name) { vec![block.name.clone()] } else { Vec::new() }
+            };
+            for (block, (first, last)) in blocks.iter().zip(&spans) {
+                for line in *first..=*last {
+                    prop_assert_eq!(touched_tests(&text, &[Hunk { start: line, count: 1 }], &mapped), only(block), "{}", line);
+                    prop_assert_eq!(touched_tests(&text, &[Hunk { start: line, count: last - line + 1 }], &mapped), only(block));
+                }
+                for after in *first..*last {
+                    prop_assert_eq!(touched_tests(&text, &[Hunk { start: after, count: 0 }], &mapped), only(block));
+                }
+                prop_assert_eq!(touched_tests(&text, &[Hunk { start: *last, count: 0 }], &mapped), Vec::<String>::new());
+            }
+            for line in blank {
+                prop_assert_eq!(touched_tests(&text, &[Hunk { start: line, count: 0 }], &mapped), Vec::<String>::new());
+            }
+            let every: Vec<String> = mapped.iter().cloned().collect();
+            let total = u64::try_from(text.lines().count()).unwrap();
+            prop_assert_eq!(touched_tests(&text, &[Hunk { start: 1, count: total }], &mapped), every.clone());
+            prop_assert_eq!(touched_tests(&text, &[], &mapped), every);
+        }
+
+        #[test]
+        fn the_diff_decides_the_level(
+            names in proptest::sample::subsequence(UNIVERSE.to_vec(), 0..=UNIVERSE.len()),
+            files in 0_u64..15,
+            light in 0_u64..6,
+            mapped in proptest::collection::vec("[a-z]{1,4}", 0..=4),
+            unreadable in proptest::collection::vec("[a-z]{1,4}", 0..=4),
+            given in any::<bool>(),
+            other in any::<bool>(),
+        ) {
+            let diff = DiffFacts {
+                names: universe_names(&names),
+                files,
+                mapped: mapped.clone(),
+                unreadable: unreadable.clone(),
+                given_base: given.then(|| "main".to_owned()),
+                other_base: other.then(|| ("side".to_owned(), "main".to_owned())),
+            };
+            let risk = judged(&test_setup(light), &diff);
+            let mut expected = Vec::new();
+            let risky: Vec<String> = names.iter().filter(|(_, risky, _)| *risky).map(|(path, _, _)| shown(path)).collect();
+            if !risky.is_empty() {
+                expected.push(Reason::RiskyPaths(risky));
+            }
+            let locks: Vec<String> = names.iter().filter(|(_, _, lock)| *lock).map(|(path, _, _)| shown(path)).collect();
+            if !locks.is_empty() {
+                expected.push(Reason::LockFiles(locks));
+            }
+            if files > light {
+                expected.push(Reason::Files { count: files, light });
+            }
+            if !mapped.is_empty() {
+                expected.push(Reason::MappedTests(mapped));
+            }
+            if !unreadable.is_empty() {
+                expected.push(Reason::UnreadableMaps(unreadable));
+            }
+            if given {
+                expected.push(Reason::BaseGiven("main".to_owned()));
+            }
+            if other {
+                expected.push(Reason::OtherBase { checked: "side".to_owned(), policy: "main".to_owned() });
+            }
+            let level = if expected.is_empty() { Level::Light } else { Level::Full };
+            prop_assert_eq!(risk.level(), level);
+            prop_assert_eq!(risk, Risk { basis: Basis::Diff, reasons: expected });
+            let plain = |names: &[&str], given_base: Option<&str>, other_base: Option<(&str, &str)>| {
+                judged(&setup_with(&[]), &DiffFacts {
+                    names: names.iter().map(|name| (*name).to_owned()).collect(),
+                    files: u64::try_from(names.len()).unwrap(),
+                    mapped: Vec::new(),
+                    unreadable: Vec::new(),
+                    given_base: given_base.map(str::to_owned),
+                    other_base: other_base.map(|(a, b)| (a.to_owned(), b.to_owned())),
+                })
+            };
+            let lock = plain(&["src/a.rs", "Cargo.lock"], None, None);
+            prop_assert_eq!((lock.level(), lock.reasons_text()), (Level::Full, "lock file Cargo.lock".to_owned()));
+            let given = plain(&["src/a.rs"], Some("main"), None);
+            prop_assert_eq!(given.reasons_text(), "check base given by hand: main");
+            let other = plain(&["src/a.rs"], None, Some(("side", "main")));
+            prop_assert_eq!(other.reasons_text(), "checked against side, not main");
+        }
     }
 }
