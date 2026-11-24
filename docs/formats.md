@@ -186,6 +186,8 @@ coverage`. It prints the map as compact JSON in number order (`{"DW2": […], "D
 |---|---|
 | `usage: shipit format map <file>` | other arguments |
 
+`shipit status` reads the coverage record of a slice's current version: an item of the map counts as tested when the record holds it, its key is the version's tree, and the line that wrote it is a `shipit coverage -- ` line of the setup. A record is a local file that anyone on the machine can write: it is a guardrail, and CI's recheck is the gate. The other ways an item is confirmed are in `docs/goal.md` (Slice states).
+
 ## Findings
 
 A finding is one line, `<label> [(<decorations>)]: <text>` (Conventional Comments), with no control character in it.
