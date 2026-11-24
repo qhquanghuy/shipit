@@ -55,6 +55,25 @@ READY="owner: ship it, then shipit log alpha shipped --merge <merge commit> --go
   [ "$(the_line beta)" = "demo/beta: build plan ready. Next: lead: start it with shipit start beta --goal demo" ]
 }
 
+@test "status: a reviewed slice stays checked until each done-when item is confirmed" {
+  make_slice_repo
+  plan_ready alpha
+  make_work slice/demo/alpha 1
+  check_here
+  "$SHIPIT_BIN" receipt informed-review alpha --author sonnet:high --by opus:high --result approve \
+    --finding "nitpick: the first item has no test yet" >/dev/null
+  "$SHIPIT_BIN" receipt second-opinion alpha --author sonnet:high --by opus:high --result approve >/dev/null
+  st
+  [ "$status" -eq 0 ]
+  [ "$(the_line alpha)" = "demo/alpha: checked. Next: missing: proof of demo:DW1. Open: nice to fix 1. Started without shipit start." ]
+  st --json
+  [ "$(jq -c '.goals[0].slices[] | select(.name == "alpha") | .unconfirmed' <<<"$output")" = '["demo:DW1"]' ]
+  lg alpha known-issue --kind informed-review --finding F1 --reason "DW1: waits for the owner's run" --by sonnet:high
+  [ "$status" -eq 0 ]
+  st
+  [ "$(the_line alpha)" = "demo/alpha: ready to ship. Next: $READY. Not proven: demo:DW1. Started without shipit start." ]
+}
+
 @test "status: deleting each receipt lowers the state" {
   make_slice_repo
   ready alpha
