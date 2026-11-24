@@ -8,6 +8,7 @@ use crate::pure::agent_ledger::{
     CommitVerdict, MAKERS_LOG, agent_of_worktree, commit_verdict, missing_commit_line,
 };
 use crate::pure::failure::Failure;
+use crate::pure::hooks::{LEFTHOOK_MAIN, PRE_COMMIT_MAIN};
 
 pub(crate) const HIDDEN: bool = false;
 pub(crate) const NEEDS_SETUP: bool = false;
@@ -32,6 +33,16 @@ fn hook_text(git: &Git) -> Option<String> {
     let args: Vec<&OsStr> = args.iter().map(OsStr::new).collect();
     let path = String::from_utf8(git.output(&args).ok()?).ok()?;
     read_text(std::path::Path::new(path.trim())).ok()
+}
+
+// What the worktree holds of the configs a generated hook stub runs: only what is committed, since
+// the worktree is made from commits (a lefthook-local file is per person and is not there).
+fn config_texts(git: &Git) -> Vec<String> {
+    [PRE_COMMIT_MAIN]
+        .iter()
+        .chain(LEFTHOOK_MAIN)
+        .filter_map(|name| read_text(&git.top().join(name)).ok())
+        .collect()
 }
 
 pub(crate) fn run(
@@ -60,7 +71,7 @@ pub(crate) fn run(
         writeln!(err, "shipit: {text}").ok();
     }
     let hook = agent_of_worktree(git.top()).and_then(|_agent| hook_text(&git));
-    if let Some(text) = missing_commit_line(git.top(), hook.as_deref()) {
+    if let Some(text) = missing_commit_line(git.top(), hook.as_deref(), &config_texts(&git)) {
         writeln!(err, "shipit: {text}").ok();
     }
     Ok(())

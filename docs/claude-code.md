@@ -132,6 +132,8 @@ When `shipit pre-commit` runs in an agent worktree whose pre-commit hook file (t
 
 - `shipit: not checked: the pre-commit hook of this worktree has no shipit pre-commit line, so a commit here may not be checked (docs/claude-code.md, Parallel makers)`
 
+The pre-commit framework and lefthook generate their hook files, which never hold the line. For those two stubs the check looks for the ShipIt entry in the config the worktree holds (`.pre-commit-config.yaml`, `lefthook.yml` and the other lefthook names), which is what is committed.
+
 When `shipit claude-agent-count` sees a launched maker start again outside its own worktree, it tells the agent as SubagentStart context: `ShipIt: not checked: agent <id> is an isolated shipit:maker started again outside its worktree; stop and tell the lead to start a new maker (docs/claude-code.md, Parallel makers)`.
 
 **Limits.**

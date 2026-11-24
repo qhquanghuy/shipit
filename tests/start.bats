@@ -161,6 +161,7 @@ sh_start() {
   [ "$status" -eq 0 ]
   [ "$(grep -cxF '/.shipit/wt/' "$common/info/exclude")" -eq 1 ]
   [ "$(grep -cxF '/.claude/worktrees/' "$common/info/exclude")" -eq 1 ]
+  [ "$(grep -cE '^/\.(shipit/wt|claude/worktrees)/$' "$common/info/exclude")" -eq 2 ]
   mkdir -p .shipit/coverage/demo
   touch .shipit/coverage/demo/alpha.toml
   run git check-ignore -q .shipit/coverage/demo/alpha.toml
