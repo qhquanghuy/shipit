@@ -147,15 +147,39 @@ put() {
   [ ! -e "$S/build-plan.md" ]
 }
 
-@test "store put: a goal or a roadmap version is the owner's" {
+# draft_roadmap <file> [goal]: the validate fixture's roadmap, wrapped as the roadmap kind's output,
+# naming <goal> (default demo).
+draft_roadmap() {
+  {
+    printf '## Form\n\n```toml\nkind = "roadmap"\noutcome = "ready-for-review"\ninput = "a goal"\n```\n\n'
+    sed "s/^goal = \"demo\"/goal = \"${2-demo}\"/" "$SHIPIT_SRC/tests/fixtures/roadmap.md"
+    printf '\n## Goal\nThe demo goal.\n\n## Shared contracts\n- none\n\n## Owner decisions\n- none\n\n## Risks\n- none\n'
+  } >"$1"
+}
+
+@test "store put: anyone may put the next goal or roadmap version, and each put is recorded in the logbook" {
   make_slice_repo
-  printf 'x\n' >g.md
-  put goal g.md --goal demo --slice alpha
-  [ "$status" -eq 2 ]
-  [ "$stderr" = "shipit: a goal version is the owner's: copy it into the store by hand (docs/store.md)" ]
-  put roadmap g.md --goal demo --slice alpha
-  [ "$status" -eq 2 ]
-  [ "$stderr" = "shipit: a roadmap version is the owner's decision: the lead copies it into the store by hand once the owner approves it (docs/store.md)" ]
+  cp "$SHIPIT_SRC/tests/fixtures/goal.md" g.md
+  put goal g.md --goal demo
+  [ "$status" -eq 0 ]
+  [ "$output" = "stored $(store)/goals/demo/goal.v1.md" ]
+  cmp g.md "$(store)/goals/demo/goal.v1.md"
+  put goal g.md --goal demo
+  [ "$status" -eq 0 ]
+  [ "$output" = "stored $(store)/goals/demo/goal.v2.md" ]
+  cmp g.md "$(store)/goals/demo/goal.v2.md"
+  draft_roadmap r.md
+  put roadmap r.md --goal demo
+  [ "$status" -eq 0 ]
+  [ "$output" = "stored $(store)/goals/demo/roadmap.v2.md" ]
+  cmp r.md "$(store)/goals/demo/roadmap.v2.md"
+  run jq -c 'select(.event == "stored") | [.kind, .version, .hash, (.time | test("Z$")), (.tool | startswith("shipit "))]' "$(store)/goals/demo/logbook.jsonl"
+  [ "$status" -eq 0 ]
+  h() { git hash-object --no-filters "$(store)/goals/demo/$1"; }
+  [ "$(sed -n 1p <<<"$output")" = "[\"goal\",1,\"$(h goal.v1.md)\",true,true]" ]
+  [ "$(sed -n 2p <<<"$output")" = "[\"goal\",2,\"$(h goal.v2.md)\",true,true]" ]
+  [ "$(sed -n 3p <<<"$output")" = "[\"roadmap\",2,\"$(h roadmap.v2.md)\",true,true]" ]
+  [ "$(wc -l <<<"$output")" -eq 3 ]
 }
 
 @test "store put: a slice the roadmap does not name, or a proof step, is refused" {
