@@ -73,6 +73,11 @@ model = "claude"
 max_lines = 30
 status_update_max_lines = 10
 example_max_lines = 15
+
+[review]
+full_paths = ["src/auth/", "src/commands/claude_*.rs"]
+light_max_files = 10
+lock_files = ["deps.lock"]
 ```
 
 A tier is a model. Effort belongs to a role or a stand-in. A worker's rank is its tier,
@@ -89,7 +94,7 @@ An effort above the cap is reported as `must not be above agents.effort_cap`.
 
 | Path | Rule |
 |---|---|
-| top level | A table with exactly the keys `version`, `gate`, `agents`, `packs`, `owner`; all are required. |
+| top level | A table with exactly the keys `version`, `gate`, `agents`, `packs`, `owner`; all are required, and optionally `review`. |
 | `version` | The integer `1`. |
 | `gate` | Exactly `base`, `max_files`, `check`, `environment`, and optionally `setup_files`: what `shipit check` reads. |
 | `gate.base` | A branch name, as `git check-ref-format --branch` accepts it: the base branch. Not a revision (`HEAD~1`), not a tag. |
@@ -108,13 +113,17 @@ An effort above the cap is reported as `must not be above agents.effort_cap`.
 | `packs` | Exactly `skill`, `domain`, `model`; each a non-empty string. |
 | `owner` | Exactly `max_lines` and `status_update_max_lines`, and optionally `example_max_lines`; each an integer, 1 or more. `status_update_max_lines` is not above `max_lines`. `max_lines` is the most lines any message to the owner may have, not counting example blocks. `status_update_max_lines` is the most lines a progress update to the owner may have. |
 | `owner.example_max_lines` | An integer, 1 or more; default 15: the most lines all the example blocks of one message to the owner may have together. An example block is a fenced block whose info string is exactly `example` (a fence of three or more backticks or tildes, indented by at most 3 spaces). Its lines count here and not toward `max_lines`; its two fence lines count here too, so an empty block is not free. It may be above `max_lines`. Adding or removing the key counts as a change of `owner.example_max_lines` for `shipit check`, as for `agents.parallel`, although a missing key means the default. A setup without the key means 15, so a setup written before the key existed stays valid. |
+| `review` | Optional; when it is missing the defaults below hold. A table with only `full_paths`, `light_max_files` and `lock_files`, each optional. `shipit status` reads it from the base branch's setup, never the slice's, to set each slice's review level (light or full; see [goal.md](goal.md), Review levels). Messages: `.review: must be an object`, `.review.<key>: unknown key`. |
+| `review.full_paths` | An array of paths, written like `gate.setup_files`, except that a `*` inside one part matches any run of characters but `/` (`src/commands/claude_*.rs`); default an empty array. A change that touches one makes the slice full. They are added to the setup file and `gate.setup_files`, which are always risky. Messages: `.review.full_paths: must be an array of paths`, `.review.full_paths[<i>]: must be a path inside the repository, written like src/ or src/commands/claude_*.rs`. |
+| `review.light_max_files` | An integer, 0 or more; default 10. A change of more files than this is full. Message: `.review.light_max_files: must be an integer of at least 0`. |
+| `review.lock_files` | An array of file names, no `/`; default an empty array. A changed file whose last part is one of them is full. They are added to the built-in list: `Cargo.lock`, `flake.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `poetry.lock`, `uv.lock`, `go.sum`, `Gemfile.lock`. Messages: `.review.lock_files: must be an array of file names`, `.review.lock_files[<i>]: must be a file name, written like deps.lock`. |
 
 ## Who reads what
 
 `shipit check` reads `gate.base`, `gate.max_files`, `gate.check`, `gate.environment` and `gate.setup_files` to judge and run the checks, and compares the whole setup with the base branch's, field by field. `shipit verify` reads no setup at all: a receipt is
 valid for a tree and nothing else. `agents` (`max_fix_rounds`, `effort_cap`, `tiers`, `roles`, `planner` included, `parallel`), `packs` and `owner` are
 validated now but read by later parts of ShipIt (the roles that make and review work, the packs they use, the
-limits on messages to the owner). `agents.parallel.slices` is read by the commands that start slices and report on them, and `agents.parallel.agents` by the plugin (its agent cap), both from the base branch's setup.
+limits on messages to the owner). `agents.parallel.slices` is read by the commands that start slices and report on them, and `agents.parallel.agents` by the plugin (its agent cap), both from the base branch's setup. `shipit status` reads `review` and `gate.setup_files` from the base branch's setup to set each slice's review level.
 
 ## Loading
 

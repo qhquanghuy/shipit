@@ -11,7 +11,7 @@ ShipIt is a framework, not a how-to. It fixes the flow, the roles, the rules and
 Packs say how each phase is carried out.
 
 ```
-goal → roadmap → build plan → make → check → informed review + second opinion + test drive → fix rounds → recheck → ship
+goal → roadmap → build plan → make → check → review (light: informed review; full: + second opinion) + test drive → fix rounds → recheck → ship
 ```
 
 ### Why
@@ -58,7 +58,7 @@ functional.
 | build plan | Say how each part is verified before making. Fix interfaces; leave bodies to the maker. Reviewed by a higher rank first. |
 | make | Cheapest capable model, one task at a time, no review mid-way. Code is written for its reviewer. Use the machine's tools; never install globally. |
 | check | Tools enforce, not prose. Runs once per exact version and leaves a receipt. A slice cannot change its own checks; only a setup-only change may, and it touches only the setup file and the files the setup lists as setup files (the configs its check tools read), nothing else. |
-| review | Informed review and second opinion, ranked above the maker; the teach-back reader is a signal. Findings are fixed or written down as known issues. |
+| review | Ranked above the maker. At the light level one ranked review, the informed review; at the full level also the blind second opinion and the teach-back reader, which is a signal. One rule sets the level (Review levels, below). Findings are fixed or written down as known issues. |
 | test drive | Use it as its audience would, from the goal only, never the code. Checklist first, then exploration. |
 | fix rounds | Limited (2 by default). Past the limit, the lead decides and records it. |
 | recheck | Trust no receipt; run everything again where the maker has no control. |
@@ -74,7 +74,7 @@ The human reviewer reads the change, so the code must be simple to read:
 - The pull request leads with the changed types and interfaces.
 
 A **reader** (a low-rank model) explains the change without seeing the build plan. The informed
-reviewer compares that explanation with the goal, or with what the pull request claims when there is no goal. It is a signal, not a gate.
+reviewer compares that explanation with the goal, or with what the pull request claims when there is no goal. It is a signal, not a gate. In a slice the reader runs at the full review level only.
 
 A review also gives the reader of the change a **reading path**: one flow for each entry point the
 change adds or alters, with the steps in call order, a risk word where care is needed, a link
@@ -156,11 +156,33 @@ The commands, their usage and their exit codes are printed by `shipit help` and 
 | build plan ready | a build plan exists and has a valid review receipt |
 | made | the slice's branch has commits beyond the base |
 | checked | a valid check receipt exists for the current version |
-| ready to ship | checked, and valid receipts exist for the informed review, the second opinion and, if marked, the test drive; every finding is fixed or is a known issue; every done-when item the slice meets is confirmed |
+| ready to ship | checked, and valid receipts exist for the informed review, the second opinion when the slice's review level is full, and, if marked, the test drive; every finding is fixed or is a known issue; every done-when item the slice meets is confirmed |
 | shipped | the logbook holds a "shipped" entry naming the owner's merge |
 
 A slice only moves forward by gaining a receipt or a logbook entry. It moves back by itself when
 the work changes: the receipts no longer match, so the computed state drops.
+
+**Review levels.** One rule decides whether a slice is risky: it touches a risky path (the setup
+file, `gate.setup_files` and `[review] full_paths`), changes more than `[review] light_max_files`
+files (default 10), edits or removes a mapped test (a test that a coverage map committed at the
+slice's fork names), or changes a lock file (a built-in list plus `[review] lock_files`). A slice is
+also risky when a coverage map at the fork cannot be read, or when its check named its base by
+hand (`shipit check --base`) or was run against another base. A risky slice is reviewed at the
+**full** level: the informed review, the blind second opinion and the reader. Any other slice is
+reviewed at the **light** level: one ranked review, the informed review. A second opinion done at
+light still counts against the slice with an open blocking finding or a rework result. The rule
+runs twice: on the slice's `owns` before the work (the estimate, which picks the maker) and on the
+diff once `shipit check` has passed (which picks the review). Anyone may raise a slice to full with
+`shipit log <slice> raise --reason <why>`; no entry lowers it, only the base branch's setup does.
+`shipit status` names the level on a slice's line only when it is full: `Review estimate: full
+(<reasons>).` from the owns, `Review: full (<reasons>).` from the diff; `shipit status --json` gives
+every unshipped slice `"review": {"level", "from", "reasons"}`, and the pull-request summary has a
+`Review level` line. The mapped-test rule reads the fork's text of each changed file and takes the
+span of each line that names a mapped test (attributes above it, a braced body, or an indented
+block). It has four known limits: a line added just above a test's first line does not count;
+another line that names the test (a doc, a fixture) makes its own span; a `}` at the test's indent
+inside a string or heredoc ends a braced span early; a column-0 line inside a string or heredoc
+cuts a span without braces.
 
 A done-when item is confirmed by the first of: a test the slice's coverage map names that ran in this version, as the coverage record shows, when a `shipit coverage` line of the setup wrote that record; a shipped proof step that meets the item, once every slice it follows has shipped (a proof step is not tied to a version of the work); a passing test drive of this version, for a slice marked for one; a known issue logged against a review or test drive of this version, when the reviewer's finding names the item (`DW2` of the slice's own goal, or `<goal>:DW2`, as a whole word; the lead's reason does not count). A known issue confirms without proving: the status line says `Not proven: <items>.` A proof step that comes after the slice cannot confirm the slice's item. An unconfirmed item keeps the slice checked, and its next step names it: `missing: proof of <goal>:DW<n>`. When the setup has no `shipit coverage` line, the owner adds one as a setup-only change; until it merges, the slice lead asks the informed reviewer for a non-blocking finding that names the item and logs it as a known issue. `shipit init` writes the test run wrapped in `shipit coverage` when it can tell the command (a Cargo project).
 
