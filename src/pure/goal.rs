@@ -99,18 +99,37 @@ fn item(line: &str) -> Option<DoneWhen> {
     number(digits).map(DoneWhen)
 }
 
+// An item's words run over the prose lines that follow it, at any indent, to a blank line, the
+// next item or a fence; every run of whitespace is one space.
+fn collapse(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 // A goal that cannot be read with certainty is an error: a dropped item would pass `DW3: no slice`.
-pub(crate) fn goal_items(text: &str) -> Result<Vec<DoneWhen>, String> {
+pub(crate) fn goal_item_texts(text: &str) -> Result<Vec<(DoneWhen, String)>, String> {
     let problem = |why: String| say(GOAL_PROBLEM, &[("why", &why)]);
     let all = lines(text).map_err(problem)?;
     let under = section(&all, HEADING).map_err(problem)?;
-    let mut items: Vec<DoneWhen> = Vec::new();
-    for line in under.iter().filter(|line| matches!(line.kind, Kind::Prose)) {
-        if let Some(found) = item(line.text) {
-            if items.contains(&found) {
+    let mut items: Vec<(DoneWhen, String)> = Vec::new();
+    let mut running = false;
+    for line in under {
+        if !matches!(line.kind, Kind::Prose) {
+            running = false;
+        } else if let Some(found) = item(line.text) {
+            if items.iter().any(|(id, _)| *id == found) {
                 return Err(say(GOAL_TWICE, &[("n", &found.0)]));
             }
-            items.push(found);
+            let words = line.text.split_once(". ").map_or("", |(_, rest)| rest);
+            items.push((found, collapse(words)));
+            running = true;
+        } else if line.text.trim().is_empty() {
+            running = false;
+        } else if running && let Some((_, words)) = items.last_mut() {
+            let more = collapse(line.text);
+            if !words.is_empty() {
+                words.push(' ');
+            }
+            words.push_str(&more);
         }
     }
     if items.is_empty() {
@@ -118,6 +137,10 @@ pub(crate) fn goal_items(text: &str) -> Result<Vec<DoneWhen>, String> {
     } else {
         Ok(items)
     }
+}
+
+pub(crate) fn goal_items(text: &str) -> Result<Vec<DoneWhen>, String> {
+    goal_item_texts(text).map(|items| items.into_iter().map(|(id, _)| id).collect())
 }
 
 #[cfg(test)]
@@ -168,6 +191,35 @@ mod tests {
             text.push_str("1. after the section\n");
             let wanted: Vec<DoneWhen> = numbers.iter().copied().map(DoneWhen).collect();
             prop_assert_eq!(goal_items(&text), Ok(wanted));
+        }
+
+        #[test]
+        fn an_item_reads_its_words_across_lines(
+            words in proptest::collection::vec("[a-z]{1,6}", 1..8),
+            breaks in proptest::collection::vec(0_u8..3, 8),
+            direct in any::<bool>(),
+        ) {
+            let mut item_text = String::new();
+            for (word, space) in words.iter().zip(&breaks) {
+                item_text.push_str(word);
+                item_text.push_str(match space {
+                    0 => " ",
+                    1 => "\n",
+                    _ => "\n   ",
+                });
+            }
+            let item_text = item_text.trim_end();
+            let between = if direct { "\n" } else { "\n\nstray words\n" };
+            let text = format!(
+                "{HEADING}\n\n1. {item_text}{between}2. second\n```\nfenced words\n```\n"
+            );
+            prop_assert_eq!(
+                goal_item_texts(&text),
+                Ok(vec![
+                    (DoneWhen(1), words.join(" ")),
+                    (DoneWhen(2), "second".to_owned()),
+                ])
+            );
         }
 
         #[test]

@@ -122,6 +122,7 @@ pub(crate) struct Facts {
     pub(crate) plan: Option<Plan>,
     pub(crate) work: Option<Work>,
     pub(crate) entries: Vec<Logged>,
+    pub(crate) changes: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -137,6 +138,8 @@ pub(crate) struct View {
     pub(crate) merge_note: Option<String>,
     // What the receipts of this version claim that the setup does not bear out.
     pub(crate) claims: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) changes: Vec<String>,
     pub(crate) branch: Option<String>,
     pub(crate) test_drive: bool,
     pub(crate) meets: Vec<QualifiedDoneWhen>,
@@ -559,6 +562,7 @@ pub(crate) fn view(facts: &Facts, policy: &Policy<'_>) -> View {
         without_start,
         merge_note: merge_note(&facts.entries),
         claims,
+        changes: facts.changes.clone(),
         branch: work.map(|_| facts.branch.clone()),
         test_drive,
         meets: facts.meets.clone(),
@@ -696,6 +700,7 @@ impl Unknown {
 pub(crate) struct GoalView {
     pub(crate) goal: GoalName,
     pub(crate) reviewed: bool,
+    pub(crate) flags: Vec<String>,
     pub(crate) views: Vec<View>,
 }
 
@@ -709,13 +714,17 @@ impl GoalView {
 
 fn goal_lines(goal: &GoalView, lines: &mut Vec<String>) {
     let name = &goal.goal;
-    lines.push(if goal.reviewed {
+    let mut head = if goal.reviewed {
         format!("goal {name}: roadmap reviewed")
     } else {
         format!(
             "goal {name}: roadmap needs a review (shipit receipt plan-review roadmap --goal {name})"
         )
-    });
+    };
+    if !goal.flags.is_empty() {
+        write!(head, ". {}.", plain(&goal.flags.join("; "))).ok();
+    }
+    lines.push(head);
     for view in goal
         .views
         .iter()
@@ -736,6 +745,9 @@ fn goal_lines(goal: &GoalView, lines: &mut Vec<String>) {
         }
         if !view.claims.is_empty() {
             write!(notes, " Claims: {}.", plain(&view.claims.join("; "))).ok();
+        }
+        if !view.changes.is_empty() {
+            write!(notes, " Changed: {}.", plain(&view.changes.join("; "))).ok();
         }
         if view.without_start {
             notes.push_str(" Started without shipit start.");
@@ -907,6 +919,7 @@ mod tests {
             }),
             work,
             entries,
+            changes: Vec::new(),
         }
     }
 
@@ -1253,6 +1266,7 @@ mod tests {
                         without_start: false,
                         merge_note: None,
                         claims: Vec::new(),
+                        changes: Vec::new(),
                         branch: None,
                         test_drive: false,
                         meets: Vec::new(),
@@ -1269,7 +1283,7 @@ mod tests {
                 total,
                 started_count(&one, 0) + started_count(&b.iter().collect::<Vec<_>>(), unknown)
             );
-            let shown = GoalView { goal: goal(), reviewed: true, views: a };
+            let shown = GoalView { goal: goal(), reviewed: true, flags: Vec::new(), views: a };
             let lines = render(&[&shown], &[], (total, 3), None);
             let wanted = format!("started: {total} of 3");
             prop_assert!(lines.first().is_some_and(|line| line.contains(&wanted)));
@@ -1302,6 +1316,7 @@ mod tests {
                 without_start: false,
                 merge_note: None,
                 claims: Vec::new(),
+                changes: Vec::new(),
                 branch: started.then(|| "slice/demo/beta".to_owned()),
                 test_drive: false,
                 meets: Vec::new(),
@@ -1341,7 +1356,7 @@ mod tests {
                     informed: false, second: false, drive: false, test_drive: false, shipped: false,
                 }), &[]))
                 .collect();
-            let shown = GoalView { goal: goal(), reviewed: false, views };
+            let shown = GoalView { goal: goal(), reviewed: false, flags: Vec::new(), views };
             let full = render(&[&shown], &[], (0, 3), None);
             let cut = render(&[&shown], &[], (0, 3), Some(limit));
             let wanted = usize::try_from(limit).unwrap_or(usize::MAX);
@@ -1535,6 +1550,7 @@ mod tests {
         let shown = GoalView {
             goal: goal(),
             reviewed: true,
+            flags: Vec::new(),
             views: vec![seen],
         };
         let lines = render(&[&shown], &[], (1, 3), None);
@@ -1565,17 +1581,19 @@ mod tests {
             nice_to_fix: 2,
         };
         view.without_start = true;
+        view.changes = vec!["goal v1 -> v3 since start: DW2 reworded, DW3 removed".to_owned()];
         let shown = GoalView {
             goal: goal(),
             reviewed: false,
+            flags: vec!["goal v3: stored by hand, not recorded".to_owned()],
             views: vec![view],
         };
         assert_eq!(
             render(&[&shown], &[], (1, 3), None),
             [
                 "open findings: must fix 1, must answer 0, nice to fix 2 · started: 1 of 3",
-                "goal demo: roadmap needs a review (shipit receipt plan-review roadmap --goal demo)",
-                "demo/beta: made. Next: run shipit check on slice/demo/beta. Open: must fix 1, nice to fix 2. Started without shipit start.",
+                "goal demo: roadmap needs a review (shipit receipt plan-review roadmap --goal demo). goal v3: stored by hand, not recorded.",
+                "demo/beta: made. Next: run shipit check on slice/demo/beta. Open: must fix 1, nice to fix 2. Changed: goal v1 -> v3 since start: DW2 reworded, DW3 removed. Started without shipit start.",
             ]
         );
     }

@@ -21,7 +21,7 @@ READY="owner: ship it, then shipit log alpha shipped --merge <merge commit> --go
   st
   [ "$status" -eq 0 ]
   [ "$(sed -n 1p <<<"$output")" = "open findings: must fix 0, must answer 0, nice to fix 0 · started: 0 of 3" ]
-  [ "$(sed -n 2p <<<"$output")" = "goal demo: roadmap needs a review (shipit receipt plan-review roadmap --goal demo)" ]
+  [ "$(sed -n 2p <<<"$output")" = "goal demo: roadmap needs a review (shipit receipt plan-review roadmap --goal demo). roadmap v1: stored by hand, not recorded." ]
   [ "$(the_line alpha)" = "demo/alpha: planned. Next: planner: write the build plan at $(store)/goals/demo/slices/alpha/build-plan.md" ]
   [ "$(the_line proof)" = "demo/proof: planned. Next: wait for beta, gamma to ship" ]
   write_build_plan alpha "the plan"
@@ -31,7 +31,7 @@ READY="owner: ship it, then shipit log alpha shipped --merge <merge commit> --go
   plan_ready beta
   "$SHIPIT_BIN" receipt plan-review roadmap --author opus:high --by fable:high --result approve
   st
-  [ "$(sed -n 2p <<<"$output")" = "goal demo: roadmap reviewed" ]
+  [ "$(sed -n 2p <<<"$output")" = "goal demo: roadmap reviewed. roadmap v1: stored by hand, not recorded." ]
   [ "$(the_line alpha)" = "demo/alpha: build plan ready. Next: lead: start it with shipit start alpha --goal demo" ]
   [ "$(the_line beta)" = "demo/beta: build plan ready. Next: wait for alpha to ship" ]
   mapped_work alpha DW1
@@ -289,4 +289,27 @@ READY="owner: ship it, then shipit log alpha shipped --merge <merge commit> --go
   [[ $(the_line alpha) == *"Claims: informed-review author is not the setup's maker; second-opinion author is not the setup's maker; second-opinion used --fresh."* ]]
   st --json
   [ "$(jq -c '.goals[0].slices[] | select(.name == "alpha") | .claims' <<<"$output")" = '["informed-review author is not the setup'"'"'s maker","second-opinion author is not the setup'"'"'s maker","second-opinion used --fresh"]' ]
+}
+
+@test "status: a goal reworded since the slice started names the item, and a version stored or changed by hand is called out" {
+  make_slice_repo
+  cp "$SHIPIT_SRC/tests/fixtures/goal.md" g.md
+  run "$SHIPIT_BIN" store put goal g.md --goal demo
+  [ "$status" -eq 0 ]
+  logged_start alpha
+  sed -e 's/^2\. The second item\./2. The second item, reworded./' -e '/^3\. The third item\./d' g.md >g2.md
+  run "$SHIPIT_BIN" store put goal g2.md --goal demo
+  [ "$status" -eq 0 ]
+  cp g2.md "$(store)/goals/demo/goal.v3.md"
+  printf 'edited\n' >>"$(store)/goals/demo/goal.v2.md"
+  st
+  [ "$status" -eq 0 ]
+  [[ $output == *"goal v2: changed by hand after it was stored; goal v3: stored by hand, not recorded; roadmap v1: stored by hand, not recorded."* ]]
+  [[ $(the_line alpha) == *"Changed: goal v1 -> v3 since start: DW2 reworded, DW3 removed."* ]]
+  run --separate-stderr "$SHIPIT_BIN" status --summary alpha --goal demo
+  [ "$status" -eq 0 ]
+  [[ $output == *$'Goal and roadmap versions:\n- goal v1 -> v3 since start: DW2 reworded, DW3 removed\n- goal v2: changed by hand after it was stored\n- goal v3: stored by hand, not recorded\n- roadmap v1: stored by hand, not recorded'* ]]
+  st --json
+  [ "$(jq -c '.goals[0].version_flags' <<<"$output")" = '["goal v2: changed by hand after it was stored","goal v3: stored by hand, not recorded","roadmap v1: stored by hand, not recorded"]' ]
+  [ "$(jq -c '.goals[0].slices[] | select(.name == "alpha") | .changes' <<<"$output")" = '["goal v1 -> v3 since start: DW2 reworded, DW3 removed"]' ]
 }

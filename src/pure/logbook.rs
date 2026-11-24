@@ -1,7 +1,9 @@
 use serde::Serialize;
 use serde_json::{Map, Value};
 
+use crate::pure::receipt::Oid;
 use crate::pure::roadmap::SliceName;
+use crate::pure::store_path::OwnerFile;
 
 // One write_all of at most this many bytes, newline included, is not interleaved with another
 // writer's line.
@@ -145,22 +147,93 @@ fn parse_entry(object: &Map<String, Value>) -> Option<Entry> {
     Some(entry)
 }
 
-fn parse_line(text: &str) -> Option<Logged> {
-    let value: Value = serde_json::from_str(text).ok()?;
-    let object = value.as_object()?;
-    Some(Logged {
-        slice: SliceName::parse(object.get("slice")?.as_str()?)?,
-        entry: parse_entry(object)?,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StoredVersion {
+    pub(crate) kind: OwnerFile,
+    pub(crate) version: u64,
+    pub(crate) hash: Oid,
+}
+
+// A stored entry belongs to the goal, not to a slice, so it has no slice field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Event {
+    Logged(Logged),
+    Stored(StoredVersion),
+}
+
+#[derive(Serialize)]
+struct StoredLine<'a> {
+    event: &'static str,
+    kind: &'static str,
+    version: u64,
+    hash: &'a str,
+    time: &'a str,
+    tool: &'a str,
+}
+
+// The line with its newline; its size is bounded by construction.
+pub(crate) fn stored_line(
+    stored: &StoredVersion,
+    time: &str,
+    tool: &str,
+) -> Result<String, String> {
+    let line = StoredLine {
+        event: "stored",
+        kind: stored.kind.stem(),
+        version: stored.version,
+        hash: stored.hash.as_str(),
+        time,
+        tool,
+    };
+    let mut text = serde_json::to_string(&line).map_err(|why| why.to_string())?;
+    text.push('\n');
+    Ok(text)
+}
+
+fn parse_stored(object: &Map<String, Value>) -> Option<StoredVersion> {
+    let version = object
+        .get("version")?
+        .as_u64()
+        .filter(|version| *version >= 1)?;
+    Some(StoredVersion {
+        kind: OwnerFile::parse(object.get("kind")?.as_str()?)?,
+        version,
+        hash: Oid::parse(object.get("hash")?.as_str()?)?,
     })
 }
 
-pub(crate) fn read_entries(text: &str) -> Result<Vec<Logged>, String> {
+fn parse_event(text: &str) -> Option<Event> {
+    let value: Value = serde_json::from_str(text).ok()?;
+    let object = value.as_object()?;
+    if object.get("event")?.as_str()? == "stored" {
+        return parse_stored(object).map(Event::Stored);
+    }
+    Some(Event::Logged(Logged {
+        slice: SliceName::parse(object.get("slice")?.as_str()?)?,
+        entry: parse_entry(object)?,
+    }))
+}
+
+// The stored entries and the slices' entries, in file order.
+pub(crate) fn read_history(text: &str) -> Result<Vec<Event>, String> {
     text.lines()
         .enumerate()
         .map(|(index, line)| {
-            parse_line(line).ok_or_else(|| format!("line {} is not a logbook entry", index + 1))
+            parse_event(line).ok_or_else(|| format!("line {} is not a logbook entry", index + 1))
         })
         .collect()
+}
+
+pub(crate) fn read_entries(text: &str) -> Result<Vec<Logged>, String> {
+    read_history(text).map(|events| {
+        events
+            .into_iter()
+            .filter_map(|event| match event {
+                Event::Logged(logged) => Some(logged),
+                Event::Stored(_) => None,
+            })
+            .collect()
+    })
 }
 
 pub(crate) fn is_shipped_by(entries: &[Logged], slice: &SliceName) -> bool {
@@ -302,6 +375,62 @@ mod tests {
                 read_entries(&broken),
                 Err(format!("line {} is not a logbook entry", at + 1))
             );
+        }
+
+        #[test]
+        fn stored_lines_keep_their_place_and_entries_skip_them(
+            entries in proptest::collection::vec(entry(), 0..5),
+            stored in proptest::collection::vec(
+                (
+                    prop_oneof![Just(OwnerFile::Goal), Just(OwnerFile::Roadmap)],
+                    1_u64..,
+                    "[0-9a-f]{40}",
+                ),
+                0..5,
+            ),
+            order in any::<u64>(),
+        ) {
+            let logged: Vec<Logged> = entries
+                .into_iter()
+                .map(|entry| Logged { slice: slice("beta"), entry })
+                .collect();
+            let versions: Vec<StoredVersion> = stored
+                .into_iter()
+                .map(|(kind, version, hash)| StoredVersion {
+                    kind,
+                    version,
+                    hash: Oid::parse(&hash).expect("40 hex digits"),
+                })
+                .collect();
+            let (mut next_logged, mut next_stored) = (logged.iter(), versions.iter());
+            let mut events: Vec<Event> = Vec::new();
+            for bit in 0..logged.len() + versions.len() {
+                let prefer_stored = (order >> bit) & 1 == 1;
+                let from_stored = if prefer_stored { next_stored.next() } else { None };
+                match from_stored {
+                    Some(found) => events.push(Event::Stored(found.clone())),
+                    None => match next_logged.next() {
+                        Some(found) => events.push(Event::Logged(found.clone())),
+                        None => events.extend(next_stored.next().cloned().map(Event::Stored)),
+                    },
+                }
+            }
+            let text: String = events
+                .iter()
+                .map(|event| match event {
+                    Event::Logged(found) => line(
+                        &found.entry,
+                        &found.slice,
+                        "2026-11-21T10:00:00Z",
+                        "shipit 0.1.0",
+                    )
+                    .expect("short entries"),
+                    Event::Stored(found) => stored_line(found, "2026-11-21T10:00:00Z", "shipit 0.1.0")
+                        .expect("a short line"),
+                })
+                .collect();
+            prop_assert_eq!(read_history(&text), Ok(events));
+            prop_assert_eq!(read_entries(&text), Ok(logged));
         }
 
         #[test]

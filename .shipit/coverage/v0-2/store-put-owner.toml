@@ -1,0 +1,16 @@
+DW13 = [
+  "an_owner_version_is_one_above_the_newest",
+  "a_roadmap_names_its_goal",
+  "the_flags_must_fit_the_kind",
+  "stored_lines_keep_their_place_and_entries_skip_them",
+  "an_item_reads_its_words_across_lines",
+  "a_span_runs_from_the_version_before_the_start_to_the_newest",
+  "a_version_is_flagged_when_unrecorded_or_changed_by_hand",
+  "item_changes_name_removed_and_reworded_ids",
+  "the_lines_of_a_goal",
+  "the_summary_for_a_known_walk",
+  "store put: anyone may put the next goal or roadmap version, and each put is recorded in the logbook",
+  "store put: a goal without done-when items, or a roadmap of another goal, is refused",
+  "status: a goal reworded since the slice started names the item, and a version stored or changed by hand is called out",
+  "store put: the roadmap skill hands over shipit store put after the owner approves",
+]

@@ -12,7 +12,7 @@ DW17 = [
   "store put: after the start a build plan is never replaced",
   "store put: a review of a round lands at its place and is never replaced",
   "store put: a draft that is not valid is refused with its problems, and nothing is written",
-  "store put: a goal or a roadmap version is the owner's",
+  "store put: anyone may put the next goal or roadmap version, and each put is recorded in the logbook",
   "store put: a slice the roadmap does not name, or a proof step, is refused",
   "store put: a link on the way into the store is refused, and nothing is written through it",
   "start: keeps the worktree folder out of git once, in the common dir, and never the coverage maps",

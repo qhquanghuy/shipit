@@ -7,9 +7,6 @@ use crate::pure::roadmap::SliceName;
 pub(crate) const REVIEW_KINDS: [&str; 4] =
     ["explanation", "informed-review", "second-opinion", "review"];
 
-const NOT_THE_OWNERS: &str =
-    "a goal version is the owner's: copy it into the store by hand (docs/store.md)";
-const ROADMAP_NOT_PUT: &str = "a roadmap version is the owner's decision: the lead copies it into the store by hand once the owner approves it (docs/store.md)";
 const ROUND_ONLY_FOR_REVIEWS: &str =
     "--round is only for explanation, informed-review, second-opinion and review";
 
@@ -45,15 +42,9 @@ pub(crate) enum Place {
 pub(crate) fn place(kind: &str, slice: Option<&str>, round: Option<&str>) -> Result<Place, String> {
     let review_kind = REVIEW_KINDS.iter().find(|known| **known == kind);
     let plan_kind = matches!(kind, "build-plan" | "plan-review");
-    if kind == "goal" {
-        return Err(NOT_THE_OWNERS.to_owned());
-    }
-    if kind == "roadmap" {
-        return Err(ROADMAP_NOT_PUT.to_owned());
-    }
     if !plan_kind && review_kind.is_none() {
         return Err(format!(
-            "shipit store put takes build-plan, plan-review, explanation, informed-review, second-opinion or review, not {kind}"
+            "shipit store put takes goal, roadmap, build-plan, plan-review, explanation, informed-review, second-opinion or review, not {kind}"
         ));
     }
     let slice = slice.ok_or_else(|| format!("{kind} needs --slice <name>"))?;
@@ -82,6 +73,76 @@ pub(crate) fn place(kind: &str, slice: Option<&str>, round: Option<&str>) -> Res
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum OwnerFile {
+    Goal,
+    Roadmap,
+}
+
+impl OwnerFile {
+    pub(crate) const fn stem(self) -> &'static str {
+        match self {
+            Self::Goal => "goal",
+            Self::Roadmap => "roadmap",
+        }
+    }
+
+    pub(crate) fn name(self, version: u64) -> String {
+        format!("{}.v{version}.md", self.stem())
+    }
+
+    // The version of a file name `<stem>.v<N>.md`, N with no sign and no leading zero.
+    pub(crate) fn version(self, file_name: &str) -> Option<u64> {
+        let digits = file_name
+            .strip_prefix(self.stem())?
+            .strip_prefix(".v")?
+            .strip_suffix(".md")?;
+        let plain = !digits.starts_with('0') && digits.bytes().all(|byte| byte.is_ascii_digit());
+        if plain { digits.parse().ok() } else { None }
+    }
+
+    // At u64::MAX the name is taken, so the put is refused.
+    pub(crate) fn next(newest: Option<u64>) -> u64 {
+        newest.map_or(1, |n| n.saturating_add(1))
+    }
+
+    pub(crate) fn parse(text: &str) -> Option<Self> {
+        [Self::Goal, Self::Roadmap]
+            .into_iter()
+            .find(|kind| kind.stem() == text)
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum PutKind {
+    Owner(OwnerFile),
+    Placed(Place),
+}
+
+fn no_flags(kind: &str) -> String {
+    format!("{kind} takes no --slice or --round")
+}
+
+// The kind as typed, then the values of --slice and --round when given.
+pub(crate) fn put_kind(
+    kind: &str,
+    slice: Option<&str>,
+    round: Option<&str>,
+) -> Result<PutKind, String> {
+    match OwnerFile::parse(kind) {
+        Some(_) if slice.is_some() || round.is_some() => Err(no_flags(kind)),
+        Some(owned) => Ok(PutKind::Owner(owned)),
+        None => place(kind, slice, round).map(PutKind::Placed),
+    }
+}
+
+// The goal a roadmap names in its Slices block; None when it cannot be read.
+pub(crate) fn roadmap_goal(text: &str) -> Option<GoalName> {
+    let block = crate::pure::block::toml_block(text, "## Slices").ok()??;
+    let table = crate::pure::setup::toml_table(block.as_bytes()).ok()?;
+    Some(crate::pure::roadmap::parse_roadmap(&table).ok()?.goal)
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Shown {
     Goal,
@@ -90,7 +151,7 @@ pub(crate) enum Shown {
 }
 
 // The kind as typed, then the values of --slice and --round when given. A goal and a roadmap are
-// shown, though never put; the other kinds are placed as a put places them.
+// shown whole; the other kinds are placed as a put places them.
 pub(crate) fn shown(kind: &str, slice: Option<&str>, round: Option<&str>) -> Result<Shown, String> {
     let whole = match kind {
         "goal" => Some(Shown::Goal),
@@ -99,9 +160,7 @@ pub(crate) fn shown(kind: &str, slice: Option<&str>, round: Option<&str>) -> Res
     };
     let known = REVIEW_KINDS.contains(&kind) || matches!(kind, "build-plan" | "plan-review");
     match whole {
-        Some(_) if slice.is_some() || round.is_some() => {
-            Err(format!("{kind} takes no --slice or --round"))
-        }
+        Some(_) if slice.is_some() || round.is_some() => Err(no_flags(kind)),
         Some(found) => Ok(found),
         None if known => place(kind, slice, round).map(Shown::Placed),
         None => Err(format!(
@@ -168,6 +227,7 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
+    use crate::pure::goal_pick::roadmap_version;
 
     const KINDS: [&str; 6] = [
         "build-plan",
@@ -290,23 +350,59 @@ mod tests {
             with_slice in any::<bool>(),
             with_round in any::<bool>(),
         ) {
-            let found = place(
+            let found = put_kind(
                 kind,
                 with_slice.then_some("alpha"),
                 with_round.then_some("2"),
             );
             let is_review = REVIEW_KINDS.contains(&kind);
             let known = is_review || matches!(kind, "build-plan" | "plan-review");
+            let owned = matches!(kind, "goal" | "roadmap");
             let expected = match kind {
-                "goal" => Err(NOT_THE_OWNERS.to_owned()),
-                "roadmap" => Err(ROADMAP_NOT_PUT.to_owned()),
-                _ if !known => Err(format!("shipit store put takes build-plan, plan-review, explanation, informed-review, second-opinion or review, not {kind}")),
+                _ if owned && (with_slice || with_round) => Err(format!("{kind} takes no --slice or --round")),
+                _ if owned => Ok(()),
+                _ if !known => Err(format!("shipit store put takes goal, roadmap, build-plan, plan-review, explanation, informed-review, second-opinion or review, not {kind}")),
                 _ if !with_slice => Err(format!("{kind} needs --slice <name>")),
                 _ if !is_review && with_round => Err(ROUND_ONLY_FOR_REVIEWS.to_owned()),
                 _ if is_review && !with_round => Err(format!("{kind} needs --round <n>")),
                 _ => Ok(()),
             };
-            prop_assert_eq!(found.map(|_place| ()), expected);
+            prop_assert_eq!(found.map(|_kind| ()), expected);
+        }
+
+        #[test]
+        fn an_owner_version_is_one_above_the_newest(
+            n in 1_u64..,
+            rest in "[a-z0-9.]{0,12}",
+        ) {
+            for kind in [OwnerFile::Goal, OwnerFile::Roadmap] {
+                prop_assert_eq!(kind.version(&kind.name(n)), Some(n));
+                prop_assert_eq!(kind.version(&format!("{}.v0{n}.md", kind.stem())), None);
+                prop_assert_eq!(OwnerFile::parse(kind.stem()), Some(kind));
+            }
+            prop_assert_eq!(OwnerFile::Goal.version(&OwnerFile::Roadmap.name(n)), None);
+            prop_assert_eq!(OwnerFile::next(None), 1);
+            prop_assert_eq!(OwnerFile::next(Some(n)), n.saturating_add(1));
+            prop_assert_eq!(
+                OwnerFile::Goal.version(&format!("goal{rest}")),
+                roadmap_version(&format!("roadmap{rest}"))
+            );
+            prop_assert_eq!(
+                OwnerFile::Roadmap.version(&format!("roadmap{rest}")),
+                roadmap_version(&format!("roadmap{rest}"))
+            );
+        }
+
+        #[test]
+        fn a_roadmap_names_its_goal(
+            goal in "[a-z][a-z0-9-]{0,8}",
+            prose in "[a-z ]{0,20}",
+        ) {
+            let text = format!(
+                "# Roadmap\n\n{prose}\n\n## Slices\n\n```toml\ngoal = \"{goal}\"\n\n[[slice]]\nname = \"a\"\nafter = []\nmeets = [\"DW1\"]\nowns = [\"f/\"]\ntest_drive = false\n```\n"
+            );
+            prop_assert_eq!(roadmap_goal(&text), GoalName::parse(&goal));
+            prop_assert_eq!(roadmap_goal(&text.replace("## Slices", "## Other")), None);
         }
 
         #[test]

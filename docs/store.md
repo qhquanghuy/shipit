@@ -14,7 +14,7 @@ tracks them:
   receipts/metric/<tree>/<name>.json            shipit metric, one number per name
   goals/<goal>/goal.vN.md                      one folder per named goal; a changed goal is a new version
   goals/<goal>/roadmap.vN.md                   the goal's roadmap, versioned the same way
-  goals/<goal>/logbook.jsonl                   append-only; one per goal, each entry names its slice
+  goals/<goal>/logbook.jsonl                   append-only; one per goal, each entry names its slice, but a stored entry, which records a put goal or roadmap version
   goals/<goal>/slices/<slice>/build-plan.md    one build plan per slice
   goals/<goal>/slices/<slice>/plan-review.md   the plan review that approved the build plan
   goals/<goal>/slices/<slice>/reviews/round-<k>/<kind>.md   one file per review of a fix round
@@ -24,7 +24,7 @@ tracks them:
 `shipit check` writes `receipts/check/`; `shipit receipt` writes the review, test-drive and
 plan-review receipts; `shipit receipt`, `shipit log` and `shipit start` append to the logbook of a
 goal; `shipit coverage` writes `receipts/coverage/` and `shipit metric` writes `receipts/metric/`; `shipit complete` writes `metrics/<goal>.toml` and then
-deletes the folder `goals/<goal>/`. A goal version and a roadmap version are put there by hand: each is the owner's decision, and the lead copies a roadmap version once the owner approves it. `shipit store put` puts the build plans, plan reviews and reviews (Store put). Later commands add files and never change this layout. Receipts are keyed by the work and not by a goal, so they
+deletes the folder `goals/<goal>/`. `shipit store put` puts a goal or roadmap version, recording it in the logbook, and the build plans, plan reviews and reviews (Store put). Later commands add files and never change this layout. Receipts are keyed by the work and not by a goal, so they
 stay at the root. The coverage map of a slice is not here: it is committed in the project, at
 `.shipit/coverage/<goal>/<slice>.toml`.
 
@@ -45,12 +45,14 @@ stay at the root. The coverage map of a slice is not here: it is committed in th
 
 ## Store put
 
-`shipit store put <kind> <draft> --goal <name> --slice <name> [--round <n>]` puts a checked draft into the
+`shipit store put goal|roadmap <draft> --goal <name>` and `shipit store put <kind> <draft> --goal <name> --slice <name> [--round <n>]` put a checked draft into the
 store, because Claude Code refuses a write under the git folder before any allow rule, and ShipIt writes
-the file itself. Each place is below `goals/<goal>/slices/<slice>/`:
+the file itself. A goal or roadmap version is placed in `goals/<goal>/`; each other place is below `goals/<goal>/slices/<slice>/`:
 
 | kind | flags | place | a taken place |
 |---|---|---|---|
+| `goal` | none | `goal.v<N>.md`, N one above the newest, 1 for the first | refused |
+| `roadmap` | none | `roadmap.v<N>.md`, the same | refused |
 | `build-plan` | `--slice` | `build-plan.md` | replaced while the slice is not started, refused after |
 | `plan-review` | `--slice` | `plan-review.md` (the plan review that approved the build plan) | as `build-plan` |
 | `explanation`, `informed-review`, `second-opinion`, `review` | `--slice`, `--round` | `reviews/round-<n>/<kind>.md` | refused |
@@ -59,20 +61,22 @@ Rules:
 
 - The draft is checked as `shipit validate <kind> <draft>` checks it, and nothing is written when it is not valid.
 - The slice must be a slice of the goal's newest roadmap, not a proof step.
-- A goal version and a roadmap version are never put: each is the owner's decision, and is copied by hand.
+- A goal draft needs numbered done-when items. A roadmap draft is checked as `shipit validate roadmap <draft> --goal <goal>` checks it, and must name that goal in its Slices block.
+- Anyone may put a goal or roadmap version, because nothing tells the owner's `!` command from an agent's call (the same file descriptors and environment). An agent puts one only after the owner approves it in chat (the roadmap skill).
+- After the file is written, each put appends `{"event":"stored","kind":"goal","version":3,"hash":"<git hash of the file>","time":"…","tool":"shipit …"}` to the goal's logbook. If the hash or the append fails, the version stays and `shipit status` shows it as not recorded.
+- A binary built before this version cannot read a stored line: it stops on the logbook with `line <n> is not a logbook entry; fix that line by hand`. Do not delete the line; rebuild the binary in every worktree before the first put.
 - Names are parsed, so no place leaves `goals/<goal>/`: a round is a number from 1 up.
 - Every level from `<git common dir>/shipit` down to the file's folder is a real folder, never a link; a missing level is made.
 - A new file is written under a temporary name and hard-linked to its place, so a taken name is never replaced, a link there included.
 - A build plan or a plan review is replaced with an atomic rename only while the slice is not started (shown by `shipit status` as planned or build plan ready). A replaced build plan needs a new plan review, because the receipt is keyed by the file's hash. A replaced plan review is not tracked: no receipt or status reads the file.
 - After the start, a changed build plan is the lead's copy by hand. The old plan-review receipt no longer matches the new version, so the slice needs a new plan review (`shipit status` shows it).
 
-It prints `stored <path>` or `replaced <path>`, with the absolute path, on stdout. Exit 0 stored, 1 refused (the draft is not valid, or the place is taken), 2 usage, setup, goal, roadmap or slice error, a link on the way, or a write that failed.
+It prints `stored <path>` or `replaced <path>`, with the absolute path, on stdout. Exit 0 stored, 1 refused (the draft is not valid, a roadmap of another goal, or the place is taken), 2 usage, setup, goal, roadmap or slice error, a link on the way, or a write, hash or append that failed.
 
 The refusals, each after `shipit: `:
 
-- `a goal version is the owner's: copy it into the store by hand (docs/store.md)`
-- `a roadmap version is the owner's decision: the lead copies it into the store by hand once the owner approves it (docs/store.md)`
-- `shipit store put takes build-plan, plan-review, explanation, informed-review, second-opinion or review, not <kind>`
+- `shipit store put takes goal, roadmap, build-plan, plan-review, explanation, informed-review, second-opinion or review, not <kind>`
+- `<kind> takes no --slice or --round` (`goal` and `roadmap`)
 - `<kind> needs --slice <name>`
 - `--round is only for explanation, informed-review, second-opinion and review`
 - `<kind> needs --round <n>`
@@ -83,6 +87,24 @@ The refusals, each after `shipit: `:
 - `<path> exists and the slice <slice> is started: a changed build plan or plan review is then the lead's copy by hand (docs/store.md)`
 - `<level> is a symbolic link; the store holds no links`
 - `<path> exists; a store file is never replaced`
+- `<draft> is not a valid goal:`, then one problem per line
+- `<draft> names another goal than "<goal>": a roadmap is put under the goal it names`
+- `no goal "<goal>" in the store` (a roadmap put, and no goal version is stored); exit 2
+- `cannot append to <path>`; exit 2
+- `no file at <path>` (the hash of the stored file cannot be read); exit 2
+- `cannot write the logbook line: <why>`; exit 2
+
+## What status and the summary show about versions
+
+For a slice with a start entry in the logbook, `shipit status` and the pull-request summary (`shipit status --summary`) show what happened to the goal and the roadmap since it started, one line for each kind that changed: `<kind> v<from> -> v<to> since start`, where `<from>` is the newest version recorded before the start (or, with none, the highest version in the store below the first one recorded after it) and `<to>` is the newest in the store; or `<kind> v<to> since start` when no `<from>` is known. For a goal, the line goes on with `: DW<n> reworded, DW<m> removed` (each id in id order; an item is reworded when its text differs, with every run of whitespace read as one space) or `: done-when items not readable` when a version cannot be read. A line for a slice is on its status line after `Changed:`, and first in the part "Goal and roadmap versions:" of the summary.
+
+For every goal, started slice or not, its goal line in `shipit status` and each summary also name:
+
+- `<kind> v<n>: stored by hand, not recorded`: a version above the lowest recorded one that has no stored entry. When no version of that kind is recorded, its newest version, so an old goal shows it on every status until its next put. On an old goal this flag is constant: it cannot show an edit in place of a version that was never recorded, or of any version below the lowest record.
+- `<kind> v<n>: changed by hand after it was stored`: the file's hash is not the one its stored entry holds.
+- `<kind> v<n>: recorded but missing from the store`: a stored entry names a version whose file is gone.
+
+The limits: a stored line typed into the logbook by hand cannot be told from one the tool wrote, and a slice started without `shipit start` has no start to compare with. A version copied by hand before the start is not recorded, so the span since start can begin at an older version and show that copy's changes as changes since start.
 
 ## Store show
 
