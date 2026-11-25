@@ -24,7 +24,7 @@ use crate::pure::text::comma_list;
 
 pub(crate) const HIDDEN: bool = false;
 pub(crate) const NEEDS_SETUP: bool = true;
-pub(crate) const USAGE: &str = "usage: shipit log <slice> <note|known-issue|answer|shipped> [--text <t>] [--kind <k>] [--finding <Fn>] [--reason <t>] [--by <w>] [--merge <commit>] [--note <evidence>] [--unmatched] [--goal <name>]";
+pub(crate) const USAGE: &str = "usage: shipit log <slice> <note|known-issue|answer|shipped|raise> [--text <t>] [--kind <k>] [--finding <Fn>] [--reason <t>] [--by <w>] [--merge <commit>] [--note <evidence>] [--unmatched] [--goal <name>]";
 pub(crate) const SUMMARY: &str = "Appends one event to the goal's logbook.";
 pub(crate) const EXITS: [&str; 4] = [
     "logged",
@@ -106,6 +106,9 @@ enum Event {
     },
     ShippedProof {
         note: String,
+    },
+    Raise {
+        reason: String,
     },
 }
 
@@ -192,6 +195,17 @@ fn event(args: Args, event: &str) -> Result<Event, Failure> {
                      step; {USAGE}"
                 ))),
             }
+        }
+        "raise" => {
+            only(&args.given, &["--reason"], event)?;
+            let reason = required(args.reason, "--reason", event)?;
+            // A raise is read by people deciding the review, so it must say why.
+            if reason.trim().is_empty() {
+                return Err(Failure::usage(format!(
+                    "raise needs a --reason that is not blank; {USAGE}"
+                )));
+            }
+            Ok(Event::Raise { reason })
         }
         "receipt" => Err(Failure::usage(
             "\"receipt\" entries are written by shipit receipt".to_owned(),
@@ -285,7 +299,8 @@ fn newest_review<'a>(entries: &'a [Logged], slice: &SliceName) -> Option<(&'a st
             | Entry::Answer { .. }
             | Entry::ShippedMerge { .. }
             | Entry::ShippedProof { .. }
-            | Entry::Started { .. } => None,
+            | Entry::Started { .. }
+            | Entry::Raise { .. } => None,
         })
 }
 
@@ -300,7 +315,8 @@ fn already_named_by<'a>(entries: &'a [Logged], commit: &Oid) -> Option<&'a Slice
         | Entry::KnownIssue { .. }
         | Entry::Answer { .. }
         | Entry::ShippedProof { .. }
-        | Entry::Started { .. } => None,
+        | Entry::Started { .. }
+        | Entry::Raise { .. } => None,
     })
 }
 
@@ -350,6 +366,7 @@ pub(crate) fn run(
         Entry::ShippedMerge { .. } | Entry::ShippedProof { .. } => "shipped",
         Entry::Receipt { .. } => "receipt",
         Entry::Started { .. } => "started",
+        Entry::Raise { .. } => "raise",
     };
     let text = line(&entry, &slice, &now_utc(), &tool()).map_err(Failure::usage)?;
     append_line(&logbook_path(&store, &goal), &text)?;
@@ -485,6 +502,12 @@ fn entry_for(
     };
     let entry = match (event, element) {
         (Event::Note { text }, _) => Entry::Note { text },
+        (Event::Raise { reason }, Element::Slice(_)) => Entry::Raise { reason },
+        (Event::Raise { .. }, Element::Proof(_)) => {
+            return Err(Failure::usage(format!(
+                "\"{slice}\" is a proof step: it has no review level"
+            )));
+        }
         (
             Event::KnownIssue {
                 kind,

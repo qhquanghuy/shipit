@@ -136,7 +136,8 @@ pub(crate) fn plan(
             | Entry::Answer { .. }
             | Entry::ShippedMerge { .. }
             | Entry::ShippedProof { .. }
-            | Entry::Started { .. } => None,
+            | Entry::Started { .. }
+            | Entry::Raise { .. } => None,
         })
         .map(|(slice, issue)| {
             let found = findings

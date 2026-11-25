@@ -289,3 +289,38 @@ a_review() {
   [[ $output != *$'\e'* ]]
   [ "$(grep -c '^### ShipIt:' <<<"$output")" -eq 1 ]
 }
+
+@test "log: raise records a reason, status then asks for the second opinion" {
+  suite_repo
+  plan_ready alpha
+  mapped_work alpha DW1
+  check_here
+  "$SHIPIT_BIN" receipt informed-review alpha --author sonnet:high --by opus:high --result approve >/dev/null
+  st
+  [[ $(the_line alpha) == "demo/alpha: ready to ship."* ]]
+  local book before
+  book="$(store)/goals/demo/logbook.jsonl"
+  lg alpha raise --reason "touches the agent gate"
+  [ "$status" -eq 0 ]
+  [ "$output" = "logged raise for alpha" ]
+  [ "$(jq -c 'select(.event == "raise") | [.slice, .reason]' "$book")" = '["alpha","touches the agent gate"]' ]
+  st
+  [ "$(the_line alpha)" = "demo/alpha: checked. Next: missing: second opinion. Review: full (raised: touches the agent gate). Started without shipit start." ]
+  "$SHIPIT_BIN" receipt second-opinion alpha --author sonnet:high --by opus:high --result approve >/dev/null
+  st
+  [[ $(the_line alpha) == "demo/alpha: ready to ship."* ]]
+  before=$(wc -l <"$book")
+  lg alpha raise
+  [ "$status" -eq 2 ]
+  [[ $stderr == "shipit: raise needs --reason; "* ]]
+  lg alpha raise --reason "  "
+  [ "$status" -eq 2 ]
+  [[ $stderr == "shipit: raise needs a --reason that is not blank; "* ]]
+  lg alpha raise --reason x --text y
+  [ "$status" -eq 2 ]
+  [[ $stderr == "shipit: raise does not take --text; "* ]]
+  lg proof raise --reason x
+  [ "$status" -eq 2 ]
+  [ "$stderr" = 'shipit: "proof" is a proof step: it has no review level' ]
+  [ "$(wc -l <"$book")" -eq "$before" ]
+}

@@ -40,7 +40,7 @@ READY="owner: ship it, then shipit log alpha shipped --merge <merge commit> --go
   [[ $output == *"started: 1 of 3"* ]]
   check_here
   st
-  [ "$(the_line alpha)" = "demo/alpha: checked. Next: missing: informed review, second opinion. Started without shipit start." ]
+  [ "$(the_line alpha)" = "demo/alpha: checked. Next: missing: informed review. Started without shipit start." ]
   "$SHIPIT_BIN" receipt informed-review alpha --author sonnet:high --by opus:high --result approve
   "$SHIPIT_BIN" receipt second-opinion alpha --author sonnet:high --by opus:high --result approve
   st
@@ -49,10 +49,110 @@ READY="owner: ship it, then shipit log alpha shipped --merge <merge commit> --go
   git merge -q --no-ff slice/demo/alpha -m "merge alpha"
   lg alpha shipped --merge HEAD
   [ "$status" -eq 0 ]
+  st --json
+  [ "$(jq -c '.goals[0].slices[] | select(.name == "alpha") | [.branch, has("review")]' <<<"$output")" = '["slice/demo/alpha",false]' ]
   st
   [[ $output == *"started: 0 of 3"* ]]
   [[ $output == *"shipped (demo): alpha"* ]]
   [ "$(the_line beta)" = "demo/beta: build plan ready. Next: lead: start it with shipit start beta --goal demo" ]
+}
+
+@test "status: a light slice is ready to ship with the informed review alone" {
+  suite_repo
+  plan_ready alpha
+  mapped_work alpha DW1
+  check_here
+  "$SHIPIT_BIN" receipt informed-review alpha --author sonnet:high --by opus:high --result approve
+  st
+  [ "$(the_line alpha)" = "demo/alpha: ready to ship. Next: $READY. Started without shipit start." ]
+}
+
+@test "status: a slice not started shows a full review estimate from its owns" {
+  make_slice_repo
+  write_setup "$(cat .config/shipit.toml)"$'\n\n[review]\nfull_paths = ["docs/"]'
+  st
+  [ "$status" -eq 0 ]
+  [ "$(the_line alpha)" = "demo/alpha: planned. Next: planner: write the build plan at $(store)/goals/demo/slices/alpha/build-plan.md. Review estimate: full (risky path docs/alpha)." ]
+  [[ $(the_line beta) != *Review* ]]
+  st --json
+  [ "$(jq -c '.goals[0].slices[] | select(.name == "alpha") | .review' <<<"$output")" = '{"level":"full","from":"owns","reasons":["risky path docs/alpha"]}' ]
+  [ "$(jq -c '.goals[0].slices[] | select(.name == "proof") | has("review")' <<<"$output")" = false ]
+}
+
+@test "status: a lock file, a risky path, more files than review.light_max_files, an edited mapped test or a base given by hand make the review full" {
+  suite_repo
+  write_setup "$(cat .config/shipit.toml)"$'\n\n[review]\nfull_paths = ["risky/"]\nlight_max_files = 3'
+  mkdir -p tests .shipit/coverage/demo
+  printf '@test "one" {\n  true\n}\n\n@test "two" {\n  true\n}\n' >tests/one.bats
+  printf 'DW3 = ["one"]\n' >.shipit/coverage/demo/gamma.toml
+  git add tests .shipit
+  git commit -q -m "a mapped test"
+  plan_ready alpha
+  mapped_work alpha DW1
+  check_here
+  local light="demo/alpha: checked. Next: missing: informed review. Started without shipit start."
+  local full="demo/alpha: checked. Next: missing: informed review, second opinion. Review: full"
+  st
+  [ "$(the_line alpha)" = "$light" ]
+  "$SHIPIT_BIN" check --base main >/dev/null 2>&1
+  st
+  [ "$(the_line alpha)" = "$light" ]
+  git branch side main
+  "$SHIPIT_BIN" check --base side >/dev/null 2>&1
+  st
+  [ "$(the_line alpha)" = "$full (check base given by hand: side; checked against side, not main). Started without shipit start." ]
+  check_here
+  st
+  [ "$(the_line alpha)" = "$light" ]
+  printf 'lock\n' >Cargo.lock
+  git add Cargo.lock
+  git commit -q -m "a lock file"
+  check_here
+  st
+  [ "$(the_line alpha)" = "$full (lock file Cargo.lock). Started without shipit start." ]
+  st --json
+  [ "$(jq -c '.goals[0].slices[] | select(.name == "alpha") | .review' <<<"$output")" = '{"level":"full","from":"diff","reasons":["lock file Cargo.lock"]}' ]
+  git reset -q --hard HEAD~1
+  mkdir risky
+  printf 'a\n' >risky/a
+  git add risky
+  git commit -q -m "a risky path"
+  check_here
+  st
+  [ "$(the_line alpha)" = "$full (risky path risky/a). Started without shipit start." ]
+  git reset -q --hard HEAD~1
+  printf '1\n' >extra-1
+  printf '2\n' >extra-2
+  git add extra-1 extra-2
+  git commit -q -m "more files"
+  check_here
+  st
+  [ "$(the_line alpha)" = "$full (4 files, light allows 3). Started without shipit start." ]
+  git reset -q --hard HEAD~1
+  sed -i 's/true/false/' tests/one.bats
+  git commit -q -am "a weaker test"
+  check_here
+  st
+  [ "$(the_line alpha)" = "$full (mapped test \"one\" edited or removed). Started without shipit start." ]
+  git reset -q --hard HEAD~1
+  sed -i "1i @skip" tests/one.bats
+  git commit -q -am "a skipped test"
+  check_here
+  st
+  [ "$(the_line alpha)" = "$full (mapped test \"one\" edited or removed). Started without shipit start." ]
+  git reset -q --hard HEAD~1
+  sed -i "6s/true/false/" tests/one.bats
+  git commit -q -am "an unmapped test"
+  check_here
+  st
+  [ "$(the_line alpha)" = "$light" ]
+  git checkout -q main
+  printf 'DW4 = ["two"]\n' >.shipit/coverage/demo/delta.toml
+  git add .shipit
+  git commit -q -m "a test mapped after the fork"
+  git checkout -q slice/demo/alpha
+  st
+  [ "$(the_line alpha)" = "$full (mapped test \"two\" edited or removed). Started without shipit start." ]
 }
 
 @test "status: a reviewed slice stays checked until each done-when item is confirmed" {
@@ -76,6 +176,7 @@ READY="owner: ship it, then shipit log alpha shipped --merge <merge commit> --go
 
 @test "status: deleting each receipt lowers the state" {
   suite_repo
+  write_setup "$(cat .config/shipit.toml)"$'\n\n[review]\nlight_max_files = 0'
   ready alpha DW1
   st
   [[ $(the_line alpha) == "demo/alpha: ready to ship."* ]]
@@ -106,7 +207,7 @@ READY="owner: ship it, then shipit log alpha shipped --merge <merge commit> --go
   [[ $(the_line alpha) == "demo/alpha: made. Next: run shipit check on slice/demo/alpha"* ]]
   check_here
   st
-  [[ $(the_line alpha) == "demo/alpha: checked. Next: missing: informed review, second opinion"* ]]
+  [[ $(the_line alpha) == "demo/alpha: checked. Next: missing: informed review."* ]]
 }
 
 @test "status: a rebase with the same change keeps the reviews, not the check" {

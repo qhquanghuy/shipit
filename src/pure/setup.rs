@@ -3,6 +3,7 @@ use toml::{Table, Value};
 
 use crate::pure::base::BranchName;
 use crate::pure::repo_path::RepoPath;
+use crate::pure::risk::{LockName, RiskPath};
 use crate::pure::rules::{
     Parsed, Problem, Problems, at, fail, integer_at_most, non_empty, object_at, optional, present,
     shape, whole,
@@ -19,6 +20,9 @@ const SETUP_FILES_ITEM: &str =
     "must be a path inside the repository, written like deny.toml or .config/";
 const BRANCH: &str = "must be a branch name (see git check-ref-format --branch)";
 pub(crate) const TOP_KEYS: [&str; 5] = ["version", "gate", "agents", "packs", "owner"];
+pub(crate) const TOP_OPTIONAL: [&str; 1] = ["review"];
+pub(crate) const REVIEW_OPTIONAL: [&str; 3] = ["full_paths", "light_max_files", "lock_files"];
+const DEFAULT_LIGHT_FILES: u64 = 10;
 pub(crate) const GATE_KEYS: [&str; 4] = ["base", "max_files", "check", "environment"];
 pub(crate) const GATE_OPTIONAL: [&str; 1] = ["setup_files"];
 pub(crate) const AGENTS_KEYS: [&str; 4] = ["max_fix_rounds", "effort_cap", "tiers", "roles"];
@@ -149,6 +153,33 @@ impl Default for Parallel {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub(crate) struct LightFiles(u64);
+
+impl LightFiles {
+    pub(crate) const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+pub(crate) struct Review {
+    pub(crate) full_paths: Vec<RiskPath>,
+    pub(crate) light_max_files: LightFiles,
+    pub(crate) lock_files: Vec<LockName>,
+}
+
+impl Default for Review {
+    fn default() -> Self {
+        Self {
+            full_paths: Vec::new(),
+            light_max_files: LightFiles(DEFAULT_LIGHT_FILES),
+            lock_files: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq, Serialize)]
 pub(crate) struct Environment {
     pub(crate) prefix: Vec<NonEmpty>,
@@ -239,6 +270,7 @@ pub(crate) struct Setup {
     pub(crate) agents: Agents,
     pub(crate) packs: Packs,
     pub(crate) owner: Owner,
+    pub(crate) review: Review,
 }
 
 // What the rules need from other fields, read even when those fields are themselves wrong.
@@ -284,16 +316,22 @@ fn strings<T>(value: &Value, path: &str, make: fn(String) -> T) -> Parsed<Vec<T>
     }
 }
 
-fn repo_paths(value: &Value, path: &str) -> Parsed<Vec<RepoPath>> {
+// An array whose every item is a string `parse` accepts; each other item is reported at its index.
+fn parsed_list<T>(
+    value: &Value,
+    path: &str,
+    parse: fn(&str) -> Option<T>,
+    (array, item_message): (&str, &str),
+) -> Parsed<Vec<T>> {
     let Some(items) = value.as_array() else {
-        return fail(path, SETUP_FILES_ARRAY);
+        return fail(path, array);
     };
     let mut problems = Vec::new();
     let mut found = Vec::new();
     for (index, item) in items.iter().enumerate() {
-        match item.as_str().and_then(RepoPath::parse) {
+        match item.as_str().and_then(parse) {
             Some(parsed) => found.push(parsed),
-            None => problems.push(Problem::new(format!("{path}[{index}]"), SETUP_FILES_ITEM)),
+            None => problems.push(Problem::new(format!("{path}[{index}]"), item_message)),
         }
     }
     if problems.is_empty() {
@@ -301,6 +339,15 @@ fn repo_paths(value: &Value, path: &str) -> Parsed<Vec<RepoPath>> {
     } else {
         Err(problems)
     }
+}
+
+fn repo_paths(value: &Value, path: &str) -> Parsed<Vec<RepoPath>> {
+    parsed_list(
+        value,
+        path,
+        RepoPath::parse,
+        (SETUP_FILES_ARRAY, SETUP_FILES_ITEM),
+    )
 }
 
 fn effort_value(value: &Value, path: &str, cap: Option<Effort>) -> Parsed<Effort> {
@@ -663,9 +710,54 @@ fn parse_agents(value: &Value) -> Parsed<Agents> {
     })
 }
 
+// The table and each key are optional: a setup without it means the defaults.
+fn parse_review(value: &Value) -> Parsed<Review> {
+    let path = ".review";
+    let object = object_at(value, path)?;
+    let mut problems = Problems::default();
+    problems.add(shape(path, object, &[], &REVIEW_OPTIONAL));
+    let full_paths = problems.take(optional(object, "full_paths", |value| {
+        parsed_list(
+            value,
+            ".review.full_paths",
+            RiskPath::parse,
+            (
+                SETUP_FILES_ARRAY,
+                "must be a path inside the repository, written like src/ or src/commands/claude_*.rs (no **)",
+            ),
+        )
+    }));
+    let light_max_files = problems.take(optional(object, "light_max_files", |value| {
+        whole(value).map(LightFiles).ok_or_else(|| {
+            vec![Problem::new(
+                ".review.light_max_files",
+                "must be an integer of at least 0",
+            )]
+        })
+    }));
+    let lock_files = problems.take(optional(object, "lock_files", |value| {
+        parsed_list(
+            value,
+            ".review.lock_files",
+            LockName::parse,
+            (
+                "must be an array of file names",
+                "must be a file name, written like deps.lock",
+            ),
+        )
+    }));
+    problems.finish(|| {
+        Some(Review {
+            full_paths: full_paths?.unwrap_or_default(),
+            light_max_files: light_max_files?.unwrap_or(LightFiles(DEFAULT_LIGHT_FILES)),
+            lock_files: lock_files?.unwrap_or_default(),
+        })
+    })
+}
+
 pub(crate) fn parse_setup(object: &Table) -> Parsed<Setup> {
     let mut problems = Problems::default();
-    problems.add(shape("", object, &TOP_KEYS, &[]));
+    problems.add(shape("", object, &TOP_KEYS, &TOP_OPTIONAL));
     let version = problems.take(at(
         object,
         "version",
@@ -677,6 +769,7 @@ pub(crate) fn parse_setup(object: &Table) -> Parsed<Setup> {
     let agents = problems.take(present(object, "agents", parse_agents));
     let packs = problems.take(present(object, "packs", parse_packs));
     let owner = problems.take(present(object, "owner", parse_owner));
+    let review = problems.take(optional(object, "review", parse_review));
     problems.finish(|| {
         Some(Setup {
             version: version?,
@@ -684,6 +777,7 @@ pub(crate) fn parse_setup(object: &Table) -> Parsed<Setup> {
             agents: agents?,
             packs: packs?,
             owner: owner?,
+            review: review?.unwrap_or_default(),
         })
     })
 }
@@ -886,9 +980,100 @@ mod tests {
         put(&mut expected, "/agents/parallel/agents", int(4));
         put(&mut expected, "/owner/example_max_lines", int(15));
         put(&mut expected, "/gate/setup_files", Value::Array(Vec::new()));
+        put(&mut expected, "/review", Value::Table(Table::new()));
+        put(
+            &mut expected,
+            "/review/full_paths",
+            Value::Array(Vec::new()),
+        );
+        put(&mut expected, "/review/light_max_files", int(10));
+        put(
+            &mut expected,
+            "/review/lock_files",
+            Value::Array(Vec::new()),
+        );
         assert_eq!(
             serde_json::to_value(&setup).unwrap(),
             serde_json::to_value(expected).unwrap()
+        );
+    }
+
+    #[test]
+    fn the_review_table_is_optional_and_each_key_is_checked_with_its_path() {
+        let with = |key: &str, new: Value| {
+            let mut value = fixture();
+            put(&mut value, "/review", Value::Table(Table::new()));
+            put(&mut value, &format!("/review/{key}"), new);
+            lines_of(&value)
+        };
+        for wrong in kinds() {
+            if !wrong.is_table() {
+                let mut value = fixture();
+                put(&mut value, "/review", wrong.clone());
+                assert_eq!(lines_of(&value), [".review: must be an object"]);
+            }
+            if !wrong.is_array() {
+                assert_eq!(
+                    with("full_paths", wrong.clone()),
+                    [".review.full_paths: must be an array of paths"]
+                );
+                assert_eq!(
+                    with("lock_files", wrong.clone()),
+                    [".review.lock_files: must be an array of file names"]
+                );
+            }
+            if !wrong.is_integer() {
+                assert_eq!(
+                    with("light_max_files", wrong),
+                    [".review.light_max_files: must be an integer of at least 0"]
+                );
+            }
+        }
+        assert_eq!(
+            with("light_max_files", int(-1)),
+            [".review.light_max_files: must be an integer of at least 0"]
+        );
+        assert_eq!(
+            with("full_paths", Value::Array(vec![int(1)])),
+            [
+                ".review.full_paths[0]: must be a path inside the repository, written like src/ or src/commands/claude_*.rs (no **)"
+            ]
+        );
+        assert_eq!(
+            with("full_paths", Value::Array(vec![text("src/**/a.rs")])),
+            [
+                ".review.full_paths[0]: must be a path inside the repository, written like src/ or src/commands/claude_*.rs (no **)"
+            ]
+        );
+        assert_eq!(
+            with("lock_files", Value::Array(vec![int(1)])),
+            [".review.lock_files[0]: must be a file name, written like deps.lock"]
+        );
+        assert_eq!(with("extra", int(1)), [".review.extra: unknown key"]);
+        let mut value = fixture();
+        put(&mut value, "/review", Value::Table(Table::new()));
+        put(
+            &mut value,
+            "/review/full_paths",
+            Value::Array(vec![text("src/"), text("a/claude_*.rs")]),
+        );
+        put(&mut value, "/review/light_max_files", int(0));
+        put(
+            &mut value,
+            "/review/lock_files",
+            Value::Array(vec![text("deps.lock")]),
+        );
+        let setup = parse_setup(value.as_table().unwrap()).unwrap();
+        assert_eq!(
+            setup.review,
+            Review {
+                full_paths: vec![
+                    RiskPath::parse("src/").unwrap(),
+                    RiskPath::parse("a/claude_*.rs").unwrap()
+                ],
+                light_max_files: LightFiles(0),
+                lock_files: vec![LockName::parse("deps.lock").unwrap()],
+            }
         );
     }
 
@@ -1232,6 +1417,7 @@ mod tests {
                             status_update_max_lines: Lines(1 + update_offset % max_lines),
                             example_max_lines: Lines(example),
                         },
+                        review: Review::default(),
                     }
                 },
             )

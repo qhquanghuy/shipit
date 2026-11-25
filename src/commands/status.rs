@@ -1,8 +1,10 @@
+use std::collections::BTreeSet;
 use std::ffi::{OsStr, OsString};
 use std::io::Write;
 use std::path::Path;
 
 use serde::Serialize;
+use serde_json::Value;
 
 use crate::commands::setup::load_setup_table;
 use crate::edge::git::Git;
@@ -11,11 +13,13 @@ use crate::edge::records::{
     newest_roadmap, read_store_text, receipt_doc, receipt_path, store_dir,
 };
 use crate::edge::slice_git::{
-    branch_tip, commits_beyond, file_hash, load_policy, slice_branches, tip_of,
+    Checked, Tip, branch_tip, changed_with_status, commits_beyond, file_hash, load_policy,
+    map_paths_at, slice_branches, tip_of,
 };
 use crate::edge::store::{check_receipt_path, read_history, read_json, versions};
 use crate::pure::base::BaseRef;
 use crate::pure::branch::{parse_slice_branch, slice_branch};
+use crate::pure::coverage_map::parse_map;
 use crate::pure::failure::Failure;
 use crate::pure::finding::{Class, Outcome};
 use crate::pure::flags::{goal_flag, once, unknown_argument};
@@ -27,11 +31,12 @@ use crate::pure::receipt::Oid;
 use crate::pure::review::{
     ReceiptKind, Stored, check_base, counts, open_findings, read_receipt, stored_findings,
 };
+use crate::pure::risk::{DiffFacts, touched_tests};
 use crate::pure::roadmap::{Element, Roadmap, SliceName};
-use crate::pure::setup::{HEAD, Setup};
+use crate::pure::setup::{HEAD, Setup, toml_table};
 use crate::pure::state::{
-    Counts, Facts, GoalView, Kind, Plan, Policy, Unknown, View, Work, is_shipped, proven, render,
-    started_count, view,
+    Check, Counts, Facts, GoalView, Kind, Plan, Policy, Unknown, View, Work, is_shipped, proven,
+    render, started_count, view,
 };
 use crate::pure::store_changes::{flag_line, flags, item_changes, span, span_line, started_at};
 use crate::pure::store_path::OwnerFile;
@@ -87,11 +92,159 @@ fn receipt_of(
     read_receipt(read_json(&receipt_path(store, kind, key)).as_deref())
 }
 
+fn check_doc(common: &Path, tree: &Oid) -> Option<Value> {
+    read_json(&check_receipt_path(common, tree))?
+        .into_iter()
+        .next()
+}
+
+// The base branch a check receipt names, with a remote part dropped: origin/main is main.
+fn checked_branch(doc: &Value) -> Option<String> {
+    let full = doc.get("base_ref")?.as_str()?;
+    if let Some(name) = full.strip_prefix("refs/heads/") {
+        return Some(name.to_owned());
+    }
+    let (_remote, name) = full.strip_prefix("refs/remotes/")?.split_once('/')?;
+    Some(name.to_owned())
+}
+
+fn policy_branch(base_ref: &BaseRef) -> String {
+    match base_ref {
+        BaseRef::Local(name) | BaseRef::Origin(name) => name.to_string(),
+    }
+}
+
+// The tests the coverage maps at `rev` name; a map that cannot be listed, read or parsed is
+// named instead.
+fn read_maps(
+    git: &Git,
+    rev: &OsStr,
+    mapped: &mut BTreeSet<String>,
+    unreadable: &mut BTreeSet<String>,
+) {
+    match map_paths_at(git, rev) {
+        Err(_why) => {
+            unreadable.insert(".shipit/coverage/".to_owned());
+        }
+        Ok(paths) => {
+            for path in paths {
+                let map = git
+                    .show_file(rev, &path)
+                    .and_then(|bytes| toml_table(&bytes).ok())
+                    .and_then(|table| parse_map(&table).ok());
+                match map {
+                    Some(map) => mapped.extend(map.items.into_values().flatten()),
+                    None => {
+                        unreadable.insert(path);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// What the mapped-test rule found: the tests edited or removed, the maps and the changed files
+// it could not read.
+struct MappedFacts {
+    touched: Vec<String>,
+    unreadable_maps: Vec<String>,
+    unread_files: Vec<String>,
+}
+
+// The mapped tests the change edits or removes. The maps are read at the fork and at the base's
+// tip, so a test mapped on the base after the fork still counts. Nothing here ends status: what
+// cannot be read counts against the slice.
+fn mapped_touched(
+    git: &Git,
+    (fork, tip, base): (&Oid, &Oid, &BaseRef),
+    changed: &[(char, String)],
+) -> MappedFacts {
+    let edited: Vec<&str> = changed
+        .iter()
+        .filter(|(status, _)| *status != 'A')
+        .map(|(_, path)| path.as_str())
+        .collect();
+    let mut found = MappedFacts {
+        touched: Vec::new(),
+        unreadable_maps: Vec::new(),
+        unread_files: Vec::new(),
+    };
+    if edited.is_empty() {
+        return found;
+    }
+    let at = OsStr::new(fork.as_str());
+    let base_tip = base.full();
+    let mut mapped = BTreeSet::new();
+    let mut unreadable = BTreeSet::new();
+    read_maps(git, at, &mut mapped, &mut unreadable);
+    read_maps(git, OsStr::new(&base_tip), &mut mapped, &mut unreadable);
+    found.unreadable_maps = unreadable.into_iter().collect();
+    if mapped.is_empty() {
+        return found;
+    }
+    let mut touched = BTreeSet::new();
+    for path in edited {
+        let Some(old) = git.show_file(at, path) else {
+            found.unread_files.push(path.to_owned());
+            continue;
+        };
+        let new = git
+            .show_file(OsStr::new(tip.as_str()), path)
+            .unwrap_or_default();
+        touched.extend(touched_tests(
+            &String::from_utf8_lossy(&old),
+            &String::from_utf8_lossy(&new),
+            &mapped,
+        ));
+    }
+    found.touched = touched.into_iter().collect();
+    found
+}
+
+fn diff_facts(
+    git: &Git,
+    common: &Path,
+    base_ref: &BaseRef,
+    (tip, checked): (&Tip, &Checked),
+) -> Result<DiffFacts, Failure> {
+    let changed = changed_with_status(git, &checked.merge_base, OsStr::new(tip.commit.as_str()))?;
+    let doc = check_doc(common, &tip.tree);
+    let base = doc.as_ref().and_then(check_base);
+    let files = doc
+        .as_ref()
+        .and_then(|doc| doc.get("size")?.get("files")?.as_u64())
+        .unwrap_or_else(|| u64::try_from(changed.len()).unwrap_or(u64::MAX));
+    let given = doc.as_ref().and_then(|doc| doc.get("base_given")) == Some(&Value::Bool(true));
+    let policy = policy_branch(base_ref);
+    let branch = doc.as_ref().and_then(checked_branch);
+    let other_base = match (&branch, &base) {
+        (Some(branch), Some(base)) if *branch != policy => {
+            Some((base.name.clone(), base_ref.to_string()))
+        }
+        (Some(_) | None, _) => None,
+    };
+    // A base given by hand that names the policy's branch (origin/main for main) changes nothing.
+    let given_base = base
+        .filter(|_| given && branch.as_ref() != Some(&policy))
+        .map(|base| base.name);
+    let found = mapped_touched(git, (&checked.merge_base, &tip.commit, base_ref), &changed);
+    Ok(DiffFacts {
+        names: changed.into_iter().map(|(_, path)| path).collect(),
+        files,
+        mapped: found.touched,
+        unreadable: found.unreadable_maps,
+        unread_files: found.unread_files,
+        given_base,
+        other_base,
+    })
+}
+
+// A shipped slice keeps its work, but its diff is never judged: status reads no diff for it.
 fn work_of(
     git: &Git,
     common: &Path,
     base_ref: &BaseRef,
-    branch: &str,
+    (branch, shipped): (&str, bool),
     (goal, slice): (&GoalName, &SliceName),
 ) -> Result<Option<Work>, Failure> {
     let store = store_dir(common);
@@ -107,9 +260,19 @@ fn work_of(
     let tested = read_json(&coverage_record_path(&store, &tip.tree))
         .and_then(|docs| docs.into_iter().next())
         .and_then(|doc| recorded(&doc, goal, slice));
+    let checked = match &tip.checked {
+        Some(_) if shipped => Some(Check::Unjudged),
+        Some(checked) => Some(Check::Judged(diff_facts(
+            git,
+            common,
+            base_ref,
+            (&tip, checked),
+        )?)),
+        None => None,
+    };
     Ok(Some(Work {
         commits,
-        checked: tip.checked.is_some(),
+        checked,
         informed: patch
             .as_ref()
             .and_then(|key| receipt_of(&store, ReceiptKind::InformedReview, key)),
@@ -216,7 +379,7 @@ pub(crate) fn collect(
             .collect();
         let branch = slice_branch(goal, &name);
         let plan_file = build_plan_path(&store, goal, &name);
-        let (kind, after, meets, plan, work) = match element {
+        let (kind, after, meets, plan, work, owns) = match element {
             Element::Proof(proof) => (
                 Kind::Proof {
                     how: proof.how.clone(),
@@ -225,6 +388,7 @@ pub(crate) fn collect(
                 proof.meets.clone(),
                 None,
                 None,
+                Vec::new(),
             ),
             Element::Slice(slice) => {
                 let plan = file_hash(git, &plan_file).ok().map(|key| Plan {
@@ -238,7 +402,14 @@ pub(crate) fn collect(
                     slice.after.clone(),
                     slice.meets.clone(),
                     plan,
-                    work_of(git, common, base_ref, &branch, (goal, &name))?,
+                    work_of(
+                        git,
+                        common,
+                        base_ref,
+                        (&branch, is_shipped(&entries)),
+                        (goal, &name),
+                    )?,
+                    slice.owns.clone(),
                 )
             }
         };
@@ -255,6 +426,7 @@ pub(crate) fn collect(
             work,
             entries,
             changes,
+            owns,
         });
     }
     Ok((all, flags_of(git, at, &history, &held)))
@@ -345,16 +517,19 @@ fn short(text: &str) -> String {
 }
 
 fn check_row(reading: &Reading<'_>) -> Option<CheckRow> {
-    let work = reading.fact.work.as_ref().filter(|work| work.checked)?;
+    let work = reading
+        .fact
+        .work
+        .as_ref()
+        .filter(|work| work.checked.is_some())?;
     let tree = Oid::parse(&work.tree)?;
-    let docs = read_json(&check_receipt_path(reading.common, &tree))?;
-    let doc = docs.first()?;
+    let doc = check_doc(reading.common, &tree)?;
     let size = doc.get("size")?;
     Some(CheckRow {
         tree: short(&work.tree),
         files: size.get("files")?.as_u64()?,
         cap: size.get("cap")?.as_u64()?,
-        base: check_base(doc)?.name,
+        base: check_base(&doc)?.name,
     })
 }
 
@@ -468,7 +643,8 @@ fn known_issues(reading: &Reading<'_>) -> (Vec<Known>, Vec<Answered>) {
             | Entry::Note { .. }
             | Entry::ShippedMerge { .. }
             | Entry::ShippedProof { .. }
-            | Entry::Started { .. } => {}
+            | Entry::Started { .. }
+            | Entry::Raise { .. } => {}
         }
     }
     (known, answers)
@@ -562,7 +738,8 @@ fn stand_ins_of(fact: &Facts) -> Vec<String> {
             | Entry::Answer { .. }
             | Entry::ShippedMerge { .. }
             | Entry::ShippedProof { .. }
-            | Entry::Started { .. } => None,
+            | Entry::Started { .. }
+            | Entry::Raise { .. } => None,
         })
         .flatten()
         .filter(|worker| worker.contains('@'))
@@ -596,6 +773,7 @@ fn summary_for(
         unfixed: unfixed(fact),
         answers,
         changes: fact.changes.iter().chain(flags).cloned().collect(),
+        review: judged.review.clone(),
     })
 }
 
